@@ -33,7 +33,7 @@ Upload call → transcribe → analyze → score → show evidence → notify.
 
 ## Local Development (Draft)
 
-1. Copy `.env.example` values as needed.
+1. Copy `.env.example` to `.env`.
 2. Run `docker compose up --build`.
 3. API: `http://localhost:8000`.
 4. Web: `http://localhost:3000`.
