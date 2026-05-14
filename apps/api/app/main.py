@@ -1,7 +1,10 @@
+import logging
+
 from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel
 
 app = FastAPI(title="CallQuanta API", version="0.1.0")
+logger = logging.getLogger("callquanta.api")
 
 CALLS = []
 
@@ -14,7 +17,14 @@ class ProviderTestRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    logger.info("Health check requested")
     return {"status": "ok"}
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    logging.basicConfig(level=logging.INFO)
+    logger.info("CallQuanta API started")
 
 
 @app.post("/calls/upload")
