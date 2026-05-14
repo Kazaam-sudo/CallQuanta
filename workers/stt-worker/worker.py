@@ -1,4 +1,23 @@
 """STT worker entrypoint."""
 
-# TODO: consume transcription jobs from Redis queue and call STT providers.
-print("stt-worker stub")
+import signal
+import time
+
+running = True
+
+
+def handle_shutdown(signum, frame):
+    global running
+    print(f"stt-worker received shutdown signal: {signum}")
+    running = False
+
+
+signal.signal(signal.SIGINT, handle_shutdown)
+signal.signal(signal.SIGTERM, handle_shutdown)
+
+print("stt-worker placeholder started. Waiting for future transcription jobs...")
+
+while running:
+    time.sleep(5)
+
+print("stt-worker stopped gracefully.")
