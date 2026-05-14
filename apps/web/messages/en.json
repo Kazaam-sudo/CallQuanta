@@ -1,0 +1,8 @@
+{
+  "app": {
+    "title": "CallQuanta",
+    "dashboard": "Dashboard",
+    "calls": "Calls",
+    "settings": "Settings"
+  }
+}
