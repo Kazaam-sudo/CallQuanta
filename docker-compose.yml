@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   postgres:
     image: postgres:16-alpine
@@ -25,7 +24,7 @@ services:
 
   api:
     build: ./apps/api
-    env_file: .env.example
+    env_file: .env
     depends_on:
       - postgres
       - redis
@@ -42,14 +41,14 @@ services:
 
   stt-worker:
     build: ./workers/stt-worker
-    env_file: .env.example
+    env_file: .env
     depends_on:
       - redis
       - api
 
   qa-worker:
     build: ./workers/qa-worker
-    env_file: .env.example
+    env_file: .env
     depends_on:
       - redis
       - api
