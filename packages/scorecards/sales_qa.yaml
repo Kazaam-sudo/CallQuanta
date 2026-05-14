@@ -1,0 +1,15 @@
+name: Sales QA v1
+version: 0.1
+criteria:
+  - id: greeting
+    weight: 20
+    description: Agent greeted customer professionally.
+  - id: discovery
+    weight: 25
+    description: Agent asked discovery questions.
+  - id: objection_handling
+    weight: 25
+    description: Agent handled objections clearly.
+  - id: compliance
+    weight: 30
+    description: Agent followed required script and compliance language.
