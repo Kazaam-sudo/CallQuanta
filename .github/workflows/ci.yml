@@ -1,0 +1,87 @@
+name: CallQuanta CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate Python syntax
+        run: python -m compileall apps/api workers packages
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build web app
+        working-directory: apps/web
+        run: |
+          npm install
+          npm run build
+
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config
+
+      - name: Start local stack
+        run: |
+          docker compose up -d --build
+
+          for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-callquanta}" -d "${POSTGRES_DB:-callquanta}" > /dev/null; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Postgres readiness check timed out"
+          exit 1
+
+      - name: Wait for API health
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "API is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API health check timed out"
+          exit 1
+
+      - name: Smoke test upload/list/get
+        run: |
+          set -euo pipefail
+          printf 'RIFF....WAVEfmt ' > /tmp/sample.wav
+
+          curl -fsS -X POST \
+            -F "file=@/tmp/sample.wav" \
+            http://localhost:8000/calls/upload
+
+          curl -fsS http://localhost:8000/calls
+
+      - name: Print Docker Compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Shut down containers
+        if: always()
+        run: docker compose down -v
