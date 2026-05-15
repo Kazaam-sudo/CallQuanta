@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from .db import Base, Call
 
-app = FastAPI(title="CallQuanta API", version="0.2.0")
+app = FastAPI(title="CallQuanta API", version="0.2.1")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
