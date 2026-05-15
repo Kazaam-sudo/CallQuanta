@@ -77,7 +77,7 @@ jobs:
             -H "Access-Control-Request-Method: POST" \
             http://localhost:8000/calls/upload
 
-          rg -qi '^access-control-allow-origin:\s*http://localhost:3000\s*$' "$headers"
+          grep -qi "access-control-allow-origin: http://localhost:3000" "$headers"
 
       - name: Smoke test upload/list/get
         run: |
