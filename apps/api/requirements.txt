@@ -7,3 +7,5 @@ alembic==1.13.2
 python-multipart==0.0.12
 
 werkzeug==3.0.4
+
+redis==5.0.8

@@ -1,7 +1,10 @@
+import json
 import logging
+import os
 from pathlib import Path
 from uuid import uuid4
 
+import redis
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -9,15 +12,17 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call
+from .db import Base, Call, TranscriptSegment
 
-app = FastAPI(title="CallQuanta API", version="0.2.1")
+app = FastAPI(title="CallQuanta API", version="0.3.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
-DATABASE_URL = __import__("os").environ.get("DATABASE_URL", DATABASE_URL)
-UPLOAD_DIR = Path(__import__("os").environ.get("UPLOAD_DIR", "uploads"))
-CORS_ORIGINS = __import__("os").environ.get(
+DATABASE_URL = os.environ.get("DATABASE_URL", DATABASE_URL)
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs")
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
+CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000",
 )
@@ -33,19 +38,13 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
 class ProviderTestRequest(BaseModel):
     provider_type: str
     base_url: str
     api_key: str | None = None
-
-
-class CallResponse(BaseModel):
-    id: int
-    filename: str
-    status: str
-    created_at: str | None = None
 
 
 @app.get("/health")
@@ -87,6 +86,10 @@ async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db
     db.commit()
     db.refresh(call)
 
+    return serialize_call(call)
+
+
+def serialize_call(call: Call) -> dict:
     return {
         "id": call.id,
         "filename": call.filename,
@@ -98,15 +101,7 @@ async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db
 @app.get("/calls")
 def list_calls(db: Session = Depends(get_db)) -> list[dict]:
     calls = db.execute(select(Call).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
-    return [
-        {
-            "id": call.id,
-            "filename": call.filename,
-            "status": call.status,
-            "created_at": call.created_at.isoformat() if call.created_at else None,
-        }
-        for call in calls
-    ]
+    return [serialize_call(call) for call in calls]
 
 
 @app.get("/calls/{call_id}")
@@ -114,17 +109,48 @@ def get_call(call_id: int, db: Session = Depends(get_db)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
-    return {
-        "id": call.id,
-        "filename": call.filename,
-        "status": call.status,
-        "created_at": call.created_at.isoformat() if call.created_at else None,
-    }
+    return serialize_call(call)
 
 
 @app.post("/calls/{call_id}/transcribe")
-def transcribe_call(call_id: int) -> dict:
+def transcribe_call(call_id: int, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    call.status = "transcription_pending"
+    db.commit()
+
+    redis_client.lpush(TRANSCRIPTION_QUEUE, json.dumps({"call_id": call_id}))
     return {"call_id": call_id, "status": "transcription_queued"}
+
+
+@app.get("/calls/{call_id}/transcript")
+def get_call_transcript(call_id: int, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    segments = db.execute(
+        select(TranscriptSegment)
+        .where(TranscriptSegment.call_id == call_id)
+        .order_by(TranscriptSegment.start_ms.asc(), TranscriptSegment.id.asc())
+    ).scalars().all()
+
+    return {
+        "call_id": call_id,
+        "status": call.status,
+        "segments": [
+            {
+                "id": segment.id,
+                "speaker": segment.speaker,
+                "start_ms": segment.start_ms,
+                "end_ms": segment.end_ms,
+                "text": segment.text,
+            }
+            for segment in segments
+        ],
+    }
 
 
 @app.post("/calls/{call_id}/analyze")
