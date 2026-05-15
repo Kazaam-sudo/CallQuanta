@@ -41,7 +41,19 @@ jobs:
           docker compose config
 
       - name: Start local stack
-        run: docker compose up -d --build
+        run: |
+          docker compose up -d --build
+
+          for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-callquanta}" -d "${POSTGRES_DB:-callquanta}" > /dev/null; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Postgres readiness check timed out"
+          exit 1
 
       - name: Wait for API health
         run: |
