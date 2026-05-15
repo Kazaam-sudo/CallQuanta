@@ -5,6 +5,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-callquanta}
       POSTGRES_USER: ${POSTGRES_USER:-callquanta}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callquanta}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     ports:
       - "5432:5432"
     volumes:
@@ -26,9 +32,13 @@ services:
     build: ./apps/api
     env_file: .env
     depends_on:
-      - postgres
-      - redis
-      - ollama
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      ollama:
+        condition: service_started
+    restart: on-failure
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
