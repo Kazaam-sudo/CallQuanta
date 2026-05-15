@@ -6,9 +6,9 @@ CallQuanta is an open-source, self-hosted AI quality assurance platform for cont
 
 AGPL-3.0.
 
-## MVP Flow (v0.1)
+## MVP Flow (v0.3.0)
 
-Upload call → transcribe → analyze → score → show evidence → notify.
+Upload call → queue transcription job → STT worker writes placeholder transcript segments → analyze → score → show evidence → notify.
 
 ## Product Positioning
 
@@ -77,3 +77,11 @@ Services started by Compose:
 - v0.2: Real queue execution and DB-backed CRUD.
 - v0.3: Scorecard editor + evidence viewer + notifications.
 - v0.4: Integrations and richer analytics.
+
+
+## v0.3.0 Notes
+
+- `POST /calls/{id}/transcribe` now marks the call as `transcription_pending` and enqueues a Redis transcription job.
+- `workers/stt-worker` consumes transcription jobs from Redis, writes placeholder transcript segments, and updates call status to `transcribed` (or `failed` on worker errors).
+- `GET /calls/{id}/transcript` returns transcript segments ordered by start time.
+- Call details UI now includes a `Transcribe` button, status display, transcript rendering, and manual refresh.

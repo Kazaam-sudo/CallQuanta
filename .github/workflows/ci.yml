@@ -90,6 +90,30 @@ jobs:
 
           curl -fsS http://localhost:8000/calls
 
+
+      - name: Smoke test transcription queue flow
+        run: |
+          set -euo pipefail
+          printf 'RIFF....WAVEfmt ' > /tmp/sample2.wav
+
+          upload_response=$(curl -fsS -X POST -F "file=@/tmp/sample2.wav" http://localhost:8000/calls/upload)
+          call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
+
+          curl -fsS -X POST http://localhost:8000/calls/${call_id}/transcribe
+
+          for i in {1..30}; do
+            status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            if [ "$status" = "transcribed" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          final_status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+          test "$final_status" = "transcribed"
+
+          curl -fsS http://localhost:8000/calls/${call_id}/transcript | python -c "import json,sys; data=json.load(sys.stdin); assert len(data['segments']) > 0"
+
       - name: Print Docker Compose logs on failure
         if: failure()
         run: docker compose logs --no-color
