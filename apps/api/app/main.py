@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +17,19 @@ logger = logging.getLogger("callquanta.api")
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
 DATABASE_URL = __import__("os").environ.get("DATABASE_URL", DATABASE_URL)
 UPLOAD_DIR = Path(__import__("os").environ.get("UPLOAD_DIR", "uploads"))
+CORS_ORIGINS = __import__("os").environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+)
+ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
