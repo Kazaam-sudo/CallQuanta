@@ -31,11 +31,17 @@ services:
       - ollama
     ports:
       - "${API_PORT:-8000}:8000"
+    environment:
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - api_uploads:/app/uploads
 
   web:
     build: ./apps/web
     depends_on:
       - api
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     ports:
       - "${WEB_PORT:-3000}:3000"
 
