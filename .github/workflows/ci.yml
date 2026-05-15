@@ -67,6 +67,18 @@ jobs:
           echo "API health check timed out"
           exit 1
 
+
+      - name: Smoke test CORS preflight
+        run: |
+          set -euo pipefail
+          headers=$(mktemp)
+          curl -sS -D "$headers" -o /dev/null -X OPTIONS \
+            -H "Origin: http://localhost:3000" \
+            -H "Access-Control-Request-Method: POST" \
+            http://localhost:8000/calls/upload
+
+          rg -qi '^access-control-allow-origin:\s*http://localhost:3000\s*$' "$headers"
+
       - name: Smoke test upload/list/get
         run: |
           set -euo pipefail
