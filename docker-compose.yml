@@ -62,3 +62,4 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  api_uploads:
