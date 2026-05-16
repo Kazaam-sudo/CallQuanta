@@ -62,6 +62,21 @@ Services started by Compose:
 - **API unavailable at startup**: wait for `CallQuanta API started` in logs, then retry `/health`.
 - **Ollama image pull is slow**: first boot may take longer because the container image is large.
 
+
+## Manual testing in Codespaces
+
+1. Create a GitHub Codespace for this repository.
+2. Copy env file:
+   ```bash
+   cp .env.example .env
+   ```
+3. Build and start the full stack:
+   ```bash
+   docker compose up --build
+   ```
+4. Open the forwarded port `3000` in the browser.
+5. In the web UI, upload a file and click **Transcribe** on the call details page.
+
 ## Architecture Overview
 
 - API manages calls, metadata, provider configs, and orchestration endpoints.

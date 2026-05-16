@@ -10,7 +10,7 @@ type Call = {
   created_at?: string | null;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 export default function CallsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
