@@ -2,3 +2,4 @@ redis==5.0.8
 sqlalchemy==2.0.35
 psycopg[binary]==3.2.1
 faster-whisper==1.1.0
+requests==2.32.3

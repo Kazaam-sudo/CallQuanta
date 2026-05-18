@@ -86,6 +86,7 @@ Services started by Compose:
 - **Port already in use**: update `API_PORT` / `WEB_PORT` in `.env` and restart compose.
 - **API unavailable at startup**: wait for `CallQuanta API started` in logs, then retry `/health`.
 - **Ollama image pull is slow**: first boot may take longer because the container image is large.
+- **`No module named '...'` in `stt-worker` (faster-whisper mode)**: rebuild the worker image so updated Python dependencies are installed: `docker compose build stt-worker && docker compose up -d stt-worker`.
 
 
 ## Manual testing in Codespaces
