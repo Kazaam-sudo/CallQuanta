@@ -8,7 +8,7 @@ AGPL-3.0.
 
 ## MVP Flow (v0.3.0)
 
-Upload call → queue transcription job → STT worker writes placeholder transcript segments → analyze → score → show evidence → notify.
+Upload call → queue transcription job → STT worker transcribes (placeholder or faster-whisper) → analyze → score → show evidence → notify.
 
 ## Product Positioning
 
@@ -31,6 +31,31 @@ Upload call → queue transcription job → STT worker writes placeholder transc
 - `docs` - Architecture and operations docs.
 - `examples` - Example assets for local testing.
 
+
+## STT Modes (v0.4.0)
+
+CallQuanta supports two STT worker modes controlled by `STT_MODE`:
+
+- `placeholder` (default): writes deterministic placeholder transcript segments. Recommended for CI and lightweight local usage.
+- `faster_whisper`: runs real local speech-to-text with faster-whisper against the uploaded audio file path stored on the call (`call.stored_path`).
+
+Example `.env` settings:
+
+```env
+STT_MODE=placeholder
+FASTER_WHISPER_MODEL=base
+FASTER_WHISPER_DEVICE=cpu
+FASTER_WHISPER_COMPUTE_TYPE=int8
+```
+
+To enable real STT locally, set:
+
+```env
+STT_MODE=faster_whisper
+```
+
+Note: the first transcription in `faster_whisper` mode may take longer because the model may need to be downloaded and initialized.
+
 ## Local Development (v0.1.1 baseline)
 
 1. Copy env file:
@@ -51,7 +76,7 @@ Services started by Compose:
 - `ollama`
 - `api`
 - `web`
-- `stt-worker` (placeholder loop)
+- `stt-worker` (placeholder mode by default; optional faster-whisper mode)
 - `qa-worker` (placeholder loop)
 
 ### Troubleshooting
@@ -94,9 +119,10 @@ Services started by Compose:
 - v0.4: Integrations and richer analytics.
 
 
-## v0.3.0 Notes
+## v0.4.0 Notes
 
-- `POST /calls/{id}/transcribe` now marks the call as `transcription_pending` and enqueues a Redis transcription job.
-- `workers/stt-worker` consumes transcription jobs from Redis, writes placeholder transcript segments, and updates call status to `transcribed` (or `failed` on worker errors).
+- `POST /calls/{id}/transcribe` marks the call as `transcription_pending` and enqueues a Redis transcription job.
+- `workers/stt-worker` now supports `STT_MODE=placeholder` (default) and `STT_MODE=faster_whisper` for real local STT.
+- In faster-whisper mode, the worker lazily loads the model once per process and reuses it for later jobs.
+- On worker errors, the call status is updated to `failed`.
 - `GET /calls/{id}/transcript` returns transcript segments ordered by start time.
-- Call details UI now includes a `Transcribe` button, status display, transcript rendering, and manual refresh.
