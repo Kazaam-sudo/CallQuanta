@@ -14,7 +14,7 @@ from werkzeug.utils import secure_filename
 
 from .db import Base, Call, TranscriptSegment
 
-app = FastAPI(title="CallQuanta API", version="0.3.1")
+app = FastAPI(title="CallQuanta API", version="0.3.3")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -91,7 +91,14 @@ async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db
 
     stored_path.write_bytes(contents)
 
-    call = Call(filename=safe_name, status="uploaded")
+    call = Call(
+        filename=safe_name,
+        status="uploaded",
+        stored_filename=stored_name,
+        stored_path=str(stored_path),
+        file_size_bytes=len(contents),
+        content_type=file.content_type,
+    )
     db.add(call)
     db.commit()
     db.refresh(call)
@@ -104,6 +111,10 @@ def serialize_call(call: Call) -> dict:
         "id": call.id,
         "filename": call.filename,
         "status": call.status,
+        "stored_filename": call.stored_filename,
+        "stored_path": call.stored_path,
+        "file_size_bytes": call.file_size_bytes,
+        "content_type": call.content_type,
         "created_at": call.created_at.isoformat() if call.created_at else None,
     }
 
