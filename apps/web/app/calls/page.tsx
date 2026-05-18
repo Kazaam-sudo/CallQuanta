@@ -21,15 +21,62 @@ export default function CallsPage() {
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  const parseErrorDetail = (data: unknown): string | null => {
+    if (!data || typeof data !== "object") {
+      return null;
+    }
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail) {
+      return detail;
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((item) => {
+          if (typeof item === "string") {
+            return item;
+          }
+          if (item && typeof item === "object" && "msg" in item) {
+            const message = (item as { msg?: unknown }).msg;
+            if (typeof message === "string") {
+              return message;
+            }
+          }
+          return null;
+        })
+        .filter((message): message is string => Boolean(message));
+      if (messages.length > 0) {
+        return messages.join("; ");
+      }
+    }
+    return null;
+  };
+
   const loadCalls = async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/calls`);
-      const data = await response.json();
-      setCalls(data);
-    } catch {
-      setLoadError("Failed to load calls.");
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        const detail = parseErrorDetail(data) ?? `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+
+      if (!Array.isArray(data)) {
+        throw new Error("API returned an unexpected payload.");
+      }
+
+      setCalls(data as Call[]);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : "Unknown error while loading calls.";
+      setLoadError(`Failed to load calls: ${detail}`);
     } finally {
       setLoading(false);
     }
@@ -62,9 +109,7 @@ export default function CallsPage() {
         let detail = "Upload failed.";
         try {
           const data = await response.json();
-          if (typeof data?.detail === "string" && data.detail) {
-            detail = data.detail;
-          }
+          detail = parseErrorDetail(data) ?? detail;
         } catch {
           // Ignore JSON parsing errors and fall back to generic message.
         }
@@ -72,10 +117,24 @@ export default function CallsPage() {
         return;
       }
 
+      const uploadedCall = (await response.json()) as unknown;
       setUploadSuccess(`Uploaded ${selectedFile.name} successfully.`);
       setSelectedFile(null);
       event.currentTarget.reset();
-      await loadCalls();
+      if (
+        uploadedCall &&
+        typeof uploadedCall === "object" &&
+        typeof (uploadedCall as { id?: unknown }).id === "number" &&
+        typeof (uploadedCall as { filename?: unknown }).filename === "string" &&
+        typeof (uploadedCall as { status?: unknown }).status === "string"
+      ) {
+        setCalls((currentCalls) => [
+          uploadedCall as Call,
+          ...currentCalls.filter((call) => call.id !== (uploadedCall as Call).id),
+        ]);
+      } else {
+        await loadCalls();
+      }
     } catch {
       setUploadError("Upload failed: Network error while uploading file.");
     } finally {
@@ -111,10 +170,17 @@ export default function CallsPage() {
       {selectedFile && <p>Selected file: {selectedFile.name}</p>}
       {uploadSuccess && <p>{uploadSuccess}</p>}
       {uploadError && <p>{uploadError}</p>}
-      {loadError && <p>{loadError}</p>}
+      <p>Total uploaded calls: {calls.length}</p>
+      <button type="button" onClick={loadCalls} disabled={loading || uploading}>
+        {loading ? "Refreshing..." : "Refresh calls"}
+      </button>
 
       {loading ? (
-        <p>Loading...</p>
+        <p>Loading calls...</p>
+      ) : loadError ? (
+        <p>{loadError}</p>
+      ) : calls.length === 0 ? (
+        <p>No calls uploaded yet.</p>
       ) : (
         <ul>
           {calls.map((call) => (
