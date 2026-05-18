@@ -25,6 +25,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,20 +61,38 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   }, [load]);
 
   const transcribe = async () => {
+    if (!call || call.status === "transcribed" || transcribing) {
+      return;
+    }
+
     try {
       setError(null);
+      setTranscribing(true);
       const response = await fetch(`${API_BASE_URL}/calls/${params.id}/transcribe`, {
         method: "POST",
       });
       if (!response.ok) {
-        setError("Failed to enqueue transcription");
+        let detail = "Failed to enqueue transcription.";
+        try {
+          const data = await response.json();
+          if (typeof data?.detail === "string" && data.detail) {
+            detail = data.detail;
+          }
+        } catch {
+          // Ignore JSON parsing errors and use fallback message.
+        }
+        setError(`Transcribe request failed: ${detail}`);
         return;
       }
       await load();
     } catch {
-      setError("Failed to enqueue transcription");
+      setError("Transcribe request failed: Network error.");
+    } finally {
+      setTranscribing(false);
     }
   };
+
+  const isTranscribed = call?.status === "transcribed";
 
   return (
     <main style={{ padding: 24 }}>
@@ -84,8 +103,12 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       <button onClick={load} style={{ marginRight: 8 }}>
         Refresh
       </button>
-      <button onClick={transcribe} disabled={!call || loading}>
-        Transcribe
+      <button
+        onClick={transcribe}
+        disabled={!call || loading || transcribing || isTranscribed}
+        style={isTranscribed ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
+      >
+        {transcribing ? "Transcribing..." : "Transcribe"}
       </button>
       {error && <p>{error}</p>}
       {loading && <p>Loading...</p>}

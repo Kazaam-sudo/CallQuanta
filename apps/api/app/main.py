@@ -14,7 +14,7 @@ from werkzeug.utils import secure_filename
 
 from .db import Base, Call, TranscriptSegment
 
-app = FastAPI(title="CallQuanta API", version="0.3.0")
+app = FastAPI(title="CallQuanta API", version="0.3.1")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -27,6 +27,8 @@ CORS_ORIGINS = os.environ.get(
     "http://localhost:3000,http://127.0.0.1:3000",
 )
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
+ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,10 +77,18 @@ async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
+    extension = Path(safe_name).suffix.lower()
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"Unsupported file extension. Allowed extensions: {allowed}")
+
     stored_name = f"{uuid4().hex}_{safe_name}"
     stored_path = UPLOAD_DIR / stored_name
 
     contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
     stored_path.write_bytes(contents)
 
     call = Call(filename=safe_name, status="uploaded")
