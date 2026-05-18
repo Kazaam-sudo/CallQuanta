@@ -7,6 +7,10 @@ type Call = {
   id: number;
   filename: string;
   status: string;
+  stored_filename?: string | null;
+  stored_path?: string | null;
+  file_size_bytes?: number | null;
+  content_type?: string | null;
   created_at?: string | null;
 };
 
@@ -118,6 +122,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           <p>Filename: {call.filename}</p>
           <p>Status: {call.status}</p>
           <p>Created: {call.created_at || "-"}</p>
+          <p>File size: {call.file_size_bytes != null ? `${call.file_size_bytes} bytes` : "-"}</p>
+          <p>Content type: {call.content_type || "-"}</p>
 
           <h3>Transcript Segments</h3>
           {segments.length === 0 ? (

@@ -7,6 +7,10 @@ type Call = {
   id: number;
   filename: string;
   status: string;
+  stored_filename?: string | null;
+  stored_path?: string | null;
+  file_size_bytes?: number | null;
+  content_type?: string | null;
   created_at?: string | null;
 };
 
