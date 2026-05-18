@@ -15,17 +15,21 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 export default function CallsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const loadCalls = async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/calls`);
       const data = await response.json();
       setCalls(data);
-    } catch (e) {
-      setError("Failed to load calls");
+    } catch {
+      setLoadError("Failed to load calls.");
     } finally {
       setLoading(false);
     }
@@ -37,25 +41,46 @@ export default function CallsPage() {
 
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const file = formData.get("file");
-    if (!(file instanceof File)) return;
-
-    const uploadData = new FormData();
-    uploadData.append("file", file);
-
-    const response = await fetch(`${API_BASE_URL}/calls/upload`, {
-      method: "POST",
-      body: uploadData,
-    });
-
-    if (!response.ok) {
-      setError("Upload failed");
+    if (!selectedFile) {
       return;
     }
 
-    event.currentTarget.reset();
-    await loadCalls();
+    setUploadSuccess(null);
+    setUploadError(null);
+    setUploading(true);
+
+    try {
+      const uploadData = new FormData();
+      uploadData.append("file", selectedFile);
+
+      const response = await fetch(`${API_BASE_URL}/calls/upload`, {
+        method: "POST",
+        body: uploadData,
+      });
+
+      if (!response.ok) {
+        let detail = "Upload failed.";
+        try {
+          const data = await response.json();
+          if (typeof data?.detail === "string" && data.detail) {
+            detail = data.detail;
+          }
+        } catch {
+          // Ignore JSON parsing errors and fall back to generic message.
+        }
+        setUploadError(`Upload failed: ${detail}`);
+        return;
+      }
+
+      setUploadSuccess(`Uploaded ${selectedFile.name} successfully.`);
+      setSelectedFile(null);
+      event.currentTarget.reset();
+      await loadCalls();
+    } catch {
+      setUploadError("Upload failed: Network error while uploading file.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
@@ -66,11 +91,28 @@ export default function CallsPage() {
       </p>
 
       <form onSubmit={onUpload}>
-        <input type="file" name="file" required />
-        <button type="submit">Upload</button>
+        <input
+          type="file"
+          name="file"
+          required
+          accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0] ?? null;
+            setSelectedFile(file);
+            setUploadSuccess(null);
+            setUploadError(null);
+          }}
+        />
+        <button type="submit" disabled={!selectedFile || uploading}>
+          {uploading ? "Uploading..." : "Upload"}
+        </button>
       </form>
 
-      {error && <p>{error}</p>}
+      {selectedFile && <p>Selected file: {selectedFile.name}</p>}
+      {uploadSuccess && <p>{uploadSuccess}</p>}
+      {uploadError && <p>{uploadError}</p>}
+      {loadError && <p>{loadError}</p>}
+
       {loading ? (
         <p>Loading...</p>
       ) : (

@@ -91,6 +91,18 @@ jobs:
           curl -fsS http://localhost:8000/calls
 
 
+      - name: Smoke test rejects non-audio upload
+        run: |
+          set -euo pipefail
+          printf '\x89PNG\r\n\x1a\n' > /tmp/sample.png
+
+          status=$(curl -sS -o /tmp/reject.json -w "%{http_code}" -X POST \
+            -F "file=@/tmp/sample.png" \
+            http://localhost:8000/calls/upload)
+
+          test "$status" = "400"
+          python -c "import json; d=json.load(open('/tmp/reject.json')); assert 'Unsupported file extension' in d.get('detail','')"
+
       - name: Smoke test transcription queue flow
         run: |
           set -euo pipefail
