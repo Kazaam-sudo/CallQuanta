@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Call = {
   id: number;
@@ -24,6 +24,8 @@ type TranscriptSegment = {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
+const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+
 export default function CallDetailsPage({ params }: { params: { id: string } }) {
   const [call, setCall] = useState<Call | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -34,27 +36,22 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-
     try {
       const [callResponse, transcriptResponse] = await Promise.all([
         fetch(`${API_BASE_URL}/calls/${params.id}`),
         fetch(`${API_BASE_URL}/calls/${params.id}/transcript`),
       ]);
-
       if (!callResponse.ok) {
-        setError("Call not found");
+        setError("Call not found.");
         return;
       }
-
-      const callData = await callResponse.json();
-      setCall(callData);
-
+      setCall(await callResponse.json());
       if (transcriptResponse.ok) {
         const transcriptData = await transcriptResponse.json();
         setSegments(transcriptData.segments || []);
       }
     } catch {
-      setError("Failed to load call");
+      setError("Failed to load call.");
     } finally {
       setLoading(false);
     }
@@ -64,27 +61,26 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     load();
   }, [load]);
 
-  const transcribe = async () => {
-    if (!call || call.status === "transcribed" || transcribing) {
-      return;
-    }
+  useEffect(() => {
+    if (call?.status !== "transcription_pending") return;
+    const interval = setInterval(() => {
+      load();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [call?.status, load]);
 
+  const transcribe = async () => {
+    if (!call || call.status === "transcribed" || transcribing) return;
     try {
       setError(null);
       setTranscribing(true);
-      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/transcribe`, {
-        method: "POST",
-      });
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/transcribe`, { method: "POST" });
       if (!response.ok) {
         let detail = "Failed to enqueue transcription.";
         try {
           const data = await response.json();
-          if (typeof data?.detail === "string" && data.detail) {
-            detail = data.detail;
-          }
-        } catch {
-          // Ignore JSON parsing errors and use fallback message.
-        }
+          if (typeof data?.detail === "string" && data.detail) detail = data.detail;
+        } catch {}
         setError(`Transcribe request failed: ${detail}`);
         return;
       }
@@ -97,48 +93,59 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   };
 
   const isTranscribed = call?.status === "transcribed";
+  const pendingState = useMemo(
+    () => call?.status === "transcription_pending" || transcribing,
+    [call?.status, transcribing],
+  );
 
   return (
-    <main style={{ padding: 24 }}>
-      <h1>Call Details</h1>
-      <p>
-        <Link href="/calls">Back to Calls</Link>
-      </p>
-      <button onClick={load} style={{ marginRight: 8 }}>
-        Refresh
-      </button>
-      <button
-        onClick={transcribe}
-        disabled={!call || loading || transcribing || isTranscribed}
-        style={isTranscribed ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
-      >
-        {transcribing ? "Transcribing..." : "Transcribe"}
-      </button>
-      {error && <p>{error}</p>}
-      {loading && <p>Loading...</p>}
-      {call && (
-        <div>
-          <p>ID: {call.id}</p>
-          <p>Filename: {call.filename}</p>
-          <p>Status: {call.status}</p>
-          <p>Created: {call.created_at || "-"}</p>
-          <p>File size: {call.file_size_bytes != null ? `${call.file_size_bytes} bytes` : "-"}</p>
-          <p>Content type: {call.content_type || "-"}</p>
+    <div className="grid" style={{ gap: 16 }}>
+      <p style={{ margin: 0 }}><Link href="/calls">← Back to Calls</Link></p>
 
-          <h3>Transcript Segments</h3>
-          {segments.length === 0 ? (
-            <p>No transcript segments yet.</p>
-          ) : (
-            <ul>
-              {segments.map((segment) => (
-                <li key={segment.id}>
-                  [{segment.start_ms}ms - {segment.end_ms}ms] <strong>{segment.speaker}</strong>: {segment.text}
-                </li>
-              ))}
-            </ul>
-          )}
+      <section className="card">
+        <div className="actions" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ margin: 0 }}>Call #{call?.id ?? params.id}</h2>
+          {call?.status && <span className={`badge badge-${call.status}`}>{call.status.replaceAll("_", " ")}</span>}
         </div>
-      )}
-    </main>
+
+        <div className="actions" style={{ marginTop: 14 }}>
+          <button className="button button-secondary" onClick={load}>Refresh</button>
+          <button className="button" onClick={transcribe} disabled={!call || loading || transcribing || isTranscribed}>
+            {transcribing ? "Transcribing..." : "Transcribe"}
+          </button>
+        </div>
+
+        {pendingState && <p className="message">Transcription is in progress. Auto-refreshing every 2 seconds.</p>}
+        {error && <p className="message message-error">{error}</p>}
+        {loading && <p>Loading...</p>}
+
+        {call && (
+          <div className="meta-grid" style={{ marginTop: 10 }}>
+            <div className="meta-item"><small>Filename</small>{call.filename}</div>
+            <div className="meta-item"><small>Created</small>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>File size</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
+            <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h3 style={{ marginTop: 0 }}>Transcript segments</h3>
+        {segments.length === 0 ? (
+          <p>No transcript segments yet.</p>
+        ) : (
+          <div className="grid">
+            {segments.map((segment) => (
+              <article key={segment.id} className="segment">
+                <small>
+                  {msToSeconds(segment.start_ms)} - {msToSeconds(segment.end_ms)} • {segment.speaker}
+                </small>
+                <p>{segment.text}</p>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
