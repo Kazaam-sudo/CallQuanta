@@ -87,6 +87,7 @@ Services started by Compose:
 - **API unavailable at startup**: wait for `CallQuanta API started` in logs, then retry `/health`.
 - **Ollama image pull is slow**: first boot may take longer because the container image is large.
 - **`No module named '...'` in `stt-worker` (faster-whisper mode)**: rebuild the worker image so updated Python dependencies are installed: `docker compose build stt-worker && docker compose up -d stt-worker`.
+- **`No such file or directory: /app/uploads/...` in `stt-worker` (faster-whisper mode)**: ensure `stt-worker` mounts the `api_uploads` volume at `/app/uploads` (read-only) so worker paths match `call.stored_path`.
 
 
 ## Manual testing in Codespaces

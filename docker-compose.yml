@@ -62,6 +62,8 @@ services:
     depends_on:
       - redis
       - api
+    volumes:
+      - api_uploads:/app/uploads:ro
 
   qa-worker:
     build: ./workers/qa-worker
