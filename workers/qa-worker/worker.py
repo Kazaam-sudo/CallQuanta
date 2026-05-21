@@ -238,6 +238,13 @@ def process_qa_job(call_id: int) -> None:
                         evidence=finding["evidence"],
                     )
                 )
+            db.add(
+                QAFinding(
+                    qa_review_id=qa_review.id,
+                    severity="info",
+                    evidence=f"Analysis mode: {QA_MODE}",
+                )
+            )
 
             call.status = "analyzed"
             db.commit()

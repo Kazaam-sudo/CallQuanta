@@ -66,7 +66,9 @@ services:
       - api_uploads:/app/uploads:ro
 
   qa-worker:
-    build: ./workers/qa-worker
+    build:
+      context: .
+      dockerfile: workers/qa-worker/Dockerfile
     env_file: .env
     depends_on:
       - redis
