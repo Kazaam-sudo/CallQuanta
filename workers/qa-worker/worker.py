@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+from typing import Any
 
 import redis
 import requests
@@ -47,7 +48,16 @@ def placeholder_review() -> dict:
     }
 
 
-def llm_review(transcript_text: str) -> dict:
+def format_transcript(segments: list[TranscriptSegment]) -> str:
+    lines = []
+    for segment in segments:
+        start_s = segment.start_ms / 1000
+        end_s = segment.end_ms / 1000
+        lines.append(f"[{start_s:.2f}s-{end_s:.2f}s] {segment.speaker}: {segment.text}")
+    return "\n".join(lines)
+
+
+def llm_review(transcript_text: str) -> dict[str, Any]:
     if LLM_PROVIDER != "openai_compatible":
         raise ValueError(f"unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
@@ -63,8 +73,11 @@ def llm_review(transcript_text: str) -> dict:
             {
                 "role": "system",
                 "content": (
-                    "Return strict JSON with keys score (0-100 number), summary (string), "
-                    "and findings (array of objects with severity info|warning|critical and evidence string)."
+                    "You are a QA analyzer for sales/support call transcripts. "
+                    "Return JSON only (no markdown, no extra text). "
+                    "Required schema: {\"score\": number 0-100, \"summary\": string, \"findings\": array}. "
+                    "Each finding object must include \"severity\" (info|warning|critical) and \"evidence\" (string). "
+                    "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible."
                 ),
             },
             {"role": "user", "content": transcript_text},
@@ -75,23 +88,39 @@ def llm_review(transcript_text: str) -> dict:
     response.raise_for_status()
     data = response.json()
     content = data["choices"][0]["message"]["content"]
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        print(f"failed to parse LLM JSON response: {exc}")
+        print(f"raw LLM response: {content}")
+        raise
     return parsed
 
 
-def validate_review(review: dict) -> dict:
-    score = int(review["score"])
-    summary = str(review["summary"]).strip()
+def validate_review(review: dict[str, Any]) -> dict[str, Any]:
+    score = review.get("score")
+    if not isinstance(score, (int, float)):
+        raise ValueError("score must be a number")
+
+    summary = review.get("summary")
+    if not isinstance(summary, str):
+        raise ValueError("summary must be a string")
+    summary = summary.strip()
+
     findings = review.get("findings", [])
     if not isinstance(findings, list):
         raise ValueError("findings must be a list")
+
     normalized_findings = []
     for finding in findings:
-        severity = str(finding["severity"]).strip().lower()
-        evidence = str(finding["evidence"]).strip()
+        if not isinstance(finding, dict):
+            continue
+        severity = str(finding.get("severity", "warning")).strip().lower()
+        evidence = str(finding.get("evidence", "")).strip()
         if severity not in {"info", "warning", "critical"}:
-            raise ValueError(f"invalid severity: {severity}")
+            severity = "warning"
         normalized_findings.append({"severity": severity, "evidence": evidence})
+
     return {"score": score, "summary": summary, "findings": normalized_findings}
 
 
@@ -113,7 +142,7 @@ def process_qa_job(call_id: int) -> None:
             print(f"call {call_id} has no transcript segments")
             return
 
-        transcript_text = "\n".join([f"{segment.speaker}: {segment.text}" for segment in segments])
+        transcript_text = format_transcript(segments)
 
         try:
             raw_review = placeholder_review() if QA_MODE == "placeholder" else llm_review(transcript_text)

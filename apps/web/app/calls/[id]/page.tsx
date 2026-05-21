@@ -128,6 +128,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const isTranscribed = call?.status === "transcribed";
   const pendingState = useMemo(() => call?.status === "transcription_pending" || transcribing, [call?.status, transcribing]);
   const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || analyzing, [call?.status, analyzing]);
+  const canAnalyzeAgain = call?.status === "analyzed" || call?.status === "analysis_failed";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -145,13 +146,17 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             {transcribing ? "Transcribing..." : "Transcribe"}
           </button>
           <button className="button" onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>
-            {analysisPendingState ? "Analyzing..." : "Analyze"}
+            {analysisPendingState ? "Analyzing..." : canAnalyzeAgain ? "Analyze again" : "Analyze"}
           </button>
         </div>
 
         {pendingState && <p className="message">Transcription is in progress. Auto-refreshing every 2 seconds.</p>}
         {analysisPendingState && <p className="message">QA analysis is in progress. Auto-refreshing every 2 seconds.</p>}
-        {call?.status === "analysis_failed" && <p className="message message-error">QA analysis failed. Please retry.</p>}
+        {call?.status === "analysis_failed" && (
+          <p className="message message-error">
+            QA analysis failed. The worker could not produce a valid review. Please check worker logs and try again.
+          </p>
+        )}
         {error && <p className="message message-error">{error}</p>}
         {loading && <p>Loading...</p>}
 
@@ -167,7 +172,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
       <section className="card">
         <h3 style={{ marginTop: 0 }}>QA Review</h3>
-        {!review ? <p>No QA review yet.</p> : (
+        {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
             <div><strong>Summary:</strong> {review.summary}</div>
