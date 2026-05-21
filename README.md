@@ -128,3 +128,27 @@ Services started by Compose:
 - In faster-whisper mode, the worker lazily loads the model once per process and reuses it for later jobs.
 - On worker errors, the call status is updated to `failed`.
 - `GET /calls/{id}/transcript` returns transcript segments ordered by start time.
+
+
+## v0.5.0 QA analysis flow
+
+- Added Redis-backed QA analysis pipeline: `POST /calls/{id}/analyze` enqueues a job and `qa-worker` persists QA review data.
+- Added `GET /calls/{id}/qa` endpoint to fetch the latest QA review (score, summary, findings).
+- Added web Analyze flow in call details with pending/failed states and QA review rendering.
+
+### QA modes
+
+- `QA_MODE=placeholder` (default): deterministic CI-safe review output.
+- `QA_MODE=openai_compatible`: sends transcript text to a chat-completions compatible LLM endpoint and expects strict JSON.
+
+Example OpenAI-compatible configuration (Ollama):
+
+```env
+QA_MODE=openai_compatible
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=http://ollama:11434/v1
+LLM_MODEL=llama3.1:8b
+LLM_API_KEY=
+```
+
+CI uses placeholder QA mode for deterministic and fast smoke tests.

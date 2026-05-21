@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, TranscriptSegment
+from .db import Base, Call, QAFinding, QAReview, TranscriptSegment
 
 app = FastAPI(title="CallQuanta API", version="0.3.3")
 logger = logging.getLogger("callquanta.api")
@@ -21,6 +21,7 @@ DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callqua
 DATABASE_URL = os.environ.get("DATABASE_URL", DATABASE_URL)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs")
+QA_QUEUE = os.environ.get("QA_QUEUE", "qa_jobs")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
@@ -175,8 +176,46 @@ def get_call_transcript(call_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/calls/{call_id}/analyze")
-def analyze_call(call_id: int) -> dict:
+def analyze_call(call_id: int, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
+    if not has_segments:
+        raise HTTPException(status_code=400, detail="Call has no transcript segments")
+
+    call.status = "analysis_pending"
+    db.commit()
+
+    redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
     return {"call_id": call_id, "status": "analysis_queued"}
+
+
+@app.get("/calls/{call_id}/qa")
+def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    review = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.id.desc())).scalars().first()
+    if not review:
+        return {"call_id": call_id, "status": call.status, "review": None}
+
+    findings = db.execute(
+        select(QAFinding).where(QAFinding.qa_review_id == review.id).order_by(QAFinding.id.asc())
+    ).scalars().all()
+
+    return {
+        "call_id": call_id,
+        "status": call.status,
+        "review": {
+            "id": review.id,
+            "score": review.score,
+            "summary": review.summary,
+            "findings": [{"id": finding.id, "severity": finding.severity, "evidence": finding.evidence} for finding in findings],
+        },
+    }
 
 
 @app.get("/settings/providers")

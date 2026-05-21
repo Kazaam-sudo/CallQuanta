@@ -22,6 +22,9 @@ type TranscriptSegment = {
   text: string;
 };
 
+type QAFinding = { id: number; severity: string; evidence: string };
+type QAReview = { id: number; score: number; summary: string; findings: QAFinding[] };
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
@@ -29,17 +32,20 @@ const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
 export default function CallDetailsPage({ params }: { params: { id: string } }) {
   const [call, setCall] = useState<Call | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [review, setReview] = useState<QAReview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [callResponse, transcriptResponse] = await Promise.all([
+      const [callResponse, transcriptResponse, qaResponse] = await Promise.all([
         fetch(`${API_BASE_URL}/calls/${params.id}`),
         fetch(`${API_BASE_URL}/calls/${params.id}/transcript`),
+        fetch(`${API_BASE_URL}/calls/${params.id}/qa`),
       ]);
       if (!callResponse.ok) {
         setError("Call not found.");
@@ -49,6 +55,10 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       if (transcriptResponse.ok) {
         const transcriptData = await transcriptResponse.json();
         setSegments(transcriptData.segments || []);
+      }
+      if (qaResponse.ok) {
+        const qaData = await qaResponse.json();
+        setReview(qaData.review || null);
       }
     } catch {
       setError("Failed to load call.");
@@ -62,7 +72,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   }, [load]);
 
   useEffect(() => {
-    if (call?.status !== "transcription_pending") return;
+    if (call?.status !== "transcription_pending" && call?.status !== "analysis_pending") return;
     const interval = setInterval(() => {
       load();
     }, 2000);
@@ -92,11 +102,32 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     }
   };
 
+  const analyze = async () => {
+    if (!call || analyzing || segments.length === 0 || call.status === "analysis_pending") return;
+    try {
+      setError(null);
+      setAnalyzing(true);
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/analyze`, { method: "POST" });
+      if (!response.ok) {
+        let detail = "Failed to enqueue analysis.";
+        try {
+          const data = await response.json();
+          if (typeof data?.detail === "string" && data.detail) detail = data.detail;
+        } catch {}
+        setError(`Analyze request failed: ${detail}`);
+        return;
+      }
+      await load();
+    } catch {
+      setError("Analyze request failed: Network error.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const isTranscribed = call?.status === "transcribed";
-  const pendingState = useMemo(
-    () => call?.status === "transcription_pending" || transcribing,
-    [call?.status, transcribing],
-  );
+  const pendingState = useMemo(() => call?.status === "transcription_pending" || transcribing, [call?.status, transcribing]);
+  const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || analyzing, [call?.status, analyzing]);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -113,9 +144,14 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           <button className="button" onClick={transcribe} disabled={!call || loading || transcribing || isTranscribed}>
             {transcribing ? "Transcribing..." : "Transcribe"}
           </button>
+          <button className="button" onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>
+            {analysisPendingState ? "Analyzing..." : "Analyze"}
+          </button>
         </div>
 
         {pendingState && <p className="message">Transcription is in progress. Auto-refreshing every 2 seconds.</p>}
+        {analysisPendingState && <p className="message">QA analysis is in progress. Auto-refreshing every 2 seconds.</p>}
+        {call?.status === "analysis_failed" && <p className="message message-error">QA analysis failed. Please retry.</p>}
         {error && <p className="message message-error">{error}</p>}
         {loading && <p>Loading...</p>}
 
@@ -125,6 +161,24 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             <div className="meta-item"><small>Created</small>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</div>
             <div className="meta-item"><small>File size</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
             <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h3 style={{ marginTop: 0 }}>QA Review</h3>
+        {!review ? <p>No QA review yet.</p> : (
+          <div className="grid" style={{ gap: 10 }}>
+            <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
+            <div><strong>Summary:</strong> {review.summary}</div>
+            <div>
+              <strong>Findings:</strong>
+              <ul>
+                {review.findings.map((finding) => (
+                  <li key={finding.id}><span className={`badge badge-${finding.severity}`}>{finding.severity}</span> {finding.evidence}</li>
+                ))}
+              </ul>
+            </div>
           </div>
         )}
       </section>
