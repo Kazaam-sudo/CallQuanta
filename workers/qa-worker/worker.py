@@ -3,10 +3,12 @@
 import json
 import os
 import signal
+from pathlib import Path
 from typing import Any
 
 import redis
 import requests
+import yaml
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 
@@ -20,6 +22,7 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai_compatible")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -34,17 +37,49 @@ def handle_shutdown(signum, frame):
     running = False
 
 
-def placeholder_review() -> dict:
-    return {
-        "score": 82,
-        "summary": "Placeholder QA review based on available transcript segments.",
-        "findings": [
-            {"severity": "info", "evidence": "Greeting and offer were detected in the transcript."},
+def load_scorecard() -> dict[str, Any]:
+    with SCORECARD_PATH.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict) or not isinstance(data.get("criteria"), list):
+        raise ValueError("invalid scorecard format")
+    return data
+
+
+def placeholder_review(scorecard: dict[str, Any]) -> dict:
+    criteria = []
+    findings = []
+    for criterion in scorecard["criteria"]:
+        max_points = int(criterion["max_points"])
+        score = max(max_points - 2, 0)
+        criteria.append(
             {
-                "severity": "warning",
-                "evidence": "No objection handling could be verified in placeholder mode.",
-            },
-        ],
+                "id": criterion["id"],
+                "title": criterion["title"],
+                "score": score,
+                "max_points": max_points,
+                "comment": "Placeholder evaluation: deterministic criterion assessment for CI-safe mode.",
+                "evidence": f"Criterion {criterion['title']} reviewed in placeholder mode.",
+                "severity": "info",
+            }
+        )
+        if criterion["id"] == "objection_handling":
+            findings.append(
+                {
+                    "severity": "warning",
+                    "evidence": "Placeholder mode cannot verify nuanced objection handling behavior.",
+                }
+            )
+
+    total_score = sum(item["score"] for item in criteria)
+    total_max = sum(item["max_points"] for item in criteria) or 1
+    normalized_score = round((total_score / total_max) * 100, 2)
+    findings.append({"severity": "info", "evidence": "Analysis mode: placeholder (deterministic)."})
+
+    return {
+        "score": normalized_score,
+        "summary": "Placeholder QA review generated from default sales scorecard criteria.",
+        "criteria": criteria,
+        "findings": findings,
     }
 
 
@@ -57,7 +92,7 @@ def format_transcript(segments: list[TranscriptSegment]) -> str:
     return "\n".join(lines)
 
 
-def llm_review(transcript_text: str) -> dict[str, Any]:
+def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any]:
     if LLM_PROVIDER != "openai_compatible":
         raise ValueError(f"unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
@@ -75,12 +110,13 @@ def llm_review(transcript_text: str) -> dict[str, Any]:
                 "content": (
                     "You are a QA analyzer for sales/support call transcripts. "
                     "Return JSON only (no markdown, no extra text). "
-                    "Required schema: {\"score\": number 0-100, \"summary\": string, \"findings\": array}. "
-                    "Each finding object must include \"severity\" (info|warning|critical) and \"evidence\" (string). "
+                    "Required schema: {\"score\": number, \"summary\": string, \"criteria\": array, \"findings\": array}. "
+                    "Each criteria item must include id, title, score, max_points, comment, evidence, severity (info|warning|critical). "
+                    "Each finding object must include severity (info|warning|critical) and evidence (string). "
                     "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible."
                 ),
             },
-            {"role": "user", "content": transcript_text},
+            {"role": "user", "content": json.dumps({"scorecard": scorecard, "transcript": transcript_text})},
         ],
     }
 
@@ -107,6 +143,29 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("summary must be a string")
     summary = summary.strip()
 
+    criteria = review.get("criteria", [])
+    if not isinstance(criteria, list):
+        raise ValueError("criteria must be a list")
+
+    normalized_criteria = []
+    for criterion in criteria:
+        if not isinstance(criterion, dict):
+            continue
+        severity = str(criterion.get("severity", "warning")).strip().lower()
+        if severity not in {"info", "warning", "critical"}:
+            severity = "warning"
+        normalized_criteria.append(
+            {
+                "id": str(criterion.get("id", "")).strip(),
+                "title": str(criterion.get("title", "")).strip(),
+                "score": float(criterion.get("score", 0)),
+                "max_points": float(criterion.get("max_points", 0)),
+                "comment": str(criterion.get("comment", "")).strip(),
+                "evidence": str(criterion.get("evidence", "")).strip(),
+                "severity": severity,
+            }
+        )
+
     findings = review.get("findings", [])
     if not isinstance(findings, list):
         raise ValueError("findings must be a list")
@@ -121,7 +180,7 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
             severity = "warning"
         normalized_findings.append({"severity": severity, "evidence": evidence})
 
-    return {"score": score, "summary": summary, "findings": normalized_findings}
+    return {"score": score, "summary": summary, "criteria": normalized_criteria, "findings": normalized_findings}
 
 
 def process_qa_job(call_id: int) -> None:
@@ -145,7 +204,8 @@ def process_qa_job(call_id: int) -> None:
         transcript_text = format_transcript(segments)
 
         try:
-            raw_review = placeholder_review() if QA_MODE == "placeholder" else llm_review(transcript_text)
+            scorecard = load_scorecard()
+            raw_review = placeholder_review(scorecard) if QA_MODE == "placeholder" else llm_review(transcript_text, scorecard)
             review = validate_review(raw_review)
 
             existing_reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id)).scalars().all()
@@ -157,6 +217,19 @@ def process_qa_job(call_id: int) -> None:
             db.add(qa_review)
             db.flush()
 
+            for criterion in review["criteria"]:
+                db.add(
+                    QAFinding(
+                        qa_review_id=qa_review.id,
+                        severity=criterion["severity"],
+                        evidence=(
+                            f"[criterion:{criterion['id']}] {criterion['title']} "
+                            f"{criterion['score']}/{criterion['max_points']}: "
+                            f"{criterion['comment']} | evidence: {criterion['evidence']}"
+                        ),
+                    )
+                )
+
             for finding in review["findings"]:
                 db.add(
                     QAFinding(
@@ -165,6 +238,13 @@ def process_qa_job(call_id: int) -> None:
                         evidence=finding["evidence"],
                     )
                 )
+            db.add(
+                QAFinding(
+                    qa_review_id=qa_review.id,
+                    severity="info",
+                    evidence=f"Analysis mode: {QA_MODE}",
+                )
+            )
 
             call.status = "analyzed"
             db.commit()

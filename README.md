@@ -130,16 +130,23 @@ Services started by Compose:
 - `GET /calls/{id}/transcript` returns transcript segments ordered by start time.
 
 
-## v0.5.0 QA analysis flow
+## v0.6.0 QA analysis flow (scorecard-driven)
 
 - Added Redis-backed QA analysis pipeline: `POST /calls/{id}/analyze` enqueues a job and `qa-worker` persists QA review data.
 - Added `GET /calls/{id}/qa` endpoint to fetch the latest QA review (score, summary, findings).
 - Added web Analyze flow in call details with pending/failed states and QA review rendering.
+- Added default scorecard file: `packages/scorecards/default_sales_qa.yaml`.
+- QA analysis now evaluates calls against explicit criteria (greeting, discovery, relevance, objection handling, compliance, closing, and tone) and returns structured JSON.
+- Local open-source LLM mode (`openai_compatible` with Ollama or similar) now receives both the transcript and scorecard criteria in the prompt, improving specificity and consistency.
 
 ### QA modes
 
-- `QA_MODE=placeholder` (default): deterministic CI-safe review output.
-- `QA_MODE=openai_compatible`: sends transcript text to a chat-completions compatible LLM endpoint and expects strict JSON.
+- `QA_MODE=placeholder` (default): deterministic CI-safe criteria-based review output using the default sales scorecard.
+- `QA_MODE=openai_compatible`: sends transcript plus scorecard criteria to a chat-completions compatible LLM endpoint and expects strict JSON:
+  - `score`
+  - `summary`
+  - `criteria[]` (`id`, `title`, `score`, `max_points`, `comment`, `evidence`, `severity`)
+  - `findings[]` (`severity`, `evidence`)
 
 Example OpenAI-compatible configuration (Ollama):
 

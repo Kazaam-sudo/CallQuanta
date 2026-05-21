@@ -1,0 +1,48 @@
+name: Default Sales QA Scorecard
+version: 0.6.0
+criteria:
+  - id: greeting_introduction
+    title: Greeting and introduction
+    description: Agent opens the call politely, introduces themselves, and sets a professional tone.
+    max_points: 10
+    evaluation_guidance: Look for a clear greeting, self-introduction, and respectful opening language in the first part of the call.
+  - id: company_product_identification
+    title: Company/product identification
+    description: Agent clearly identifies the company and the product/service context.
+    max_points: 10
+    evaluation_guidance: Verify whether the agent names the organization and explains what product or service is being discussed.
+  - id: needs_discovery
+    title: Needs discovery
+    description: Agent asks discovery questions to understand customer goals, pain points, and constraints.
+    max_points: 15
+    evaluation_guidance: Award higher scores when the agent asks multiple relevant open-ended questions and confirms understanding.
+  - id: offer_clarity
+    title: Offer clarity
+    description: Agent explains the offer, terms, and expected outcomes in plain language.
+    max_points: 10
+    evaluation_guidance: Check whether the customer can reasonably understand what is being offered and what happens next.
+  - id: relevance_of_offer
+    title: Relevance of offer
+    description: Agent tailors the offer to the customer's stated needs and context.
+    max_points: 10
+    evaluation_guidance: Give higher scores when recommendations are linked to specific customer statements.
+  - id: objection_handling
+    title: Objection handling
+    description: Agent addresses objections or concerns with empathy, facts, and alternatives.
+    max_points: 15
+    evaluation_guidance: Look for acknowledgment of concerns, direct responses, and attempts to resolve blockers.
+  - id: compliance_risk_language
+    title: Compliance/risk language
+    description: Agent avoids risky claims and uses compliant language for commitments, pricing, and guarantees.
+    max_points: 10
+    evaluation_guidance: Flag unsupported promises, misleading language, or missing disclosures where relevant.
+  - id: closing_next_step
+    title: Closing / next step
+    description: Agent summarizes outcome and confirms an actionable next step.
+    max_points: 10
+    evaluation_guidance: Look for clear close behavior such as confirmation, follow-up plan, or explicit call-to-action.
+  - id: customer_experience_tone
+    title: Customer experience tone
+    description: Agent maintains professional, empathetic, and customer-centric tone throughout the call.
+    max_points: 10
+    evaluation_guidance: Assess politeness, listening behavior, interruptions, and overall conversational quality.
