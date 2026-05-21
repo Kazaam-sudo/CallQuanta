@@ -143,12 +143,16 @@ Services started by Compose:
 
 Example OpenAI-compatible configuration (Ollama):
 
+1. Pull a local model in the Ollama container:
+   `docker compose exec ollama ollama pull <model>`
+2. Configure QA worker environment:
+
 ```env
 QA_MODE=openai_compatible
 LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=http://ollama:11434/v1
-LLM_MODEL=llama3.1:8b
+LLM_MODEL=<model>
 LLM_API_KEY=
 ```
 
-CI uses placeholder QA mode for deterministic and fast smoke tests.
+CI uses `QA_MODE=placeholder` for deterministic and fast smoke tests.
