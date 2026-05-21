@@ -160,6 +160,19 @@ LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=http://ollama:11434/v1
 LLM_MODEL=<model>
 LLM_API_KEY=
+LLM_TIMEOUT_SECONDS=180
+OLLAMA_KEEP_ALIVE=-1
 ```
+
+Local Ollama CPU inference can be slow, especially with larger scorecard prompts. If QA analysis fails with timeout errors, increase `LLM_TIMEOUT_SECONDS` (default `180`).
+
+Model guidance:
+- Use `qwen2.5:0.5b` for fast smoke tests on constrained machines/Codespaces.
+- Use `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.1:8b` for higher-quality analysis on stronger hardware.
+
+Warm-up recommendation:
+1. Pull your model: `docker compose exec ollama ollama pull <model>`
+2. Run a quick generation before analysis so weights are loaded: `docker compose exec ollama ollama run <model> "ready"`
+3. Optionally set `OLLAMA_KEEP_ALIVE=-1` to keep the model loaded during repeated test runs.
 
 CI uses `QA_MODE=placeholder` for deterministic and fast smoke tests.
