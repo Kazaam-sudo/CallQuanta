@@ -24,6 +24,23 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
 
+
+def get_llm_timeout_seconds() -> float:
+    raw = os.environ.get("LLM_TIMEOUT_SECONDS", "180")
+    try:
+        timeout_seconds = float(raw)
+    except (TypeError, ValueError):
+        print(f"invalid LLM_TIMEOUT_SECONDS={raw!r}; using default 180 seconds")
+        return 180.0
+
+    if timeout_seconds <= 0:
+        print(f"LLM_TIMEOUT_SECONDS must be > 0; got {timeout_seconds}. using default 180 seconds")
+        return 180.0
+
+    return timeout_seconds
+
+LLM_TIMEOUT_SECONDS = get_llm_timeout_seconds()
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -120,7 +137,21 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
         ],
     }
 
-    response = requests.post(f"{LLM_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=60)
+    try:
+        response = requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout as exc:
+        print(
+            "LLM request timed out after "
+            f"{LLM_TIMEOUT_SECONDS:g} seconds. Try a smaller model, increase "
+            "LLM_TIMEOUT_SECONDS, or use placeholder mode."
+        )
+        raise RuntimeError("LLM request timeout") from exc
+
     response.raise_for_status()
     data = response.json()
     content = data["choices"][0]["message"]["content"]
