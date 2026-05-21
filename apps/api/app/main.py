@@ -206,6 +206,34 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
         select(QAFinding).where(QAFinding.qa_review_id == review.id).order_by(QAFinding.id.asc())
     ).scalars().all()
 
+    criteria = []
+    findings_payload = []
+    mode = "unknown"
+    for finding in findings:
+        evidence = finding.evidence or ""
+        if evidence.startswith("[criterion:"):
+            prefix, _, detail = evidence.partition("] ")
+            criterion_id = prefix.replace("[criterion:", "").strip()
+            title_score, _, tail = detail.partition(": ")
+            title, _, score_text = title_score.rpartition(" ")
+            comment, _, criterion_evidence = tail.partition(" | evidence: ")
+            score_value, _, max_points = score_text.partition("/")
+            criteria.append(
+                {
+                    "id": criterion_id,
+                    "title": title.strip(),
+                    "score": score_value.strip(),
+                    "max_points": max_points.strip(),
+                    "comment": comment.strip(),
+                    "evidence": criterion_evidence.strip(),
+                    "severity": finding.severity,
+                }
+            )
+            continue
+        if evidence.lower().startswith("analysis mode:"):
+            mode = evidence.split(":", 1)[1].strip()
+        findings_payload.append({"id": finding.id, "severity": finding.severity, "evidence": evidence})
+
     return {
         "call_id": call_id,
         "status": call.status,
@@ -213,7 +241,9 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
             "id": review.id,
             "score": review.score,
             "summary": review.summary,
-            "findings": [{"id": finding.id, "severity": finding.severity, "evidence": finding.evidence} for finding in findings],
+            "mode": mode,
+            "criteria": criteria,
+            "findings": findings_payload,
         },
     }
 

@@ -23,7 +23,16 @@ type TranscriptSegment = {
 };
 
 type QAFinding = { id: number; severity: string; evidence: string };
-type QAReview = { id: number; score: number; summary: string; findings: QAFinding[] };
+type QACriterion = {
+  id: string;
+  title: string;
+  score: number | string;
+  max_points: number | string;
+  comment: string;
+  evidence: string;
+  severity: string;
+};
+type QAReview = { id: number; score: number; summary: string; mode?: string; criteria: QACriterion[]; findings: QAFinding[] };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -175,7 +184,20 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
+            <div><strong>Analysis mode:</strong> {review.mode || "unknown"}</div>
             <div><strong>Summary:</strong> {review.summary}</div>
+            <div>
+              <strong>Criteria breakdown:</strong>
+              <ul>
+                {review.criteria?.map((criterion) => (
+                  <li key={criterion.id}>
+                    <span className={`badge badge-${criterion.severity}`}>{criterion.severity}</span>{" "}
+                    <strong>{criterion.title}</strong> ({criterion.score}/{criterion.max_points}) — {criterion.comment}
+                    {criterion.evidence ? ` Evidence: ${criterion.evidence}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
             <div>
               <strong>Findings:</strong>
               <ul>
