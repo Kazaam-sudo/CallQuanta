@@ -147,14 +147,22 @@ Services started by Compose:
 - QA analysis now prefers resilient fallback reviews over `analysis_failed` for model-output issues; infrastructure failures (LLM unavailable, timeouts, DB issues, missing transcript) still fail analysis.
 - The QA UI now shows stronger criterion evidence and warnings when a review was partially recovered from imperfect model output.
 
+## v0.6.3 weak local model compatibility improvements
+
+- CallQuanta now maps model-provided criterion `index` values (1-based) to scorecard criteria order for deterministic local-model compatibility.
+- The app owns criterion `id`, `title`, and `max_points` from `packages/scorecards/default_sales_qa.yaml`; models only provide per-criterion scoring/comment/evidence/severity.
+- `qa-worker` accepts both legacy `criteria[]` format and new `criteria_scores[]` format for backward compatibility.
+- If a model returns summary/findings but no usable per-criterion scores, CallQuanta keeps analysis successful, fills fallback criterion rows, and records a warning: "Model did not return usable per-criterion scores."
+- QA score continues to be computed from normalized criteria; model total score is not trusted for persisted scoring.
+
 ### QA modes
 
 - `QA_MODE=placeholder` (default): deterministic CI-safe criteria-based review output using the default sales scorecard.
-- `QA_MODE=openai_compatible`: sends transcript plus scorecard criteria to a chat-completions compatible LLM endpoint and expects strict JSON:
-  - `score`
+- `QA_MODE=openai_compatible`: sends transcript plus a numbered scorecard list to a chat-completions compatible LLM endpoint and expects strict JSON:
   - `summary`
-  - `criteria[]` (`id`, `title`, `score`, `max_points`, `comment`, `evidence`, `severity`)
+  - `criteria_scores[]` (`index`, `score`, `comment`, `evidence`, `severity`)
   - `findings[]` (`severity`, `evidence`)
+  - Legacy `criteria[]` responses are still accepted.
 
 Example OpenAI-compatible configuration (Ollama):
 
@@ -176,7 +184,8 @@ Local Ollama CPU inference can be slow, especially with larger scorecard prompts
 
 Model guidance:
 - Use `qwen2.5:0.5b` only for fast smoke tests on constrained machines/Codespaces.
-- Use `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.1:8b` for higher-quality analysis on stronger hardware.
+- Use `qwen2.5:1.5b` as the minimum local QA test model.
+- Use `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.1:8b` (or stronger) for meaningfully useful QA output on stronger hardware.
 
 Warm-up recommendation:
 1. Pull your model: `docker compose exec ollama ollama pull <model>`
