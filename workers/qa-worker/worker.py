@@ -62,6 +62,28 @@ def load_scorecard() -> dict[str, Any]:
     return data
 
 
+def parse_json_object_from_text(raw_content: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_content)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(raw_content):
+        if char != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(raw_content[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+    raise ValueError("no valid JSON object found in LLM response")
+
+
 def placeholder_review(scorecard: dict[str, Any]) -> dict:
     criteria = []
     findings = []
@@ -156,12 +178,11 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
     data = response.json()
     content = data["choices"][0]["message"]["content"]
     try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
+        return parse_json_object_from_text(content)
+    except ValueError as exc:
         print(f"failed to parse LLM JSON response: {exc}")
         print(f"raw LLM response: {content}")
         raise
-    return parsed
 
 
 def validate_review(review: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +235,89 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
     return {"score": score, "summary": summary, "criteria": normalized_criteria, "findings": normalized_findings}
 
 
+def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[str, Any]:
+    scorecard_map = {
+        str(item["id"]).strip(): {
+            "title": str(item["title"]).strip(),
+            "max_points": float(item["max_points"]),
+        }
+        for item in scorecard["criteria"]
+    }
+    criteria_by_id: dict[str, dict[str, Any]] = {}
+    findings = list(review["findings"])
+
+    for criterion in review["criteria"]:
+        criterion_id = str(criterion.get("id", "")).strip()
+        if criterion_id not in scorecard_map or criterion_id in criteria_by_id:
+            continue
+        source = scorecard_map[criterion_id]
+        max_points = source["max_points"]
+        raw_max_points = criterion.get("max_points", 0)
+        if not isinstance(raw_max_points, (int, float)) or raw_max_points <= 0 or abs(float(raw_max_points) - max_points) > 0.001:
+            raw_max_points = max_points
+        score = criterion.get("score", 0)
+        if not isinstance(score, (int, float)):
+            score = 0
+        score = max(0.0, min(float(score), float(raw_max_points)))
+        criteria_by_id[criterion_id] = {
+            "id": criterion_id,
+            "title": source["title"],
+            "score": score,
+            "max_points": float(raw_max_points),
+            "comment": criterion.get("comment") or "No clear model comment provided.",
+            "evidence": criterion.get("evidence") or "No clear evidence found in transcript.",
+            "severity": criterion.get("severity") if criterion.get("severity") in {"info", "warning", "critical"} else "warning",
+        }
+
+    normalized_criteria = []
+    for scorecard_item in scorecard["criteria"]:
+        criterion_id = str(scorecard_item["id"]).strip()
+        if criterion_id not in criteria_by_id:
+            normalized_criteria.append(
+                {
+                    "id": criterion_id,
+                    "title": str(scorecard_item["title"]).strip(),
+                    "score": 0.0,
+                    "max_points": float(scorecard_item["max_points"]),
+                    "comment": "No valid model assessment was returned for this criterion.",
+                    "evidence": "No clear evidence found in transcript.",
+                    "severity": "warning",
+                }
+            )
+            continue
+        normalized_criteria.append(criteria_by_id[criterion_id])
+
+    total_score = sum(item["score"] for item in normalized_criteria)
+    total_max = sum(item["max_points"] for item in normalized_criteria) or 1
+    computed_score = round((total_score / total_max) * 100)
+    llm_score = review["score"]
+    if abs(float(llm_score) - float(computed_score)) >= 5:
+        findings.append(
+            {
+                "severity": "warning",
+                "evidence": "LLM total score differed from criteria-derived score; criteria-derived score was used.",
+            }
+        )
+    if computed_score <= 40 and any(token in review["summary"].lower() for token in ["great", "excellent", "strong", "outstanding"]):
+        findings.append(
+            {
+                "severity": "warning",
+                "evidence": "Summary may be inconsistent with the criteria-derived score.",
+            }
+        )
+    return {"score": computed_score, "summary": review["summary"], "criteria": normalized_criteria, "findings": findings}
+
+
+def fallback_review(scorecard: dict[str, Any], parse_error: str) -> dict[str, Any]:
+    review = {
+        "score": 0,
+        "summary": "LLM returned an invalid response; fallback scorecard review generated.",
+        "criteria": [],
+        "findings": [{"severity": "warning", "evidence": f"LLM parse error: {parse_error[:180]}"}],
+    }
+    return normalize_review(review, scorecard)
+
+
 def process_qa_job(call_id: int) -> None:
     with SessionLocal() as db:
         call = db.get(Call, call_id)
@@ -236,8 +340,21 @@ def process_qa_job(call_id: int) -> None:
 
         try:
             scorecard = load_scorecard()
-            raw_review = placeholder_review(scorecard) if QA_MODE == "placeholder" else llm_review(transcript_text, scorecard)
-            review = validate_review(raw_review)
+            if QA_MODE == "placeholder":
+                review = placeholder_review(scorecard)
+            else:
+                try:
+                    raw_review = llm_review(transcript_text, scorecard)
+                    validated = validate_review(raw_review)
+                    review = normalize_review(validated, scorecard)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    review = fallback_review(scorecard, str(exc))
+                    review["findings"].append(
+                        {
+                            "severity": "warning",
+                            "evidence": "This review was partially recovered from an imperfect LLM response.",
+                        }
+                    )
 
             existing_reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id)).scalars().all()
             for existing_review in existing_reviews:

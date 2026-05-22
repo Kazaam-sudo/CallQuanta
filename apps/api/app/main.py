@@ -208,7 +208,7 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
 
     criteria = []
     findings_payload = []
-    mode = "unknown"
+    mode = "placeholder" if os.environ.get("QA_MODE", "placeholder") == "placeholder" else "openai_compatible"
     for finding in findings:
         evidence = finding.evidence or ""
         if evidence.startswith("[criterion:"):
