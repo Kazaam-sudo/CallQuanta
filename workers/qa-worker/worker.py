@@ -140,7 +140,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
         "preset": "env",
         "name": "Environment fallback",
         "base_url": LLM_BASE_URL,
-        "model": provider["model"],
+        "model": LLM_MODEL,
         "api_key": LLM_API_KEY,
         "timeout_seconds": LLM_TIMEOUT_SECONDS,
     }
@@ -169,7 +169,9 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
 
     headers = {"Content-Type": "application/json"}
     if provider.get("api_key"):
-        headers["Authorization"] = f"Bearer {provider["api_key"]}"
+        api_key = provider.get("api_key")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     criteria_lines = []
     for index, criterion in enumerate(scorecard["criteria"], start=1):
@@ -179,7 +181,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
     scorecard_list = "\n".join(criteria_lines)
 
     payload = {
-        "model": provider["model"],
+        "model": LLM_MODEL,
         "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
@@ -210,7 +212,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
 
     try:
         response = requests.post(
-            f"{provider["base_url"]}/chat/completions",
+            f"{provider['base_url']}/chat/completions",
             headers=headers,
             json=payload,
             timeout=provider["timeout_seconds"],
@@ -218,7 +220,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
     except requests.exceptions.Timeout as exc:
         print(
             "LLM request timed out after "
-            f"{provider["timeout_seconds"]:g} seconds. Try a smaller model, increase "
+            f"{provider['timeout_seconds']:g} seconds. Try a smaller model, increase "
             "LLM_TIMEOUT_SECONDS, or use placeholder mode."
         )
         raise RuntimeError("LLM request timeout") from exc
