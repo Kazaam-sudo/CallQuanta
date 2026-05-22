@@ -138,6 +138,13 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const pendingState = useMemo(() => call?.status === "transcription_pending" || transcribing, [call?.status, transcribing]);
   const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || analyzing, [call?.status, analyzing]);
   const canAnalyzeAgain = call?.status === "analyzed" || call?.status === "analysis_failed";
+  const recoveredReview = useMemo(
+    () =>
+      review?.findings?.some((finding) =>
+        finding.evidence.toLowerCase().includes("partially recovered from an imperfect llm response"),
+      ) ?? false,
+    [review],
+  );
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -185,24 +192,39 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
             <div><strong>Analysis mode:</strong> {review.mode || "unknown"}</div>
+            {recoveredReview && (
+              <p className="message message-warning">
+                This review was partially recovered from an imperfect LLM response.
+              </p>
+            )}
             <div><strong>Summary:</strong> {review.summary}</div>
             <div>
               <strong>Criteria breakdown:</strong>
-              <ul>
-                {review.criteria?.map((criterion) => (
-                  <li key={criterion.id}>
-                    <span className={`badge badge-${criterion.severity}`}>{criterion.severity}</span>{" "}
-                    <strong>{criterion.title}</strong> ({criterion.score}/{criterion.max_points}) — {criterion.comment}
-                    {criterion.evidence ? ` Evidence: ${criterion.evidence}` : ""}
-                  </li>
-                ))}
-              </ul>
+              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+                {review.criteria
+                  ?.filter((criterion) => Number(criterion.max_points) > 0)
+                  .map((criterion) => (
+                    <article key={criterion.id} className="segment" style={{ marginBottom: 0 }}>
+                      <div>
+                        <span className={`badge badge-${criterion.severity}`}>{criterion.severity}</span>{" "}
+                        <strong>{criterion.title}</strong>
+                      </div>
+                      <div><strong>Score:</strong> {criterion.score}/{criterion.max_points}</div>
+                      <div><strong>Comment:</strong> {criterion.comment}</div>
+                      <div><strong>Evidence:</strong> {criterion.evidence}</div>
+                    </article>
+                  ))}
+              </div>
             </div>
             <div>
               <strong>Findings:</strong>
               <ul>
                 {review.findings.map((finding) => (
-                  <li key={finding.id}><span className={`badge badge-${finding.severity}`}>{finding.severity}</span> {finding.evidence}</li>
+                  <li key={finding.id}>
+                    <span className={`badge badge-${finding.severity}`}>{finding.severity}</span>{" "}
+                    <strong>{finding.severity === "critical" || finding.severity === "warning" ? "Attention:" : ""}</strong>{" "}
+                    {finding.evidence}
+                  </li>
                 ))}
               </ul>
             </div>

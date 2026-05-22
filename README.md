@@ -139,6 +139,14 @@ Services started by Compose:
 - QA analysis now evaluates calls against explicit criteria (greeting, discovery, relevance, objection handling, compliance, closing, and tone) and returns structured JSON.
 - Local open-source LLM mode (`openai_compatible` with Ollama or similar) now receives both the transcript and scorecard criteria in the prompt, improving specificity and consistency.
 
+## v0.6.2 QA robustness improvements
+
+- Scorecard criteria are now normalized against `packages/scorecards/default_sales_qa.yaml` as the source of truth (criterion id/title/max points), even when local models return partial or malformed criterion rows.
+- Total QA score is now computed from normalized criteria (`sum(score) / sum(max_points) * 100`) and stored as the review score, rather than blindly trusting the model-provided total.
+- CallQuanta now attempts JSON recovery when a local model returns markdown-wrapped output, and it generates a fallback scorecard review when parsing fails.
+- QA analysis now prefers resilient fallback reviews over `analysis_failed` for model-output issues; infrastructure failures (LLM unavailable, timeouts, DB issues, missing transcript) still fail analysis.
+- The QA UI now shows stronger criterion evidence and warnings when a review was partially recovered from imperfect model output.
+
 ### QA modes
 
 - `QA_MODE=placeholder` (default): deterministic CI-safe criteria-based review output using the default sales scorecard.
@@ -167,7 +175,7 @@ OLLAMA_KEEP_ALIVE=-1
 Local Ollama CPU inference can be slow, especially with larger scorecard prompts. If QA analysis fails with timeout errors, increase `LLM_TIMEOUT_SECONDS` (default `180`).
 
 Model guidance:
-- Use `qwen2.5:0.5b` for fast smoke tests on constrained machines/Codespaces.
+- Use `qwen2.5:0.5b` only for fast smoke tests on constrained machines/Codespaces.
 - Use `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.1:8b` for higher-quality analysis on stronger hardware.
 
 Warm-up recommendation:
