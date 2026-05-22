@@ -21,6 +21,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Ensure CI env file
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+
       - name: Validate Python syntax
         run: python -m compileall apps/api workers packages
 
@@ -36,9 +42,7 @@ jobs:
           npm run build
 
       - name: Validate Docker Compose
-        run: |
-          cp .env.example .env
-          docker compose config
+        run: docker compose config
 
       - name: Start local stack
         run: |
@@ -173,8 +177,16 @@ jobs:
 
       - name: Print Docker Compose logs on failure
         if: failure()
-        run: docker compose logs --no-color
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+          docker compose logs --no-color
 
       - name: Shut down containers
         if: always()
-        run: docker compose down -v
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+          docker compose down -v

@@ -193,3 +193,19 @@ Warm-up recommendation:
 3. Optionally set `OLLAMA_KEEP_ALIVE=-1` to keep the model loaded during repeated test runs.
 
 CI uses `QA_MODE=placeholder` for deterministic and fast smoke tests.
+
+
+## LLM Provider Settings (v0.7.0)
+
+- Default is **local Ollama** for privacy-first operation.
+- You can configure hosted providers (OpenAI, Groq, OpenRouter, Gemini, Cloudflare Workers AI, Together, Anthropic-compatible, or custom OpenAI-compatible) in **Settings → LLM**.
+- API keys are stored in local DB config for MVP/dev only; use environment variables or a secret manager for production deployments.
+- Provider test sends a minimal `/chat/completions` request and reports success/failure with latency.
+- QA worker uses active DB provider config first; if none is active, it falls back to env vars (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_TIMEOUT_SECONDS`).
+- Privacy warning: Hosted providers may process transcripts outside your server. Use Ollama for sensitive data.
+
+Recommended starting models:
+- OpenAI: `gpt-5.5` (or lower-cost model of your choice)
+- Groq: `qwen/qwen3-32b`
+- Ollama: `qwen2.5:1.5b` for smoke tests; use 7b/8b+ for better QA quality
+- OpenRouter/Gemini/Cloudflare/Together: use preset defaults, then tune as needed
