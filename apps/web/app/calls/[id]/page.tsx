@@ -203,17 +203,31 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
               <div className="grid" style={{ gap: 8, marginTop: 8 }}>
                 {review.criteria
                   ?.filter((criterion) => Number(criterion.max_points) > 0)
-                  .map((criterion) => (
-                    <article key={criterion.id} className="segment" style={{ marginBottom: 0 }}>
+                  .map((criterion, index) => {
+                    const fallbackGenerated =
+                      criterion.comment === "No valid model assessment was returned for this criterion." ||
+                      criterion.evidence === "No clear evidence found in transcript.";
+                    return (
+                    <article
+                      key={criterion.id}
+                      className="segment"
+                      style={{ marginBottom: 0, borderColor: fallbackGenerated ? "#f59e0b" : undefined }}
+                    >
                       <div>
+                        <span className="badge">#{index + 1}</span>{" "}
                         <span className={`badge badge-${criterion.severity}`}>{criterion.severity}</span>{" "}
                         <strong>{criterion.title}</strong>
                       </div>
-                      <div><strong>Score:</strong> {criterion.score}/{criterion.max_points}</div>
+                      <div><strong>Score:</strong> <strong>{criterion.score}</strong> / <strong>{criterion.max_points}</strong></div>
+                      {fallbackGenerated && (
+                        <div className="message" style={{ marginTop: 8, marginBottom: 8, background: "#fffbeb", color: "#92400e" }}>
+                          Fallback-generated criterion details (model output was incomplete for this criterion).
+                        </div>
+                      )}
                       <div><strong>Comment:</strong> {criterion.comment}</div>
                       <div><strong>Evidence:</strong> {criterion.evidence}</div>
                     </article>
-                  ))}
+                  )})}
               </div>
             </div>
             <div>

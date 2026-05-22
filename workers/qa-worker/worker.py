@@ -139,6 +139,13 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
     if LLM_API_KEY:
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
+    criteria_lines = []
+    for index, criterion in enumerate(scorecard["criteria"], start=1):
+        criteria_lines.append(
+            f"{index}. {criterion['title']} (id: {criterion['id']}, max_points: {criterion['max_points']})"
+        )
+    scorecard_list = "\n".join(criteria_lines)
+
     payload = {
         "model": LLM_MODEL,
         "temperature": 0,
@@ -149,13 +156,23 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
                 "content": (
                     "You are a QA analyzer for sales/support call transcripts. "
                     "Return JSON only (no markdown, no extra text). "
-                    "Required schema: {\"score\": number, \"summary\": string, \"criteria\": array, \"findings\": array}. "
-                    "Each criteria item must include id, title, score, max_points, comment, evidence, severity (info|warning|critical). "
+                    "Required schema: {\"summary\": string, \"criteria_scores\": array, \"findings\": array}. "
+                    "Each criteria_scores item must include index (1-based), score, comment, evidence, severity (info|warning|critical). "
                     "Each finding object must include severity (info|warning|critical) and evidence (string). "
+                    "Do not include criterion ids, titles, or max points in criteria_scores. "
                     "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible."
                 ),
             },
-            {"role": "user", "content": json.dumps({"scorecard": scorecard, "transcript": transcript_text})},
+            {
+                "role": "user",
+                "content": (
+                    "Scorecard criteria (use 1-based index values exactly as listed):\n"
+                    f"{scorecard_list}\n\n"
+                    "Return compact JSON that matches this exact example shape:\n"
+                    '{"summary":"Short summary","criteria_scores":[{"index":1,"score":3,"comment":"Brief comment","evidence":"[12.40s-18.10s] Agent did X","severity":"warning"}],"findings":[{"severity":"info","evidence":"Short finding"}]}\n\n'
+                    f"Transcript:\n{transcript_text}"
+                ),
+            },
         ],
     }
 
@@ -186,18 +203,22 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
 
 
 def validate_review(review: dict[str, Any]) -> dict[str, Any]:
-    score = review.get("score")
-    if not isinstance(score, (int, float)):
-        raise ValueError("score must be a number")
-
     summary = review.get("summary")
     if not isinstance(summary, str):
         raise ValueError("summary must be a string")
     summary = summary.strip()
 
     criteria = review.get("criteria", [])
+    if criteria is None:
+        criteria = []
     if not isinstance(criteria, list):
-        raise ValueError("criteria must be a list")
+        raise ValueError("criteria must be a list when provided")
+
+    criteria_scores = review.get("criteria_scores", [])
+    if criteria_scores is None:
+        criteria_scores = []
+    if not isinstance(criteria_scores, list):
+        raise ValueError("criteria_scores must be a list when provided")
 
     normalized_criteria = []
     for criterion in criteria:
@@ -218,6 +239,23 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    normalized_criteria_scores = []
+    for criterion_score in criteria_scores:
+        if not isinstance(criterion_score, dict):
+            continue
+        severity = str(criterion_score.get("severity", "warning")).strip().lower()
+        if severity not in {"info", "warning", "critical"}:
+            severity = "warning"
+        normalized_criteria_scores.append(
+            {
+                "index": criterion_score.get("index"),
+                "score": criterion_score.get("score", 0),
+                "comment": str(criterion_score.get("comment", "")).strip(),
+                "evidence": str(criterion_score.get("evidence", "")).strip(),
+                "severity": severity,
+            }
+        )
+
     findings = review.get("findings", [])
     if not isinstance(findings, list):
         raise ValueError("findings must be a list")
@@ -232,7 +270,16 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
             severity = "warning"
         normalized_findings.append({"severity": severity, "evidence": evidence})
 
-    return {"score": score, "summary": summary, "criteria": normalized_criteria, "findings": normalized_findings}
+    score = review.get("score")
+    normalized_score = float(score) if isinstance(score, (int, float)) else None
+
+    return {
+        "score": normalized_score,
+        "summary": summary,
+        "criteria": normalized_criteria,
+        "criteria_scores": normalized_criteria_scores,
+        "findings": normalized_findings,
+    }
 
 
 def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[str, Any]:
@@ -245,6 +292,34 @@ def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[
     }
     criteria_by_id: dict[str, dict[str, Any]] = {}
     findings = list(review["findings"])
+    scorecard_criteria = scorecard["criteria"]
+
+    for criterion_score in review.get("criteria_scores", []):
+        raw_index = criterion_score.get("index")
+        if not isinstance(raw_index, (int, float)):
+            continue
+        index = int(raw_index)
+        if index < 1 or index > len(scorecard_criteria):
+            continue
+        scorecard_item = scorecard_criteria[index - 1]
+        criterion_id = str(scorecard_item["id"]).strip()
+        if criterion_id in criteria_by_id:
+            continue
+        max_points = float(scorecard_item["max_points"])
+        raw_score = criterion_score.get("score", 0)
+        score = float(raw_score) if isinstance(raw_score, (int, float)) else 0.0
+        score = max(0.0, min(score, max_points))
+        criteria_by_id[criterion_id] = {
+            "id": criterion_id,
+            "title": str(scorecard_item["title"]).strip(),
+            "score": score,
+            "max_points": max_points,
+            "comment": criterion_score.get("comment") or "No clear model comment provided.",
+            "evidence": criterion_score.get("evidence") or "No clear evidence found in transcript.",
+            "severity": criterion_score.get("severity")
+            if criterion_score.get("severity") in {"info", "warning", "critical"}
+            else "warning",
+        }
 
     for criterion in review["criteria"]:
         criterion_id = str(criterion.get("id", "")).strip()
@@ -270,6 +345,7 @@ def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[
         }
 
     normalized_criteria = []
+    usable_scores_found = len(criteria_by_id) > 0
     for scorecard_item in scorecard["criteria"]:
         criterion_id = str(scorecard_item["id"]).strip()
         if criterion_id not in criteria_by_id:
@@ -287,11 +363,19 @@ def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[
             continue
         normalized_criteria.append(criteria_by_id[criterion_id])
 
+    if not usable_scores_found and (review.get("summary") or review["findings"]):
+        findings.append(
+            {
+                "severity": "warning",
+                "evidence": "Model did not return usable per-criterion scores.",
+            }
+        )
+
     total_score = sum(item["score"] for item in normalized_criteria)
     total_max = sum(item["max_points"] for item in normalized_criteria) or 1
     computed_score = round((total_score / total_max) * 100)
-    llm_score = review["score"]
-    if abs(float(llm_score) - float(computed_score)) >= 5:
+    llm_score = review.get("score")
+    if isinstance(llm_score, (int, float)) and abs(float(llm_score) - float(computed_score)) >= 5:
         findings.append(
             {
                 "severity": "warning",
