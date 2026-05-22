@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 
-from db import Call, QAFinding, QAReview, TranscriptSegment
+from db import Call, ProviderConfig, QAFinding, QAReview, TranscriptSegment
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -40,6 +40,7 @@ def get_llm_timeout_seconds() -> float:
     return timeout_seconds
 
 LLM_TIMEOUT_SECONDS = get_llm_timeout_seconds()
+LLM_PROVIDER_CONFIG_SOURCE = os.environ.get("LLM_PROVIDER_CONFIG_SOURCE", "db_or_env")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -131,13 +132,44 @@ def format_transcript(segments: list[TranscriptSegment]) -> str:
     return "\n".join(lines)
 
 
-def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any]:
-    if LLM_PROVIDER != "openai_compatible":
+
+
+def resolve_active_provider(db) -> dict[str, Any]:
+    default_config = {
+        "provider": LLM_PROVIDER,
+        "preset": "env",
+        "name": "Environment fallback",
+        "base_url": LLM_BASE_URL,
+        "model": provider["model"],
+        "api_key": LLM_API_KEY,
+        "timeout_seconds": LLM_TIMEOUT_SECONDS,
+    }
+    if LLM_PROVIDER_CONFIG_SOURCE == "env":
+        return default_config
+
+    active = db.execute(select(ProviderConfig)).scalars().all()
+    for item in active:
+        config = item.config or {}
+        if not config.get("is_active"):
+            continue
+        return {
+            "provider": item.provider_type,
+            "preset": config.get("preset", "custom"),
+            "name": item.name,
+            "base_url": str(config.get("base_url", "")).rstrip("/"),
+            "model": config.get("model", LLM_MODEL),
+            "api_key": config.get("api_key", ""),
+            "timeout_seconds": float(config.get("timeout_seconds", LLM_TIMEOUT_SECONDS)),
+        }
+    return default_config
+
+def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[str, Any]) -> dict[str, Any]:
+    if provider["provider"] != "openai_compatible":
         raise ValueError(f"unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
     headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+    if provider.get("api_key"):
+        headers["Authorization"] = f"Bearer {provider["api_key"]}"
 
     criteria_lines = []
     for index, criterion in enumerate(scorecard["criteria"], start=1):
@@ -147,7 +179,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
     scorecard_list = "\n".join(criteria_lines)
 
     payload = {
-        "model": LLM_MODEL,
+        "model": provider["model"],
         "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
@@ -178,15 +210,15 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any]) -> dict[str, Any
 
     try:
         response = requests.post(
-            f"{LLM_BASE_URL}/chat/completions",
+            f"{provider["base_url"]}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=LLM_TIMEOUT_SECONDS,
+            timeout=provider["timeout_seconds"],
         )
     except requests.exceptions.Timeout as exc:
         print(
             "LLM request timed out after "
-            f"{LLM_TIMEOUT_SECONDS:g} seconds. Try a smaller model, increase "
+            f"{provider["timeout_seconds"]:g} seconds. Try a smaller model, increase "
             "LLM_TIMEOUT_SECONDS, or use placeholder mode."
         )
         raise RuntimeError("LLM request timeout") from exc
@@ -428,7 +460,8 @@ def process_qa_job(call_id: int) -> None:
                 review = placeholder_review(scorecard)
             else:
                 try:
-                    raw_review = llm_review(transcript_text, scorecard)
+                    provider = resolve_active_provider(db)
+                    raw_review = llm_review(transcript_text, scorecard, provider)
                     validated = validate_review(raw_review)
                     review = normalize_review(validated, scorecard)
                 except (json.JSONDecodeError, ValueError) as exc:
@@ -470,13 +503,8 @@ def process_qa_job(call_id: int) -> None:
                         evidence=finding["evidence"],
                     )
                 )
-            db.add(
-                QAFinding(
-                    qa_review_id=qa_review.id,
-                    severity="info",
-                    evidence=f"Analysis mode: {QA_MODE}",
-                )
-            )
+            mode_detail = f"Analysis mode: {QA_MODE}; provider: {provider.get('preset', 'env')}/{provider.get('name', 'unknown')}; model: {provider.get('model', LLM_MODEL)}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}"
+            db.add(QAFinding(qa_review_id=qa_review.id, severity="info", evidence=mode_detail))
 
             call.status = "analyzed"
             db.commit()

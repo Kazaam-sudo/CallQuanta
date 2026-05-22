@@ -1,10 +1,12 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
 import redis
+import requests
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,9 +14,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, QAFinding, QAReview, TranscriptSegment
+from .db import Base, Call, ProviderConfig, QAFinding, QAReview, TranscriptSegment
 
-app = FastAPI(title="CallQuanta API", version="0.3.3")
+app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -31,6 +33,19 @@ ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if 
 ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
 
 
+PROVIDER_PRESETS = [
+    {"id": "ollama", "label": "Ollama Local", "provider_type": "openai_compatible", "default_base_url": "http://ollama:11434/v1", "default_model": "qwen2.5:1.5b", "api_key_required": False},
+    {"id": "openai", "label": "OpenAI", "provider_type": "openai_compatible", "default_base_url": "https://api.openai.com/v1", "default_model": "gpt-5.5", "api_key_required": True},
+    {"id": "groq", "label": "Groq", "provider_type": "openai_compatible", "default_base_url": "https://api.groq.com/openai/v1", "default_model": "qwen/qwen3-32b", "api_key_required": True},
+    {"id": "openrouter", "label": "OpenRouter", "provider_type": "openai_compatible", "default_base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-oss-120b", "api_key_required": True},
+    {"id": "cloudflare", "label": "Cloudflare Workers AI", "provider_type": "openai_compatible", "default_base_url": "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", "default_model": "@cf/meta/llama-3.1-8b-instruct", "api_key_required": True, "note": "Replace {ACCOUNT_ID} before using."},
+    {"id": "gemini", "label": "Google Gemini", "provider_type": "openai_compatible", "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "default_model": "gemini-3.5-flash", "api_key_required": True},
+    {"id": "anthropic", "label": "Anthropic Claude", "provider_type": "openai_compatible", "default_base_url": "https://api.anthropic.com/v1", "default_model": "claude-sonnet-4-5", "api_key_required": True, "note": "Compatibility may not support every OpenAI parameter."},
+    {"id": "together", "label": "Together AI", "provider_type": "openai_compatible", "default_base_url": "https://api.together.xyz/v1", "default_model": "Qwen/Qwen3-32B", "api_key_required": True},
+    {"id": "custom", "label": "Custom OpenAI-compatible", "provider_type": "openai_compatible", "default_base_url": "", "default_model": "", "api_key_required": False},
+]
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_CORS_ORIGINS,
@@ -44,10 +59,24 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
-class ProviderTestRequest(BaseModel):
-    provider_type: str
+class ProviderUpsertRequest(BaseModel):
+    id: int | None = None
+    name: str
+    preset: str
+    provider_type: str = "openai_compatible"
     base_url: str
+    model: str
     api_key: str | None = None
+    timeout_seconds: float = 180
+    is_active: bool = False
+
+
+class ProviderTestRequest(BaseModel):
+    provider_type: str = "openai_compatible"
+    base_url: str
+    model: str
+    api_key: str | None = None
+    timeout_seconds: float = 60
 
 
 @app.get("/health")
@@ -248,11 +277,93 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
     }
 
 
-@app.get("/settings/providers")
-def list_providers() -> dict:
-    return {"llm": ["openai_compatible"], "stt": ["faster_whisper"], "tts": []}
+def serialize_provider_config(provider: ProviderConfig) -> dict:
+    config = provider.config or {}
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type,
+        "preset": config.get("preset", "custom"),
+        "base_url": config.get("base_url", ""),
+        "model": config.get("model", ""),
+        "timeout_seconds": config.get("timeout_seconds", 180),
+        "is_active": bool(config.get("is_active", False)),
+        "api_key_configured": bool(config.get("api_key")),
+    }
 
 
-@app.post("/settings/providers/test")
-def test_provider(payload: ProviderTestRequest) -> dict:
-    return {"ok": True, "provider_type": payload.provider_type}
+@app.get("/settings/llm/providers")
+def list_llm_providers(db: Session = Depends(get_db)) -> dict:
+    providers = db.execute(select(ProviderConfig).order_by(ProviderConfig.id.asc())).scalars().all()
+    return {"presets": PROVIDER_PRESETS, "saved": [serialize_provider_config(item) for item in providers]}
+
+
+@app.post("/settings/llm/providers")
+def upsert_llm_provider(payload: ProviderUpsertRequest, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(ProviderConfig, payload.id) if payload.id else None
+    if provider is None:
+        provider = ProviderConfig(provider_type=payload.provider_type, name=payload.name, config={})
+        db.add(provider)
+
+    existing = provider.config or {}
+    api_key = payload.api_key if payload.api_key is not None else existing.get("api_key", "")
+    provider.provider_type = payload.provider_type
+    provider.name = payload.name
+    provider.config = {"preset": payload.preset, "base_url": payload.base_url.rstrip("/"), "model": payload.model, "api_key": api_key, "timeout_seconds": payload.timeout_seconds, "is_active": payload.is_active}
+
+    if payload.is_active:
+        others = db.execute(select(ProviderConfig).where(ProviderConfig.id != provider.id)).scalars().all()
+        for other in others:
+            other_config = other.config or {}
+            other_config["is_active"] = False
+            other.config = other_config
+
+    db.commit()
+    db.refresh(provider)
+    return serialize_provider_config(provider)
+
+
+@app.post("/settings/llm/providers/{provider_id}/activate")
+def activate_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(ProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    providers = db.execute(select(ProviderConfig)).scalars().all()
+    for item in providers:
+        config = item.config or {}
+        config["is_active"] = item.id == provider_id
+        item.config = config
+    db.commit()
+    db.refresh(provider)
+    return serialize_provider_config(provider)
+
+
+@app.delete("/settings/llm/providers/{provider_id}")
+def delete_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(ProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    db.delete(provider)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/settings/llm/providers/test")
+def test_llm_provider(payload: ProviderTestRequest) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if payload.api_key:
+        headers["Authorization"] = f"Bearer {payload.api_key}"
+    started = time.perf_counter()
+    try:
+        response = requests.post(
+            f"{payload.base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={"model": payload.model, "temperature": 0, "messages": [{"role": "user", "content": "Return only JSON: {\"ok\": true}"}]},
+            timeout=payload.timeout_seconds,
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        response.raise_for_status()
+        return {"ok": True, "latency_ms": latency_ms, "model": payload.model}
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return {"ok": False, "latency_ms": latency_ms, "model": payload.model, "error": str(exc)[:300]}
