@@ -140,7 +140,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
         "preset": "env",
         "name": "Environment fallback",
         "base_url": LLM_BASE_URL,
-        "model": LLM_MODEL,
+        "model": provider["model"],
         "api_key": LLM_API_KEY,
         "timeout_seconds": LLM_TIMEOUT_SECONDS,
     }
@@ -157,7 +157,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
             "preset": config.get("preset", "custom"),
             "name": item.name,
             "base_url": str(config.get("base_url", "")).rstrip("/"),
-            "model": config.get("model", LLM_MODEL),
+            "model": config.get("model") or LLM_MODEL,
             "api_key": config.get("api_key", ""),
             "timeout_seconds": float(config.get("timeout_seconds", LLM_TIMEOUT_SECONDS)),
         }
@@ -168,8 +168,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
         raise ValueError(f"unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
     headers = {"Content-Type": "application/json"}
-    if provider.get("api_key"):
-        api_key = provider.get("api_key")
+    api_key = provider.get("api_key") or ""
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -181,7 +180,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
     scorecard_list = "\n".join(criteria_lines)
 
     payload = {
-        "model": LLM_MODEL,
+        "model": provider["model"],
         "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
@@ -225,7 +224,21 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
         )
         raise RuntimeError("LLM request timeout") from exc
 
-    response.raise_for_status()
+    if not response.ok:
+        body = (response.text or "")[:1000]
+        print(
+            "LLM provider request failed "
+            f"provider={provider.get('name', 'unknown')} "
+            f"preset={provider.get('preset', 'custom')} "
+            f"base_url={provider.get('base_url', '')} "
+            f"model={provider.get('model', '')} "
+            f"status={response.status_code} "
+            f"body={body}"
+        )
+        raise RuntimeError(
+            f"LLM provider request failed with status {response.status_code} for {provider.get('name', 'unknown')}"
+        )
+
     data = response.json()
     content = data["choices"][0]["message"]["content"]
     try:
@@ -505,7 +518,7 @@ def process_qa_job(call_id: int) -> None:
                         evidence=finding["evidence"],
                     )
                 )
-            mode_detail = f"Analysis mode: {QA_MODE}; provider: {provider.get('preset', 'env')}/{provider.get('name', 'unknown')}; model: {provider.get('model', LLM_MODEL)}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}"
+            mode_detail = f"Analysis mode: openai_compatible; Provider: {provider.get('name', 'unknown')}; Preset: {provider.get('preset', 'env')}; Model: {provider.get('model', LLM_MODEL)}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}"
             db.add(QAFinding(qa_review_id=qa_review.id, severity="info", evidence=mode_detail))
 
             call.status = "analyzed"

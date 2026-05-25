@@ -35,7 +35,7 @@ ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
 
 PROVIDER_PRESETS = [
     {"id": "ollama", "label": "Ollama Local", "provider_type": "openai_compatible", "default_base_url": "http://ollama:11434/v1", "default_model": "qwen2.5:1.5b", "api_key_required": False},
-    {"id": "openai", "label": "OpenAI", "provider_type": "openai_compatible", "default_base_url": "https://api.openai.com/v1", "default_model": "gpt-5.5", "api_key_required": True},
+    {"id": "openai", "label": "OpenAI", "provider_type": "openai_compatible", "default_base_url": "https://api.openai.com/v1", "default_model": "gpt-5.4-nano", "api_key_required": True},
     {"id": "groq", "label": "Groq", "provider_type": "openai_compatible", "default_base_url": "https://api.groq.com/openai/v1", "default_model": "qwen/qwen3-32b", "api_key_required": True},
     {"id": "openrouter", "label": "OpenRouter", "provider_type": "openai_compatible", "default_base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-oss-120b", "api_key_required": True},
     {"id": "cloudflare", "label": "Cloudflare Workers AI", "provider_type": "openai_compatible", "default_base_url": "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", "default_model": "@cf/meta/llama-3.1-8b-instruct", "api_key_required": True, "note": "Replace {ACCOUNT_ID} before using."},
@@ -362,8 +362,21 @@ def test_llm_provider(payload: ProviderTestRequest) -> dict:
             timeout=payload.timeout_seconds,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
-        response.raise_for_status()
-        return {"ok": True, "latency_ms": latency_ms, "model": payload.model}
-    except Exception as exc:
+        if response.ok:
+            return {"ok": True, "latency_ms": latency_ms, "model": payload.model}
+
+        provider_error: object
+        try:
+            provider_error = response.json()
+        except ValueError:
+            provider_error = (response.text or "")[:1000]
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "model": payload.model,
+            "provider_error": provider_error,
+        }
+    except requests.RequestException as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return {"ok": False, "latency_ms": latency_ms, "model": payload.model, "error": str(exc)[:300]}
+        return {"ok": False, "latency_ms": latency_ms, "model": payload.model, "provider_error": str(exc)[:300]}
