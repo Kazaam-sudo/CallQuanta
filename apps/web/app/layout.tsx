@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <nav className="top-nav" aria-label="Main navigation">
                 <Link href="/dashboard">Dashboard</Link>
                 <Link href="/calls">Calls</Link>
-                <Link href="/settings/interface">Settings</Link>
+                <Link href="/settings/llm">Settings</Link>
               </nav>
             </div>
           </header>
