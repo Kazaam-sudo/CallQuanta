@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 
-from db import Call, ProviderConfig, QAFinding, QAReview, TranscriptSegment
+from db import Call, ProviderConfig, QAFinding, QAReview, ScorecardConfig, TranscriptSegment
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -60,6 +60,19 @@ def load_scorecard() -> dict[str, Any]:
         data = yaml.safe_load(handle)
     if not isinstance(data, dict) or not isinstance(data.get("criteria"), list):
         raise ValueError("invalid scorecard format")
+    return data
+
+
+def load_active_scorecard(db) -> dict[str, Any]:
+    stored = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
+    if stored and isinstance(stored.config, dict) and isinstance(stored.config.get("criteria"), list):
+        config = dict(stored.config)
+        config.setdefault("name", stored.name or "Custom Scorecard")
+        config.setdefault("report_language", "english")
+        return config
+    data = load_scorecard()
+    data.setdefault("name", "Default Sales QA")
+    data.setdefault("report_language", "english")
     return data
 
 
@@ -174,10 +187,26 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
 
     criteria_lines = []
     for index, criterion in enumerate(scorecard["criteria"], start=1):
+        extras = []
+        if criterion.get("description"):
+            extras.append(f"description: {criterion['description']}")
+        if criterion.get("positive_examples"):
+            extras.append(f"positive_examples: {criterion['positive_examples']}")
+        if criterion.get("negative_examples"):
+            extras.append(f"negative_examples: {criterion['negative_examples']}")
         criteria_lines.append(
             f"{index}. {criterion['title']} (id: {criterion['id']}, max_points: {criterion['max_points']})"
+            + (f" | {'; '.join(extras)}" if extras else "")
         )
     scorecard_list = "\n".join(criteria_lines)
+    report_language = scorecard.get("report_language", "english")
+    language_instruction = (
+        "Write summary/comment/evidence in Russian."
+        if report_language == "russian"
+        else "Write summary/comment/evidence in the same language as transcript."
+        if report_language == "same_as_transcript"
+        else "Write summary/comment/evidence in English."
+    )
 
     payload = {
         "model": provider["model"],
@@ -193,7 +222,8 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
                     "Each criteria_scores item must include index (1-based), score, comment, evidence, severity (info|warning|critical). "
                     "Each finding object must include severity (info|warning|critical) and evidence (string). "
                     "Do not include criterion ids, titles, or max points in criteria_scores. "
-                    "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible."
+                    "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible. "
+                    f"{language_instruction}"
                 ),
             },
             {
@@ -470,7 +500,7 @@ def process_qa_job(call_id: int) -> None:
         transcript_text = format_transcript(segments)
 
         try:
-            scorecard = load_scorecard()
+            scorecard = load_active_scorecard(db)
             if QA_MODE == "placeholder":
                 review = placeholder_review(scorecard)
             else:
@@ -522,7 +552,7 @@ def process_qa_job(call_id: int) -> None:
                         evidence=finding["evidence"],
                     )
                 )
-            mode_detail = f"Analysis mode: openai_compatible; Provider: {provider.get('name', 'unknown')}; Preset: {provider.get('preset', 'env')}; Model: {provider.get('model', LLM_MODEL)}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}"
+            mode_detail = f"Analysis mode: openai_compatible; Provider: {provider.get('name', 'unknown')}; Preset: {provider.get('preset', 'env')}; Model: {provider.get('model', LLM_MODEL)}; Scorecard: {scorecard.get('name', 'unknown')}; Report language: {scorecard.get('report_language', 'english')}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}; Scorecard: {scorecard.get('name', 'unknown')}; Report language: {scorecard.get('report_language', 'english')}"
             db.add(QAFinding(qa_review_id=qa_review.id, severity="info", evidence=mode_detail))
 
             call.status = "analyzed"
