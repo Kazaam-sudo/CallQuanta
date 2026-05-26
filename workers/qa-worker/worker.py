@@ -140,7 +140,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
         "preset": "env",
         "name": "Environment fallback",
         "base_url": LLM_BASE_URL,
-        "model": provider["model"],
+        "model": LLM_MODEL,
         "api_key": LLM_API_KEY,
         "timeout_seconds": LLM_TIMEOUT_SECONDS,
     }
@@ -165,7 +165,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
 
 def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[str, Any]) -> dict[str, Any]:
     if provider["provider"] != "openai_compatible":
-        raise ValueError(f"unsupported LLM_PROVIDER: {LLM_PROVIDER}")
+        raise ValueError(f"unsupported provider type: {provider['provider']}")
 
     headers = {"Content-Type": "application/json"}
     api_key = provider.get("api_key") or ""
@@ -225,7 +225,7 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
         raise RuntimeError("LLM request timeout") from exc
 
     if not response.ok:
-        body = (response.text or "")[:1000]
+        body = (response.text or "").replace("\n", " ")[:400]
         print(
             "LLM provider request failed "
             f"provider={provider.get('name', 'unknown')} "
@@ -476,6 +476,10 @@ def process_qa_job(call_id: int) -> None:
             else:
                 try:
                     provider = resolve_active_provider(db)
+                    print(
+                        f"analyzing call_id={call_id} provider={provider.get('name', 'unknown')} "
+                        f"preset={provider.get('preset', 'custom')} model={provider.get('model', '')}"
+                    )
                     raw_review = llm_review(transcript_text, scorecard, provider)
                     validated = validate_review(raw_review)
                     review = normalize_review(validated, scorecard)
@@ -523,7 +527,7 @@ def process_qa_job(call_id: int) -> None:
 
             call.status = "analyzed"
             db.commit()
-            print(f"call {call_id} analyzed with mode={QA_MODE}")
+            print(f"call {call_id} analyzed with mode={QA_MODE} provider={provider.get('name','n/a') if QA_MODE!='placeholder' else 'placeholder'}")
         except Exception as exc:
             db.rollback()
             call.status = "analysis_failed"
@@ -534,7 +538,7 @@ def process_qa_job(call_id: int) -> None:
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-print(f"qa-worker started. mode={QA_MODE}. Waiting for QA jobs...")
+print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE}")
 
 while running:
     job = redis_client.brpop(QA_QUEUE, timeout=2)

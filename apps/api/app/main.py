@@ -79,6 +79,39 @@ class ProviderTestRequest(BaseModel):
     timeout_seconds: float = 60
 
 
+def _provider_test_request(provider_type: str, base_url: str, model: str, api_key: str | None, timeout_seconds: float) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    started = time.perf_counter()
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={"model": model, "temperature": 0, "messages": [{"role": "user", "content": "Return only JSON: {\"ok\": true}"}]},
+            timeout=timeout_seconds,
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        if response.ok:
+            return {"ok": True, "latency_ms": latency_ms, "model": model}
+
+        provider_error: object
+        try:
+            provider_error = response.json()
+        except ValueError:
+            provider_error = (response.text or "")[:1000]
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "model": model,
+            "provider_error": provider_error,
+        }
+    except requests.RequestException as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return {"ok": False, "latency_ms": latency_ms, "model": model, "provider_error": str(exc)[:300]}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     logger.info("Health check requested")
@@ -350,33 +383,19 @@ def delete_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict
 
 @app.post("/settings/llm/providers/test")
 def test_llm_provider(payload: ProviderTestRequest) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if payload.api_key:
-        headers["Authorization"] = f"Bearer {payload.api_key}"
-    started = time.perf_counter()
-    try:
-        response = requests.post(
-            f"{payload.base_url.rstrip('/')}/chat/completions",
-            headers=headers,
-            json={"model": payload.model, "temperature": 0, "messages": [{"role": "user", "content": "Return only JSON: {\"ok\": true}"}]},
-            timeout=payload.timeout_seconds,
-        )
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        if response.ok:
-            return {"ok": True, "latency_ms": latency_ms, "model": payload.model}
+    return _provider_test_request(payload.provider_type, payload.base_url, payload.model, payload.api_key, payload.timeout_seconds)
 
-        provider_error: object
-        try:
-            provider_error = response.json()
-        except ValueError:
-            provider_error = (response.text or "")[:1000]
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "latency_ms": latency_ms,
-            "model": payload.model,
-            "provider_error": provider_error,
-        }
-    except requests.RequestException as exc:
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        return {"ok": False, "latency_ms": latency_ms, "model": payload.model, "provider_error": str(exc)[:300]}
+
+@app.post("/settings/llm/providers/{provider_id}/test")
+def test_saved_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(ProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    config = provider.config or {}
+    return _provider_test_request(
+        provider.provider_type,
+        str(config.get("base_url", "")),
+        str(config.get("model", "")),
+        config.get("api_key"),
+        float(config.get("timeout_seconds", 60)),
+    )
