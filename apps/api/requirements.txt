@@ -11,3 +11,5 @@ werkzeug==3.0.4
 redis==5.0.8
 
 requests==2.32.3
+
+PyYAML==6.0.2

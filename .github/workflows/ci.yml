@@ -61,6 +61,7 @@ jobs:
 
       - name: Wait for API health
         run: |
+          set -euo pipefail
           for i in {1..30}; do
             if curl -fsS http://localhost:8000/health > /dev/null; then
               echo "API is healthy"
@@ -69,6 +70,10 @@ jobs:
             sleep 2
           done
           echo "API health check timed out"
+          echo "docker compose ps"
+          docker compose ps || true
+          echo "docker compose logs api"
+          docker compose logs --no-color api || true
           exit 1
 
 

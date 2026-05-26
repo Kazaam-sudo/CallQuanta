@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import redis
 import requests
+import yaml
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,7 +15,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, ProviderConfig, QAFinding, QAReview, TranscriptSegment
+from .db import Base, Call, ProviderConfig, QAFinding, QAReview, ScorecardConfig, TranscriptSegment
 
 app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
@@ -77,6 +78,24 @@ class ProviderTestRequest(BaseModel):
     model: str
     api_key: str | None = None
     timeout_seconds: float = 60
+
+
+DEFAULT_SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
+
+
+class ScorecardCriterion(BaseModel):
+    id: str
+    title: str
+    max_points: float
+    description: str
+    positive_examples: list[str] | None = None
+    negative_examples: list[str] | None = None
+
+
+class ScorecardPayload(BaseModel):
+    name: str
+    report_language: str = "english"
+    criteria: list[ScorecardCriterion]
 
 
 def _provider_test_request(provider_type: str, base_url: str, model: str, api_key: str | None, timeout_seconds: float) -> dict:
@@ -271,6 +290,8 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
     criteria = []
     findings_payload = []
     mode = "placeholder" if os.environ.get("QA_MODE", "placeholder") == "placeholder" else "openai_compatible"
+    scorecard_name = None
+    report_language = None
     for finding in findings:
         evidence = finding.evidence or ""
         if evidence.startswith("[criterion:"):
@@ -293,7 +314,18 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
             )
             continue
         if evidence.lower().startswith("analysis mode:"):
-            mode = evidence.split(":", 1)[1].strip()
+            parts = [part.strip() for part in evidence.split(";")]
+            for part in parts:
+                key, _, value = part.partition(":")
+                if not value:
+                    continue
+                normalized = key.strip().lower()
+                if normalized == "analysis mode":
+                    mode = value.strip()
+                if normalized == "scorecard":
+                    scorecard_name = value.strip()
+                if normalized == "report language":
+                    report_language = value.strip()
         findings_payload.append({"id": finding.id, "severity": finding.severity, "evidence": evidence})
 
     return {
@@ -304,6 +336,8 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
             "score": review.score,
             "summary": review.summary,
             "mode": mode,
+            "scorecard_name": scorecard_name,
+            "report_language": report_language,
             "criteria": criteria,
             "findings": findings_payload,
         },
@@ -323,6 +357,54 @@ def serialize_provider_config(provider: ProviderConfig) -> dict:
         "is_active": bool(config.get("is_active", False)),
         "api_key_configured": bool(config.get("api_key")),
     }
+
+
+def _load_default_scorecard() -> dict:
+    with DEFAULT_SCORECARD_PATH.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict) or not isinstance(data.get("criteria"), list):
+        raise HTTPException(status_code=500, detail="Default scorecard is invalid")
+    data.setdefault("name", "Default Sales QA")
+    data.setdefault("report_language", "english")
+    return data
+
+
+def _validate_scorecard(payload: ScorecardPayload) -> None:
+    if not payload.criteria:
+        raise HTTPException(status_code=400, detail="Criteria list must not be empty")
+    total_max = 0.0
+    for criterion in payload.criteria:
+        if not criterion.title.strip():
+            raise HTTPException(status_code=400, detail="Criterion title must not be empty")
+        if criterion.max_points <= 0:
+            raise HTTPException(status_code=400, detail="Criterion max_points must be greater than 0")
+        total_max += criterion.max_points
+    if total_max <= 0:
+        raise HTTPException(status_code=400, detail="Total max score must be greater than 0")
+    if payload.report_language not in {"english", "russian", "same_as_transcript"}:
+        raise HTTPException(status_code=400, detail="Invalid report_language")
+
+
+@app.get("/settings/scorecard")
+def get_scorecard_settings(db: Session = Depends(get_db)) -> dict:
+    scorecard = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
+    if scorecard and isinstance(scorecard.config, dict):
+        return scorecard.config
+    return _load_default_scorecard()
+
+
+@app.post("/settings/scorecard")
+def upsert_scorecard_settings(payload: ScorecardPayload, db: Session = Depends(get_db)) -> dict:
+    _validate_scorecard(payload)
+    scorecard = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
+    if not scorecard:
+        scorecard = ScorecardConfig(name=payload.name.strip() or "Scorecard", config={})
+        db.add(scorecard)
+    scorecard.name = payload.name.strip() or "Scorecard"
+    scorecard.config = payload.model_dump()
+    db.commit()
+    db.refresh(scorecard)
+    return scorecard.config
 
 
 @app.get("/settings/llm/providers")

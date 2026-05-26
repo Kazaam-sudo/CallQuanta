@@ -52,8 +52,8 @@ class ProviderConfig(Base):
     config: Mapped[dict] = mapped_column(JSON)
 
 
-class Scorecard(Base):
-    __tablename__ = "scorecards"
+class ScorecardConfig(Base):
+    __tablename__ = "scorecard_configs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    yaml_content: Mapped[str] = mapped_column(Text)
+    config: Mapped[dict] = mapped_column(JSON)

@@ -46,3 +46,10 @@ class ProviderConfig(Base):
     provider_type: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(128))
     config: Mapped[dict] = mapped_column(JSON)
+
+
+class ScorecardConfig(Base):
+    __tablename__ = "scorecard_configs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    config: Mapped[dict] = mapped_column(JSON)

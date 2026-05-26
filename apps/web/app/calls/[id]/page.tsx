@@ -32,7 +32,7 @@ type QACriterion = {
   evidence: string;
   severity: string;
 };
-type QAReview = { id: number; score: number; summary: string; mode?: string; criteria: QACriterion[]; findings: QAFinding[] };
+type QAReview = { id: number; score: number; summary: string; mode?: string; scorecard_name?: string; report_language?: string; criteria: QACriterion[]; findings: QAFinding[] };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -214,6 +214,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             <div><strong>Provider:</strong> {providerMeta["provider"] || "unknown"}</div>
             <div><strong>Preset:</strong> {providerMeta["preset"] || "unknown"}</div>
             <div><strong>Model:</strong> {providerMeta["model"] || "unknown"}</div>
+            <div><strong>Scorecard:</strong> {review.scorecard_name || providerMeta["scorecard"] || "unknown"}</div>
+            <div><strong>Report language:</strong> {review.report_language || providerMeta["report language"] || "unknown"}</div>
             {recoveredReview && (
               <p className="message message-warning">
                 This review was partially recovered from an imperfect LLM response.

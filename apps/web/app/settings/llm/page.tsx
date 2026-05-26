@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -73,6 +74,7 @@ export default function Page() {
   };
 
   return <main className="grid" style={{ gap: 16 }}>
+    <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link></div>
     <section className="card">
       <h2>LLM Provider Settings</h2>
       {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>Editing provider: {editingProvider.name}</p>}
