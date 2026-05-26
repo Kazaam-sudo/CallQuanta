@@ -138,6 +138,24 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const pendingState = useMemo(() => call?.status === "transcription_pending" || transcribing, [call?.status, transcribing]);
   const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || analyzing, [call?.status, analyzing]);
   const canAnalyzeAgain = call?.status === "analyzed" || call?.status === "analysis_failed";
+
+  const providerMeta = useMemo(() => {
+    const metaEvidence = review?.findings?.find((finding) => finding.evidence.startsWith("Analysis mode:"))?.evidence || "";
+    const chunks = metaEvidence.split(";").map((x) => x.trim());
+    const out: Record<string, string> = {};
+    for (const chunk of chunks) {
+      const [k, ...v] = chunk.split(":");
+      if (!k || v.length === 0) continue;
+      out[k.toLowerCase()] = v.join(":").trim();
+    }
+    return out;
+  }, [review]);
+
+  const latestFailureHint = useMemo(() => {
+    const warning = review?.findings?.find((f) => f.severity === "warning" && f.evidence.toLowerCase().includes("parse error"));
+    return warning?.evidence;
+  }, [review]);
+
   const recoveredReview = useMemo(
     () =>
       review?.findings?.some((finding) =>
@@ -170,7 +188,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {analysisPendingState && <p className="message">QA analysis is in progress. Auto-refreshing every 2 seconds.</p>}
         {call?.status === "analysis_failed" && (
           <p className="message message-error">
-            QA analysis failed. The worker could not produce a valid review. Please check worker logs and try again.
+            QA analysis failed. The worker could not produce a valid review. Check worker logs and provider settings, then retry analysis.
+            {latestFailureHint ? ` Latest hint: ${latestFailureHint}` : ""}
           </p>
         )}
         {error && <p className="message message-error">{error}</p>}
@@ -191,7 +210,10 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
-            <div><strong>Analysis mode:</strong> {review.mode || "unknown"}</div>
+            <div><strong>Analysis mode:</strong> {providerMeta["analysis mode"] || review.mode || "unknown"}</div>
+            <div><strong>Provider:</strong> {providerMeta["provider"] || "unknown"}</div>
+            <div><strong>Preset:</strong> {providerMeta["preset"] || "unknown"}</div>
+            <div><strong>Model:</strong> {providerMeta["model"] || "unknown"}</div>
             {recoveredReview && (
               <p className="message message-warning">
                 This review was partially recovered from an imperfect LLM response.
