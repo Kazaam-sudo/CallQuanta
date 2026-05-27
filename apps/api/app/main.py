@@ -360,8 +360,18 @@ def serialize_provider_config(provider: ProviderConfig) -> dict:
 
 
 def _load_default_scorecard() -> dict:
-    with DEFAULT_SCORECARD_PATH.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+    if not DEFAULT_SCORECARD_PATH.exists():
+        message = f"Default scorecard file not found: {DEFAULT_SCORECARD_PATH}"
+        logger.error(message)
+        raise HTTPException(status_code=500, detail=message)
+
+    try:
+        with DEFAULT_SCORECARD_PATH.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except OSError as exc:
+        logger.exception("Failed to read default scorecard file: %s", DEFAULT_SCORECARD_PATH)
+        raise HTTPException(status_code=500, detail=f"Failed to read default scorecard file: {DEFAULT_SCORECARD_PATH}") from exc
+
     if not isinstance(data, dict) or not isinstance(data.get("criteria"), list):
         raise HTTPException(status_code=500, detail="Default scorecard is invalid")
     data.setdefault("name", "Default Sales QA")
