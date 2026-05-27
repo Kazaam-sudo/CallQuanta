@@ -72,7 +72,7 @@ jobs:
           echo "API health check timed out"
           echo "docker compose ps"
           docker compose ps || true
-          echo "docker compose logs api"
+          echo "docker compose logs --no-color api"
           docker compose logs --no-color api || true
           exit 1
 
