@@ -417,6 +417,24 @@ def upsert_scorecard_settings(payload: ScorecardPayload, db: Session = Depends(g
     return scorecard.config
 
 
+@app.post("/settings/scorecard/reset")
+def reset_scorecard_settings(db: Session = Depends(get_db)) -> dict:
+    default_scorecard = _load_default_scorecard()
+    payload = ScorecardPayload(**default_scorecard)
+    _validate_scorecard(payload)
+
+    scorecard = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
+    if not scorecard:
+        scorecard = ScorecardConfig(name=payload.name.strip() or "Scorecard", config={})
+        db.add(scorecard)
+
+    scorecard.name = payload.name.strip() or "Scorecard"
+    scorecard.config = payload.model_dump()
+    db.commit()
+    db.refresh(scorecard)
+    return scorecard.config
+
+
 @app.get("/settings/llm/providers")
 def list_llm_providers(db: Session = Depends(get_db)) -> dict:
     providers = db.execute(select(ProviderConfig).order_by(ProviderConfig.id.asc())).scalars().all()
