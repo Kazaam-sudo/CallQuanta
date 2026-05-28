@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from io import BytesIO, StringIO
 from openpyxl import Workbook
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
@@ -292,10 +292,13 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
     if not review:
         return {"call_id": call_id, "status": call.status, "review": None}
 
-    return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review)}
+    return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db)}
 
 
 def serialize_review_compact(review: QAReview) -> dict:
+    has_metadata = any([review.provider_name, review.model, review.scorecard_name, review.report_language])
+    has_details = bool(review.criteria_breakdown) or bool(review.findings)
+    legacy_review = not has_metadata and not has_details
     return {
         "id": review.id,
         "created_at": review.created_at.isoformat() if review.created_at else None,
@@ -306,16 +309,76 @@ def serialize_review_compact(review: QAReview) -> dict:
         "scorecard_name": review.scorecard_name,
         "report_language": review.report_language,
         "analysis_mode": review.analysis_mode,
+        "legacy_review": legacy_review,
     }
 
 
-def serialize_review_full(review: QAReview) -> dict:
+def _legacy_findings_table_exists(db: Session) -> bool:
+    cached = getattr(db.bind, "_qa_findings_exists", None)
+    if cached is not None:
+        return bool(cached)
+    try:
+        db.execute(text("SELECT 1 FROM qa_findings LIMIT 1"))
+        setattr(db.bind, "_qa_findings_exists", True)
+        return True
+    except Exception:
+        setattr(db.bind, "_qa_findings_exists", False)
+        return False
+
+
+def _legacy_review_details(review: QAReview, db: Session) -> tuple[list[dict], list[dict], dict]:
+    criteria: list[dict] = []
+    findings: list[dict] = []
+    metadata: dict[str, str] = {}
+    if not _legacy_findings_table_exists(db):
+        return criteria, findings, metadata
+    rows = db.execute(
+        text("SELECT severity, evidence FROM qa_findings WHERE qa_review_id = :review_id ORDER BY id ASC"),
+        {"review_id": review.id},
+    ).mappings().all()
+    for row in rows:
+        severity = row.get("severity") or "info"
+        evidence = row.get("evidence") or ""
+        if evidence.startswith("[criterion:") and "]" in evidence:
+            marker, _, remainder = evidence.partition("]")
+            criteria.append(
+                {
+                    "id": f"legacy_{len(criteria) + 1}",
+                    "title": marker[len("[criterion:") :].strip() or "Legacy criterion",
+                    "score": "",
+                    "max_points": "",
+                    "comment": remainder.strip() or "Legacy criterion detail.",
+                    "evidence": evidence,
+                    "severity": severity,
+                }
+            )
+            continue
+        if evidence.lower().startswith("analysis mode:"):
+            for chunk in evidence.split(";"):
+                key, _, value = chunk.partition(":")
+                if value:
+                    metadata[key.strip().lower()] = value.strip()
+        findings.append({"severity": severity, "evidence": evidence})
+    return criteria, findings, metadata
+
+
+def serialize_review_full(review: QAReview, db: Session) -> dict:
+    criteria = review.criteria_breakdown or []
+    findings = review.findings or []
+    metadata_fallback: dict[str, str] = {}
+    if not criteria and not findings:
+        criteria, findings, metadata_fallback = _legacy_review_details(review, db)
     return {
         **serialize_review_compact(review),
         "summary": review.summary,
-        "provider_preset": review.provider_preset,
-        "criteria": review.criteria_breakdown or [],
-        "findings": review.findings or [],
+        "provider_preset": review.provider_preset or metadata_fallback.get("preset"),
+        "provider_name": review.provider_name or metadata_fallback.get("provider"),
+        "model": review.model or metadata_fallback.get("model"),
+        "scorecard_name": review.scorecard_name or metadata_fallback.get("scorecard"),
+        "report_language": review.report_language or metadata_fallback.get("report language"),
+        "analysis_mode": review.analysis_mode or metadata_fallback.get("analysis mode"),
+        "criteria": criteria,
+        "findings": findings,
         "error_message": review.error_message,
     }
 
@@ -327,14 +390,6 @@ def list_call_reviews(call_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Call not found")
     reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
     return {"call_id": call_id, "reviews": [serialize_review_compact(r) for r in reviews]}
-
-
-@app.get("/calls/{call_id}/qa/reviews/{review_id}")
-def get_call_review(call_id: int, review_id: int, db: Session = Depends(get_db)) -> dict:
-    review = db.get(QAReview, review_id)
-    if not review or review.call_id != call_id:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return {"call_id": call_id, "review": serialize_review_full(review)}
 
 
 def _sanitize_filename(name: str) -> str:
@@ -359,7 +414,15 @@ def export_call_reviews(call_id: int, format: str = Query("xlsx", pattern="^(xls
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
     reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
-    return _export_reviews(call, reviews, format, f"callquanta-call-{call_id}-qa-history")
+    return _export_reviews(call, reviews, format, f"callquanta-call-{call_id}-qa-history", db)
+
+
+@app.get("/calls/{call_id}/qa/reviews/{review_id}")
+def get_call_review(call_id: int, review_id: int, db: Session = Depends(get_db)) -> dict:
+    review = db.get(QAReview, review_id)
+    if not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return {"call_id": call_id, "review": serialize_review_full(review, db)}
 
 
 @app.get("/calls/{call_id}/qa/reviews/{review_id}/export")
@@ -368,17 +431,18 @@ def export_single_review(call_id: int, review_id: int, format: str = Query("xlsx
     review = db.get(QAReview, review_id)
     if not call or not review or review.call_id != call_id:
         raise HTTPException(status_code=404, detail="Review not found")
-    return _export_reviews(call, [review], format, f"callquanta-call-{call_id}-review-{review_id}")
+    return _export_reviews(call, [review], format, f"callquanta-call-{call_id}-review-{review_id}", db)
 
 
-def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_root: str):
+def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_root: str, db: Session):
     safe_name = _sanitize_filename(filename_root)
     if format == "json":
-        payload = [{"call_id": call.id, "filename": call.filename, **serialize_review_full(r)} for r in reviews]
+        payload = [{"call_id": call.id, "filename": call.filename, **serialize_review_full(r, db)} for r in reviews]
         data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         return StreamingResponse(BytesIO(data), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{safe_name}.json"'})
     if format == "csv":
         buf = StringIO()
+        buf.write("\ufeff")
         headers = [
             "Review ID", "Call ID", "Filename", "Created at", "Score",
             "Provider", "Model", "Scorecard", "Report language",

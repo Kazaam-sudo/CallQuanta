@@ -32,8 +32,8 @@ type QACriterion = {
   evidence: string;
   severity: string;
 };
-type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; criteria: QACriterion[]; findings: QAFinding[] };
-type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string };
+type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; criteria: QACriterion[]; findings: QAFinding[] };
+type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -46,6 +46,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<QAReviewCompact[]>([]);
   const [viewingReviewId, setViewingReviewId] = useState<number | null>(null);
+  const [viewLoadingReviewId, setViewLoadingReviewId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -155,14 +156,37 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
 
   const viewReview = async (reviewId: number) => {
+    if (viewingReviewId === reviewId) {
+      setError("Selected review is already being viewed.");
+      return;
+    }
     try {
+      setError(null);
+      setViewLoadingReviewId(reviewId);
       const res = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${reviewId}`);
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        let detail = `Failed to load review #${reviewId}.`;
+        try {
+          const raw = await res.text();
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed?.detail) detail = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
+            } catch {
+              detail = raw;
+            }
+          }
+        } catch {}
+        throw new Error(detail);
+      }
       const data = await res.json();
       setReview(data.review || null);
       setViewingReviewId(reviewId);
-    } catch {
-      setError("Failed to load selected review.");
+      document.getElementById("qa-review-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load selected review.");
+    } finally {
+      setViewLoadingReviewId(null);
     }
   };
 
@@ -187,7 +211,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     <div className="grid" style={{ gap: 16 }}>
       <p style={{ margin: 0 }}><Link href="/calls">← Back to Calls</Link></p>
 
-      <section className="card">
+      <section className="card" id="qa-review-section">
         <div className="actions" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0 }}>Call #{call?.id ?? params.id}</h2>
           {call?.status && <span className={`badge badge-${call.status}`}>{call.status.replaceAll("_", " ")}</span>}
@@ -229,10 +253,11 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
-            <div><strong>Analysis mode:</strong> {providerMeta["analysis mode"] || review.analysis_mode || "unknown"}</div>
-            <div><strong>Provider:</strong> {providerMeta["provider"] || "unknown"}</div>
-            <div><strong>Preset:</strong> {providerMeta["preset"] || "unknown"}</div>
-            <div><strong>Model:</strong> {providerMeta["model"] || "unknown"}</div>
+            {review.legacy_review && <p className="message message-warning">Legacy review — metadata was not captured before v0.10.0.</p>}
+            <div><strong>Analysis mode:</strong> {review.analysis_mode || providerMeta["analysis mode"] || "unknown"}</div>
+            <div><strong>Provider:</strong> {review.provider_name || providerMeta["provider"] || "unknown"}</div>
+            <div><strong>Preset:</strong> {review.provider_preset || providerMeta["preset"] || "unknown"}</div>
+            <div><strong>Model:</strong> {review.model || providerMeta["model"] || "unknown"}</div>
             <div><strong>Scorecard:</strong> {review.scorecard_name || providerMeta["scorecard"] || "unknown"}</div>
             <div><strong>Report language:</strong> {review.report_language || providerMeta["report language"] || "unknown"}</div>
             {recoveredReview && (
@@ -292,12 +317,13 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       <section className="card">
         <h3 style={{ marginTop: 0 }}>Analysis history</h3>
         <div className="actions" style={{ marginBottom: 10 }}>
-          <a className="button button-secondary" href={exportUrl("history","xlsx")}>Export history XLSX</a>
-          <a className="button button-secondary" href={exportUrl("history","csv")}>Export history CSV</a>
+          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","xlsx")}>Export history XLSX</a>
+          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","csv")}>Export history CSV</a>
           {viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>Export review XLSX</a><a className="button button-secondary" href={exportUrl("single","csv")}>Export review CSV</a></>}
         </div>
+        {history.length === 0 && <p className="message">No reviews to export.</p>}
         <div className="grid" style={{ gap: 8 }}>
-          {history.map((item, idx) => <article key={item.id} className="segment"><div style={{display:"flex",justifyContent:"space-between"}}><div><strong>{new Date(item.created_at || "").toLocaleString()}</strong> · {item.status} · score {item.score ?? "-"} · {item.model || "unknown"} · {item.scorecard_name || "unknown"} · {item.report_language || "unknown"}</div><button className="button button-secondary" onClick={() => viewReview(item.id)}>View</button></div>{idx===0 && viewingReviewId===item.id ? <small>Viewing latest review</small> : viewingReviewId===item.id ? <small>Viewing previous review</small> : null}</article>)}
+          {history.map((item, idx) => <article key={item.id} className="segment" style={viewingReviewId === item.id ? { borderColor: "#2563eb", boxShadow: "0 0 0 1px #2563eb" } : undefined}><div style={{display:"flex",justifyContent:"space-between"}}><div><strong>{new Date(item.created_at || "").toLocaleString()}</strong> · {item.status} · score {item.score ?? "-"} · {(item.model || (item.legacy_review ? "legacy" : "unknown"))} · {(item.scorecard_name || (item.legacy_review ? "legacy" : "unknown"))} · {(item.report_language || (item.legacy_review ? "legacy" : "unknown"))}</div><button className="button button-secondary" disabled={viewLoadingReviewId === item.id || viewingReviewId === item.id} onClick={() => viewReview(item.id)}>{viewLoadingReviewId === item.id ? "Loading..." : viewingReviewId === item.id ? "Viewing" : "View"}</button></div>{idx===0 && viewingReviewId===item.id ? <small>Viewing latest review</small> : viewingReviewId===item.id ? <small>{`Viewing review #${item.id} from ${new Date(item.created_at || "").toLocaleString()}`}</small> : null}{item.legacy_review ? <small>Legacy review — metadata was not captured before v0.10.0.</small> : null}</article>)}
         </div>
       </section>
 
