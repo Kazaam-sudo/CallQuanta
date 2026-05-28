@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import os
@@ -378,14 +379,42 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
         return StreamingResponse(BytesIO(data), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{safe_name}.json"'})
     if format == "csv":
         buf = StringIO()
-        headers = ["Review ID","Call ID","Filename","Created at","Score","Provider","Model","Scorecard","Report language","Criterion #","Criterion title","Criterion score","Criterion max points","Comment","Evidence"]
-        buf.write(",".join(headers) + "\n")
+        headers = [
+            "Review ID", "Call ID", "Filename", "Created at", "Score",
+            "Provider", "Model", "Scorecard", "Report language",
+            "Criterion #", "Criterion title", "Criterion score",
+            "Criterion max points", "Comment", "Evidence",
+        ]
+        writer = csv.writer(buf)
+        writer.writerow(headers)
+
         for row in _review_rows(call, reviews):
-            r=row["review"]; c=row["criterion"]
-            vals=[r.id,call.id,call.filename,r.created_at.isoformat() if r.created_at else "",r.score or "",r.provider_name or "",r.model or "",r.scorecard_name or "",r.report_language or "",c.get("index",""),c.get("title",""),c.get("score",""),c.get("max_points",""),c.get("comment",""),c.get("evidence","")]
-            esc = [f'"{str(v).replace("\"", "\"\"")}"' for v in vals]
-            buf.write(",".join(esc) + "\n")
-        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'})
+            r = row["review"]
+            c = row["criterion"]
+            vals = [
+                r.id,
+                call.id,
+                call.filename,
+                r.created_at.isoformat() if r.created_at else "",
+                r.score if r.score is not None else "",
+                r.provider_name or "",
+                r.model or "",
+                r.scorecard_name or "",
+                r.report_language or "",
+                c.get("index", ""),
+                c.get("title", ""),
+                c.get("score", ""),
+                c.get("max_points", ""),
+                c.get("comment", ""),
+                c.get("evidence", ""),
+            ]
+            writer.writerow(vals)
+
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'},
+        )
     wb=Workbook(); ws=wb.active; ws.title="Summary"
     ws.append(["Review ID","Call ID","Filename","Created at","Status","Score","Provider","Model","Scorecard","Report language","Summary"])
     for r in reviews:
