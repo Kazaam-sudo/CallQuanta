@@ -9,10 +9,10 @@ from typing import Any
 import redis
 import requests
 import yaml
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from db import Call, ProviderConfig, QAFinding, QAReview, ScorecardConfig, TranscriptSegment
+from db import Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -522,44 +522,31 @@ def process_qa_job(call_id: int) -> None:
                         }
                     )
 
-            existing_reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id)).scalars().all()
-            for existing_review in existing_reviews:
-                db.execute(delete(QAFinding).where(QAFinding.qa_review_id == existing_review.id))
-            db.execute(delete(QAReview).where(QAReview.call_id == call_id))
-
-            qa_review = QAReview(call_id=call_id, score=review["score"], summary=review["summary"])
+            provider_snapshot = resolve_active_provider(db) if QA_MODE != "placeholder" else {"name": "placeholder", "preset": "placeholder", "model": "placeholder"}
+            qa_review = QAReview(
+                call_id=call_id,
+                status="success",
+                analysis_mode=QA_MODE if QA_MODE == "placeholder" else "openai_compatible",
+                provider_name=provider_snapshot.get("name"),
+                provider_preset=provider_snapshot.get("preset"),
+                model=provider_snapshot.get("model"),
+                scorecard_name=scorecard.get("name"),
+                report_language=scorecard.get("report_language", "english"),
+                score=review.get("score"),
+                summary=review.get("summary"),
+                criteria_breakdown=review.get("criteria", []),
+                findings=review.get("findings", []),
+                normalized_review_json=review,
+                scorecard_snapshot=scorecard,
+            )
             db.add(qa_review)
-            db.flush()
-
-            for criterion in review["criteria"]:
-                db.add(
-                    QAFinding(
-                        qa_review_id=qa_review.id,
-                        severity=criterion["severity"],
-                        evidence=(
-                            f"[criterion:{criterion['id']}] {criterion['title']} "
-                            f"{criterion['score']}/{criterion['max_points']}: "
-                            f"{criterion['comment']} | evidence: {criterion['evidence']}"
-                        ),
-                    )
-                )
-
-            for finding in review["findings"]:
-                db.add(
-                    QAFinding(
-                        qa_review_id=qa_review.id,
-                        severity=finding["severity"],
-                        evidence=finding["evidence"],
-                    )
-                )
-            mode_detail = f"Analysis mode: openai_compatible; Provider: {provider.get('name', 'unknown')}; Preset: {provider.get('preset', 'env')}; Model: {provider.get('model', LLM_MODEL)}; Scorecard: {scorecard.get('name', 'unknown')}; Report language: {scorecard.get('report_language', 'english')}" if QA_MODE != "placeholder" else f"Analysis mode: {QA_MODE}; Scorecard: {scorecard.get('name', 'unknown')}; Report language: {scorecard.get('report_language', 'english')}"
-            db.add(QAFinding(qa_review_id=qa_review.id, severity="info", evidence=mode_detail))
-
             call.status = "analyzed"
             db.commit()
-            print(f"call {call_id} analyzed with mode={QA_MODE} provider={provider.get('name','n/a') if QA_MODE!='placeholder' else 'placeholder'}")
+            print(f"call {call_id} analyzed with mode={QA_MODE} provider={provider_snapshot.get('name','n/a')}")
         except Exception as exc:
             db.rollback()
+            failed = QAReview(call_id=call_id,status="failed",analysis_mode=QA_MODE,error_message=str(exc)[:500])
+            db.add(failed)
             call.status = "analysis_failed"
             db.commit()
             print(f"failed to analyze call {call_id}: {exc}")

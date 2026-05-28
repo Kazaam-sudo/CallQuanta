@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const ALLOWED_LANGUAGES = ["english", "russian", "same_as_transcript"] as const;
@@ -39,6 +39,8 @@ export default function ScorecardPage() {
   const [scorecard, setScorecard] = useState<Scorecard>(emptyScorecard);
   const [message, setMessage] = useState<string>("");
   const [errors, setErrors] = useState<string[]>([]);
+  const [successFlash, setSuccessFlash] = useState("");
+  const topCriterionRef = useRef<HTMLDivElement | null>(null);
 
   const diagnostics = useMemo(() => {
     const criteriaCount = scorecard.criteria.length;
@@ -100,7 +102,7 @@ export default function ScorecardPage() {
       setScorecard(saved);
       const savedCriteriaCount = saved.criteria.length;
       const savedTotal = saved.criteria.reduce((sum, criterion) => sum + Number(criterion.max_points || 0), 0);
-      setMessage(`Scorecard saved. Saved language: ${saved.report_language}. Criteria count: ${savedCriteriaCount}. Total max score: ${savedTotal}.`);
+      setSuccessFlash("Scorecard saved."); setTimeout(() => setSuccessFlash(""), 2500);
       return;
     }
 
@@ -121,7 +123,7 @@ export default function ScorecardPage() {
     if (res.ok) {
       const payload = await res.json();
       setScorecard(payload);
-      setMessage("Scorecard reset to default.");
+      setSuccessFlash("Scorecard reset to default."); setTimeout(() => setSuccessFlash(""), 2500);
       return;
     }
 
@@ -154,14 +156,14 @@ export default function ScorecardPage() {
         </select>
 
         <div className="actions" style={{ marginTop: 12 }}>
-          <button className="button button-secondary" onClick={() => setScorecard({ ...scorecard, criteria: [...scorecard.criteria, newCriterion()] })}>
+          <button className="button button-secondary" onClick={() => { const created = newCriterion(); setScorecard({ ...scorecard, criteria: [created, ...scorecard.criteria] }); setTimeout(() => topCriterionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50); }}>
             Add criterion
           </button>
         </div>
 
         <div className="grid" style={{ marginTop: 12, gap: 12 }}>
           {scorecard.criteria.map((criterion, idx) => (
-            <article key={criterion.id} className="segment">
+            <article key={criterion.id} className="segment" ref={idx===0 ? topCriterionRef : undefined}>
               <strong>Criterion #{idx + 1}</strong>
 
               <label>Title</label>
@@ -263,7 +265,7 @@ export default function ScorecardPage() {
             ))}
           </div>
         )}
-        {message && <p className="message">{message}</p>}
+        {successFlash && <p className="message">{successFlash}</p>}
       </section>
     </main>
   );
