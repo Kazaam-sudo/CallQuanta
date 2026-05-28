@@ -22,7 +22,7 @@ type TranscriptSegment = {
   text: string;
 };
 
-type QAFinding = { id: number; severity: string; evidence: string };
+type QAFinding = { id?: number; severity: string; evidence: string };
 type QACriterion = {
   id: string;
   title: string;
@@ -32,7 +32,8 @@ type QACriterion = {
   evidence: string;
   severity: string;
 };
-type QAReview = { id: number; score: number; summary: string; mode?: string; scorecard_name?: string; report_language?: string; criteria: QACriterion[]; findings: QAFinding[] };
+type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; criteria: QACriterion[]; findings: QAFinding[] };
+type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -43,6 +44,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [review, setReview] = useState<QAReview | null>(null);
   const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState<QAReviewCompact[]>([]);
+  const [viewingReviewId, setViewingReviewId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -51,10 +54,11 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     setLoading(true);
     setError(null);
     try {
-      const [callResponse, transcriptResponse, qaResponse] = await Promise.all([
+      const [callResponse, transcriptResponse, qaResponse, historyResponse] = await Promise.all([
         fetch(`${API_BASE_URL}/calls/${params.id}`),
         fetch(`${API_BASE_URL}/calls/${params.id}/transcript`),
         fetch(`${API_BASE_URL}/calls/${params.id}/qa`),
+        fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews`),
       ]);
       if (!callResponse.ok) {
         setError("Call not found.");
@@ -65,10 +69,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         const transcriptData = await transcriptResponse.json();
         setSegments(transcriptData.segments || []);
       }
-      if (qaResponse.ok) {
-        const qaData = await qaResponse.json();
-        setReview(qaData.review || null);
-      }
+      if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); }
+      if (historyResponse.ok) { const hist = await historyResponse.json(); setHistory(hist.reviews || []); }
     } catch {
       setError("Failed to load call.");
     } finally {
@@ -151,6 +153,23 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     return out;
   }, [review]);
 
+
+  const viewReview = async (reviewId: number) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${reviewId}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setReview(data.review || null);
+      setViewingReviewId(reviewId);
+    } catch {
+      setError("Failed to load selected review.");
+    }
+  };
+
+  const exportUrl = (kind: "history"|"single", format: "xlsx"|"csv") => kind === "history"
+    ? `${API_BASE_URL}/calls/${params.id}/qa/reviews/export?format=${format}`
+    : `${API_BASE_URL}/calls/${params.id}/qa/reviews/${viewingReviewId}/export?format=${format}`;
+
   const latestFailureHint = useMemo(() => {
     const warning = review?.findings?.find((f) => f.severity === "warning" && f.evidence.toLowerCase().includes("parse error"));
     return warning?.evidence;
@@ -210,7 +229,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
-            <div><strong>Analysis mode:</strong> {providerMeta["analysis mode"] || review.mode || "unknown"}</div>
+            <div><strong>Analysis mode:</strong> {providerMeta["analysis mode"] || review.analysis_mode || "unknown"}</div>
             <div><strong>Provider:</strong> {providerMeta["provider"] || "unknown"}</div>
             <div><strong>Preset:</strong> {providerMeta["preset"] || "unknown"}</div>
             <div><strong>Model:</strong> {providerMeta["model"] || "unknown"}</div>
@@ -268,6 +287,18 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             </div>
           </div>
         )}
+      </section>
+
+      <section className="card">
+        <h3 style={{ marginTop: 0 }}>Analysis history</h3>
+        <div className="actions" style={{ marginBottom: 10 }}>
+          <a className="button button-secondary" href={exportUrl("history","xlsx")}>Export history XLSX</a>
+          <a className="button button-secondary" href={exportUrl("history","csv")}>Export history CSV</a>
+          {viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>Export review XLSX</a><a className="button button-secondary" href={exportUrl("single","csv")}>Export review CSV</a></>}
+        </div>
+        <div className="grid" style={{ gap: 8 }}>
+          {history.map((item, idx) => <article key={item.id} className="segment"><div style={{display:"flex",justifyContent:"space-between"}}><div><strong>{new Date(item.created_at || "").toLocaleString()}</strong> · {item.status} · score {item.score ?? "-"} · {item.model || "unknown"} · {item.scorecard_name || "unknown"} · {item.report_language || "unknown"}</div><button className="button button-secondary" onClick={() => viewReview(item.id)}>View</button></div>{idx===0 && viewingReviewId===item.id ? <small>Viewing latest review</small> : viewingReviewId===item.id ? <small>Viewing previous review</small> : null}</article>)}
+        </div>
       </section>
 
       <section className="card">

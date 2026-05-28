@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -32,16 +32,22 @@ class QAReview(Base):
     __tablename__ = "qa_reviews"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"))
-    score: Mapped[int] = mapped_column(Integer)
-    summary: Mapped[str] = mapped_column(Text)
-
-
-class QAFinding(Base):
-    __tablename__ = "qa_findings"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    qa_review_id: Mapped[int] = mapped_column(ForeignKey("qa_reviews.id"))
-    severity: Mapped[str] = mapped_column(String(32))
-    evidence: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status: Mapped[str] = mapped_column(String(32), default="success")
+    analysis_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_preset: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    scorecard_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    report_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criteria_breakdown: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    findings: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    raw_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    normalized_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scorecard_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ProviderConfig(Base):

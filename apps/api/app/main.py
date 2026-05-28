@@ -8,14 +8,17 @@ from uuid import uuid4
 import redis
 import requests
 import yaml
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from io import BytesIO, StringIO
+from openpyxl import Workbook
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, ProviderConfig, QAFinding, QAReview, ScorecardConfig, TranscriptSegment
+from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
 
 app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
@@ -279,69 +282,122 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
 
-    review = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.id.desc())).scalars().first()
+    review = db.execute(
+        select(QAReview)
+        .where(QAReview.call_id == call_id, QAReview.status == "success")
+        .order_by(QAReview.created_at.desc(), QAReview.id.desc())
+    ).scalars().first()
     if not review:
         return {"call_id": call_id, "status": call.status, "review": None}
 
-    findings = db.execute(
-        select(QAFinding).where(QAFinding.qa_review_id == review.id).order_by(QAFinding.id.asc())
-    ).scalars().all()
+    return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review)}
 
-    criteria = []
-    findings_payload = []
-    mode = "placeholder" if os.environ.get("QA_MODE", "placeholder") == "placeholder" else "openai_compatible"
-    scorecard_name = None
-    report_language = None
-    for finding in findings:
-        evidence = finding.evidence or ""
-        if evidence.startswith("[criterion:"):
-            prefix, _, detail = evidence.partition("] ")
-            criterion_id = prefix.replace("[criterion:", "").strip()
-            title_score, _, tail = detail.partition(": ")
-            title, _, score_text = title_score.rpartition(" ")
-            comment, _, criterion_evidence = tail.partition(" | evidence: ")
-            score_value, _, max_points = score_text.partition("/")
-            criteria.append(
-                {
-                    "id": criterion_id,
-                    "title": title.strip(),
-                    "score": score_value.strip(),
-                    "max_points": max_points.strip(),
-                    "comment": comment.strip(),
-                    "evidence": criterion_evidence.strip(),
-                    "severity": finding.severity,
-                }
-            )
-            continue
-        if evidence.lower().startswith("analysis mode:"):
-            parts = [part.strip() for part in evidence.split(";")]
-            for part in parts:
-                key, _, value = part.partition(":")
-                if not value:
-                    continue
-                normalized = key.strip().lower()
-                if normalized == "analysis mode":
-                    mode = value.strip()
-                if normalized == "scorecard":
-                    scorecard_name = value.strip()
-                if normalized == "report language":
-                    report_language = value.strip()
-        findings_payload.append({"id": finding.id, "severity": finding.severity, "evidence": evidence})
 
+def serialize_review_compact(review: QAReview) -> dict:
     return {
-        "call_id": call_id,
-        "status": call.status,
-        "review": {
-            "id": review.id,
-            "score": review.score,
-            "summary": review.summary,
-            "mode": mode,
-            "scorecard_name": scorecard_name,
-            "report_language": report_language,
-            "criteria": criteria,
-            "findings": findings_payload,
-        },
+        "id": review.id,
+        "created_at": review.created_at.isoformat() if review.created_at else None,
+        "status": review.status,
+        "score": review.score,
+        "provider_name": review.provider_name,
+        "model": review.model,
+        "scorecard_name": review.scorecard_name,
+        "report_language": review.report_language,
+        "analysis_mode": review.analysis_mode,
     }
+
+
+def serialize_review_full(review: QAReview) -> dict:
+    return {
+        **serialize_review_compact(review),
+        "summary": review.summary,
+        "provider_preset": review.provider_preset,
+        "criteria": review.criteria_breakdown or [],
+        "findings": review.findings or [],
+        "error_message": review.error_message,
+    }
+
+
+@app.get("/calls/{call_id}/qa/reviews")
+def list_call_reviews(call_id: int, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
+    return {"call_id": call_id, "reviews": [serialize_review_compact(r) for r in reviews]}
+
+
+@app.get("/calls/{call_id}/qa/reviews/{review_id}")
+def get_call_review(call_id: int, review_id: int, db: Session = Depends(get_db)) -> dict:
+    review = db.get(QAReview, review_id)
+    if not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return {"call_id": call_id, "review": serialize_review_full(review)}
+
+
+def _sanitize_filename(name: str) -> str:
+    return secure_filename(name) or "export"
+
+
+def _review_rows(call: Call, reviews: list[QAReview]) -> list[dict]:
+    rows = []
+    for review in reviews:
+        criteria = review.criteria_breakdown or []
+        if not criteria:
+            rows.append({"review": review, "criterion": {}})
+            continue
+        for idx, c in enumerate(criteria, start=1):
+            rows.append({"review": review, "criterion": {**c, "index": idx}})
+    return rows
+
+
+@app.get("/calls/{call_id}/qa/reviews/export")
+def export_call_reviews(call_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db)):
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
+    return _export_reviews(call, reviews, format, f"callquanta-call-{call_id}-qa-history")
+
+
+@app.get("/calls/{call_id}/qa/reviews/{review_id}/export")
+def export_single_review(call_id: int, review_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db)):
+    call = db.get(Call, call_id)
+    review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return _export_reviews(call, [review], format, f"callquanta-call-{call_id}-review-{review_id}")
+
+
+def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_root: str):
+    safe_name = _sanitize_filename(filename_root)
+    if format == "json":
+        payload = [{"call_id": call.id, "filename": call.filename, **serialize_review_full(r)} for r in reviews]
+        data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        return StreamingResponse(BytesIO(data), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{safe_name}.json"'})
+    if format == "csv":
+        buf = StringIO()
+        headers = ["Review ID","Call ID","Filename","Created at","Score","Provider","Model","Scorecard","Report language","Criterion #","Criterion title","Criterion score","Criterion max points","Comment","Evidence"]
+        buf.write(",".join(headers) + "\n")
+        for row in _review_rows(call, reviews):
+            r=row["review"]; c=row["criterion"]
+            vals=[r.id,call.id,call.filename,r.created_at.isoformat() if r.created_at else "",r.score or "",r.provider_name or "",r.model or "",r.scorecard_name or "",r.report_language or "",c.get("index",""),c.get("title",""),c.get("score",""),c.get("max_points",""),c.get("comment",""),c.get("evidence","")]
+            esc = [f'"{str(v).replace("\"", "\"\"")}"' for v in vals]
+            buf.write(",".join(esc) + "\n")
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'})
+    wb=Workbook(); ws=wb.active; ws.title="Summary"
+    ws.append(["Review ID","Call ID","Filename","Created at","Status","Score","Provider","Model","Scorecard","Report language","Summary"])
+    for r in reviews:
+        ws.append([r.id,call.id,call.filename,r.created_at.isoformat() if r.created_at else "",r.status,r.score,r.provider_name,r.model,r.scorecard_name,r.report_language,r.summary])
+    wc=wb.create_sheet("Criteria breakdown"); wc.append(["Review ID","Criterion #","Criterion title","Severity / level","Score","Max points","Comment","Evidence"])
+    wf=wb.create_sheet("Findings"); wf.append(["Review ID","Severity / level","Finding text"])
+    for r in reviews:
+        for i,c in enumerate(r.criteria_breakdown or [], start=1):
+            wc.append([r.id,i,c.get("title"),c.get("severity"),c.get("score"),c.get("max_points"),c.get("comment"),c.get("evidence")])
+        for f in r.findings or []:
+            wf.append([r.id,f.get("severity"),f.get("evidence")])
+    out=BytesIO(); wb.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
 
 
 def serialize_provider_config(provider: ProviderConfig) -> dict:
