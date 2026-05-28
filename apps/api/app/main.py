@@ -240,51 +240,167 @@ def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session 
     return serialize_call(call)
 
 
-@app.get("/dashboard/agent-metrics")
-def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
-    calls = db.execute(select(Call)).scalars().all()
-    groups: dict[str, dict] = {}
-    for call in calls:
-        key = (call.agent_name or "").strip() or "Unassigned"
-        if key not in groups:
-            groups[key] = {
-                "agent_name": key,
-                "calls_count": 0,
-                "analyzed_calls_count": 0,
-                "average_score": None,
-                "lowest_score": None,
-                "_scores": [],
-            }
-        item = groups[key]
-        item["calls_count"] += 1
+def _group_key(value: str | None) -> str:
+    return (value or "").strip() or "Unassigned"
 
-    reviews = db.execute(
+
+def _get_latest_successful_reviews(db: Session) -> tuple[dict[int, Call], list[QAReview], dict[int, QAReview]]:
+    calls = db.execute(select(Call)).scalars().all()
+    calls_by_id = {call.id: call for call in calls}
+    successful_reviews = db.execute(
         select(QAReview)
         .where(QAReview.status == "success", QAReview.score.is_not(None))
         .order_by(QAReview.call_id.asc(), QAReview.created_at.desc(), QAReview.id.desc())
     ).scalars().all()
     latest_by_call: dict[int, QAReview] = {}
-    for review in reviews:
+    for review in successful_reviews:
         latest_by_call.setdefault(review.call_id, review)
+    return calls_by_id, successful_reviews, latest_by_call
 
-    for call_id, review in latest_by_call.items():
-        call = db.get(Call, call_id)
-        if not call:
-            continue
-        key = (call.agent_name or "").strip() or "Unassigned"
-        item = groups.setdefault(key, {"agent_name": key, "calls_count": 0, "analyzed_calls_count": 0, "average_score": None, "lowest_score": None, "_scores": []})
-        item["analyzed_calls_count"] += 1
-        item["_scores"].append(float(review.score))
 
-    metrics = []
-    for item in groups.values():
-        scores = item.pop("_scores")
-        if scores:
-            item["average_score"] = round(sum(scores) / len(scores), 2)
-            item["lowest_score"] = min(scores)
-        metrics.append(item)
-    metrics.sort(key=lambda x: x["agent_name"].lower())
-    return {"agents": metrics}
+@app.get("/dashboard/metrics")
+def dashboard_metrics(db: Session = Depends(get_db)) -> dict:
+    calls_by_id, successful_reviews, latest_by_call = _get_latest_successful_reviews(db)
+    calls = list(calls_by_id.values())
+
+    total_calls = len(calls)
+    uploaded_calls = sum(1 for c in calls if c.status and c.status.startswith("uploaded"))
+    transcribed_calls = sum(1 for c in calls if c.status and c.status.startswith("transcribed"))
+    analyzed_calls = len(latest_by_call)
+    analysis_failed_calls = sum(1 for c in calls if c.status == "analysis_failed")
+    total_qa_reviews = db.execute(select(QAReview.id)).all()
+
+    latest_scores = [float(r.score) for r in latest_by_call.values() if r.score is not None]
+    average_score = round(sum(latest_scores) / len(latest_scores), 2) if latest_scores else None
+    lowest_score = min(latest_scores) if latest_scores else None
+    highest_score = max(latest_scores) if latest_scores else None
+
+    latest_reviews = sorted(latest_by_call.values(), key=lambda r: ((r.created_at.isoformat() if r.created_at else ""), r.id), reverse=True)[:5]
+    latest_reviews_payload = []
+    for review in latest_reviews:
+        call = calls_by_id.get(review.call_id)
+        latest_reviews_payload.append({
+            "review_id": review.id,
+            "call_id": review.call_id,
+            "filename": call.filename if call else None,
+            "created_at": review.created_at.isoformat() if review.created_at else None,
+            "score": review.score,
+            "agent_name": _group_key(call.agent_name if call else None),
+            "team": _group_key(call.team if call else None),
+            "campaign": _group_key(call.campaign if call else None),
+            "provider_name": review.provider_name,
+            "model": review.model,
+            "scorecard_name": review.scorecard_name,
+            "report_language": review.report_language,
+            "summary": review.summary,
+        })
+
+    lowest_reviews = sorted(latest_by_call.values(), key=lambda r: (float(r.score), r.created_at, r.id))[:5]
+    lowest_payload = []
+    for review in lowest_reviews:
+        call = calls_by_id.get(review.call_id)
+        lowest_payload.append({
+            "review_id": review.id,
+            "call_id": review.call_id,
+            "filename": call.filename if call else None,
+            "created_at": review.created_at.isoformat() if review.created_at else None,
+            "score": review.score,
+            "agent_name": _group_key(call.agent_name if call else None),
+            "team": _group_key(call.team if call else None),
+            "campaign": _group_key(call.campaign if call else None),
+            "summary": review.summary,
+        })
+
+    criteria_rollup: dict[str, dict] = {}
+    for review in latest_by_call.values():
+        for criterion in (review.criteria_breakdown or []):
+            max_points = float(criterion.get("max_points") or 0)
+            if max_points <= 0:
+                continue
+            title = str(criterion.get("title") or "Untitled criterion").strip() or "Untitled criterion"
+            score = float(criterion.get("score") or 0)
+            percent = (score / max_points) * 100 if max_points > 0 else 0
+            severity = str(criterion.get("severity") or "").lower()
+            item = criteria_rollup.setdefault(title, {"criterion_title": title, "reviews_count": 0, "score_sum": 0.0, "max_sum": 0.0, "percent_sum": 0.0, "warning_count": 0, "critical_count": 0})
+            item["reviews_count"] += 1
+            item["score_sum"] += score
+            item["max_sum"] += max_points
+            item["percent_sum"] += percent
+            if severity == "warning":
+                item["warning_count"] += 1
+            if severity == "critical":
+                item["critical_count"] += 1
+
+    criteria_problem_summary = []
+    for item in criteria_rollup.values():
+        count = item["reviews_count"]
+        criteria_problem_summary.append({
+            "criterion_title": item["criterion_title"],
+            "reviews_count": count,
+            "average_score": round(item["score_sum"] / count, 2),
+            "average_max_points": round(item["max_sum"] / count, 2),
+            "average_percent": round(item["percent_sum"] / count, 2),
+            "warning_count": item["warning_count"],
+            "critical_count": item["critical_count"],
+        })
+    criteria_problem_summary.sort(key=lambda x: (x["average_percent"], -x["critical_count"], -x["warning_count"]))
+
+    def build_group(group_field: str):
+        groups: dict[str, dict] = {}
+        for c in calls:
+            key = _group_key(getattr(c, group_field))
+            groups.setdefault(key, {group_field: key, "calls_count": 0, "analyzed_calls_count": 0, "scores": [], "latest_review_at": None})
+            groups[key]["calls_count"] += 1
+        for call_id, review in latest_by_call.items():
+            call = calls_by_id.get(call_id)
+            if not call:
+                continue
+            key = _group_key(getattr(call, group_field))
+            item = groups.setdefault(key, {group_field: key, "calls_count": 0, "analyzed_calls_count": 0, "scores": [], "latest_review_at": None})
+            item["analyzed_calls_count"] += 1
+            item["scores"].append(float(review.score))
+            if not item["latest_review_at"] or (review.created_at and review.created_at > item["latest_review_at"]):
+                item["latest_review_at"] = review.created_at
+        rows = []
+        for key, item in groups.items():
+            scores = item["scores"]
+            rows.append({
+                group_field: key,
+                "calls_count": item["calls_count"],
+                "analyzed_calls_count": item["analyzed_calls_count"],
+                "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+                "lowest_score": min(scores) if scores else None,
+                "highest_score": max(scores) if scores else None,
+                "latest_review_at": item["latest_review_at"].isoformat() if item["latest_review_at"] else None,
+            })
+        rows.sort(key=lambda x: str(x[group_field]).lower())
+        return rows
+
+    return {
+        "summary": {
+            "total_calls": total_calls,
+            "uploaded_calls": uploaded_calls,
+            "transcribed_calls": transcribed_calls,
+            "analyzed_calls": analyzed_calls,
+            "analysis_failed_calls": analysis_failed_calls,
+            "total_qa_reviews": len(total_qa_reviews),
+            "average_score": average_score,
+            "lowest_score": lowest_score,
+            "highest_score": highest_score,
+        },
+        "latest_reviews": latest_reviews_payload,
+        "lowest_score_reviews": lowest_payload,
+        "criteria_problem_summary": criteria_problem_summary,
+        "agent_metrics": build_group("agent_name"),
+        "team_metrics": build_group("team"),
+        "campaign_metrics": build_group("campaign"),
+    }
+
+
+@app.get("/dashboard/agent-metrics")
+def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
+    metrics = dashboard_metrics(db)
+    return {"agents": metrics["agent_metrics"]}
 
 
 @app.get("/calls")
