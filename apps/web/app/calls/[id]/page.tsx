@@ -55,7 +55,10 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [metadataSaving, setMetadataSaving] = useState(false);
+  const [metadataSaveSuccess, setMetadataSaveSuccess] = useState(false);
+  const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
 
   const load = useCallback(async () => {
@@ -153,9 +156,12 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   };
 
   const saveMetadata = async () => {
-    if (!call || savingMetadata) return;
+    if (!call || metadataSaving) return;
     try {
-      setSavingMetadata(true);
+      setMetadataSaving(true);
+      setMetadataSaveSuccess(false);
+      setMetadataMessage(null);
+      setMetadataError(null);
       setError(null);
       const response = await fetch(`${API_BASE_URL}/calls/${params.id}/metadata`, {
         method: "PATCH",
@@ -163,15 +169,41 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         body: JSON.stringify(metadata),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data?.detail || "Failed to save metadata.");
+        let detail = "Unknown error";
+        const raw = await response.text().catch(() => "");
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed?.detail === "string" && parsed.detail) detail = parsed.detail;
+            else if (parsed?.detail != null) detail = JSON.stringify(parsed.detail);
+            else detail = raw;
+          } catch {
+            detail = raw;
+          }
+        }
+        throw new Error(`Failed to save metadata: ${detail}`);
       }
       const updated = await response.json();
       setCall(updated);
+      setMetadata({
+        agent_name: updated.agent_name || "",
+        team: updated.team || "",
+        campaign: updated.campaign || "",
+        direction: updated.direction || "unknown",
+        language: updated.language || "",
+      });
+      setMetadataSaveSuccess(true);
+      setMetadataMessage("Metadata saved.");
+      setTimeout(() => {
+        setMetadataSaveSuccess(false);
+        setMetadataMessage(null);
+      }, 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save metadata.");
+      const message = err instanceof Error ? err.message : "Failed to save metadata: Unknown error";
+      setMetadataError(message);
+      setMetadataSaveSuccess(false);
     } finally {
-      setSavingMetadata(false);
+      setMetadataSaving(false);
     }
   };
 
@@ -301,7 +333,13 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             </select>
           </label>
           <label>Language<input value={metadata.language} onChange={(e) => setMetadata((m) => ({ ...m, language: e.target.value }))} /></label>
-          <div><button className="button" onClick={saveMetadata} disabled={savingMetadata}>{savingMetadata ? "Saving..." : "Save metadata"}</button></div>
+          <div>
+            <button className="button" onClick={saveMetadata} disabled={metadataSaving}>
+              {metadataSaving ? "Saving..." : metadataSaveSuccess ? "Saved" : "Save metadata"}
+            </button>
+            {metadataMessage && <p className="message" style={{ marginTop: 8 }}>{metadataMessage}</p>}
+            {metadataError && <p className="message message-error" style={{ marginTop: 8 }}>{metadataError}</p>}
+          </div>
         </div>
       </section>
 
