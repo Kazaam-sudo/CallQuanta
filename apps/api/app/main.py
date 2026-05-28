@@ -18,7 +18,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
+from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_qa_reviews_table
 
 app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
@@ -145,6 +145,7 @@ def on_startup() -> None:
     logging.basicConfig(level=logging.INFO)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    migrate_qa_reviews_table(engine)
     logger.info("CallQuanta API started")
 
 
