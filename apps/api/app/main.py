@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_qa_reviews_table
+from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
 app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
@@ -102,6 +102,14 @@ class ScorecardPayload(BaseModel):
     criteria: list[ScorecardCriterion]
 
 
+class CallMetadataPayload(BaseModel):
+    agent_name: str | None = None
+    team: str | None = None
+    campaign: str | None = None
+    direction: str | None = None
+    language: str | None = None
+
+
 def _provider_test_request(provider_type: str, base_url: str, model: str, api_key: str | None, timeout_seconds: float) -> dict:
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -147,6 +155,7 @@ def on_startup() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     migrate_qa_reviews_table(engine)
+    migrate_calls_table(engine)
     logger.info("CallQuanta API started")
 
 
@@ -202,8 +211,80 @@ def serialize_call(call: Call) -> dict:
         "stored_path": call.stored_path,
         "file_size_bytes": call.file_size_bytes,
         "content_type": call.content_type,
+        "agent_name": call.agent_name,
+        "team": call.team,
+        "campaign": call.campaign,
+        "direction": call.direction,
+        "language": call.language,
         "created_at": call.created_at.isoformat() if call.created_at else None,
     }
+
+
+@app.patch("/calls/{call_id}/metadata")
+def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session = Depends(get_db)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    normalized_direction = payload.direction.lower().strip() if isinstance(payload.direction, str) else None
+    if normalized_direction is not None and normalized_direction not in {"inbound", "outbound", "unknown"}:
+        raise HTTPException(status_code=400, detail="direction must be one of: inbound, outbound, unknown")
+
+    call.agent_name = payload.agent_name.strip() if isinstance(payload.agent_name, str) and payload.agent_name.strip() else None
+    call.team = payload.team.strip() if isinstance(payload.team, str) and payload.team.strip() else None
+    call.campaign = payload.campaign.strip() if isinstance(payload.campaign, str) and payload.campaign.strip() else None
+    call.direction = normalized_direction
+    call.language = payload.language.strip() if isinstance(payload.language, str) and payload.language.strip() else None
+    db.commit()
+    db.refresh(call)
+    return serialize_call(call)
+
+
+@app.get("/dashboard/agent-metrics")
+def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
+    calls = db.execute(select(Call)).scalars().all()
+    groups: dict[str, dict] = {}
+    for call in calls:
+        key = (call.agent_name or "").strip() or "Unassigned"
+        if key not in groups:
+            groups[key] = {
+                "agent_name": key,
+                "calls_count": 0,
+                "analyzed_calls_count": 0,
+                "average_score": None,
+                "lowest_score": None,
+                "_scores": [],
+            }
+        item = groups[key]
+        item["calls_count"] += 1
+
+    reviews = db.execute(
+        select(QAReview)
+        .where(QAReview.status == "success", QAReview.score.is_not(None))
+        .order_by(QAReview.call_id.asc(), QAReview.created_at.desc(), QAReview.id.desc())
+    ).scalars().all()
+    latest_by_call: dict[int, QAReview] = {}
+    for review in reviews:
+        latest_by_call.setdefault(review.call_id, review)
+
+    for call_id, review in latest_by_call.items():
+        call = db.get(Call, call_id)
+        if not call:
+            continue
+        key = (call.agent_name or "").strip() or "Unassigned"
+        item = groups.setdefault(key, {"agent_name": key, "calls_count": 0, "analyzed_calls_count": 0, "average_score": None, "lowest_score": None, "_scores": []})
+        item["analyzed_calls_count"] += 1
+        item["_scores"].append(float(review.score))
+
+    metrics = []
+    for item in groups.values():
+        scores = item.pop("_scores")
+        if scores:
+            item["average_score"] = round(sum(scores) / len(scores), 2)
+            item["lowest_score"] = min(scores)
+        metrics.append(item)
+    metrics.sort(key=lambda x: x["agent_name"].lower())
+    return {"agents": metrics}
 
 
 @app.get("/calls")

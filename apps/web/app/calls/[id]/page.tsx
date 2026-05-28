@@ -11,6 +11,11 @@ type Call = {
   stored_path?: string | null;
   file_size_bytes?: number | null;
   content_type?: string | null;
+  agent_name?: string | null;
+  team?: string | null;
+  campaign?: string | null;
+  direction?: "inbound" | "outbound" | "unknown" | null;
+  language?: string | null;
   created_at?: string | null;
 };
 
@@ -50,6 +55,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,7 +72,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         setError("Call not found.");
         return;
       }
-      setCall(await callResponse.json());
+      const callData = await callResponse.json();
+      setCall(callData);
+      setMetadata({
+        agent_name: callData.agent_name || "",
+        team: callData.team || "",
+        campaign: callData.campaign || "",
+        direction: callData.direction || "unknown",
+        language: callData.language || "",
+      });
       if (transcriptResponse.ok) {
         const transcriptData = await transcriptResponse.json();
         setSegments(transcriptData.segments || []);
@@ -134,6 +149,29 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       setError("Analyze request failed: Network error.");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const saveMetadata = async () => {
+    if (!call || savingMetadata) return;
+    try {
+      setSavingMetadata(true);
+      setError(null);
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/metadata`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(metadata),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.detail || "Failed to save metadata.");
+      }
+      const updated = await response.json();
+      setCall(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save metadata.");
+    } finally {
+      setSavingMetadata(false);
     }
   };
 
@@ -248,6 +286,23 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
           </div>
         )}
+      </section>
+      <section className="card">
+        <h3 style={{ marginTop: 0 }}>Call metadata</h3>
+        <div className="grid" style={{ gap: 10 }}>
+          <label>Agent/operator name<input value={metadata.agent_name} onChange={(e) => setMetadata((m) => ({ ...m, agent_name: e.target.value }))} /></label>
+          <label>Team<input value={metadata.team} onChange={(e) => setMetadata((m) => ({ ...m, team: e.target.value }))} /></label>
+          <label>Campaign<input value={metadata.campaign} onChange={(e) => setMetadata((m) => ({ ...m, campaign: e.target.value }))} /></label>
+          <label>Direction
+            <select value={metadata.direction} onChange={(e) => setMetadata((m) => ({ ...m, direction: e.target.value }))}>
+              <option value="unknown">unknown</option>
+              <option value="inbound">inbound</option>
+              <option value="outbound">outbound</option>
+            </select>
+          </label>
+          <label>Language<input value={metadata.language} onChange={(e) => setMetadata((m) => ({ ...m, language: e.target.value }))} /></label>
+          <div><button className="button" onClick={saveMetadata} disabled={savingMetadata}>{savingMetadata ? "Saving..." : "Save metadata"}</button></div>
+        </div>
       </section>
 
       <section className="card" id="qa-review-section">

@@ -15,6 +15,11 @@ class Call(Base):
     stored_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    team: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    campaign: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -101,3 +106,23 @@ def migrate_qa_reviews_table(engine: Engine) -> None:
 
         if "status" in add_columns_sql:
             conn.execute(text("UPDATE qa_reviews SET status = 'success' WHERE status IS NULL"))
+
+
+def migrate_calls_table(engine: Engine) -> None:
+    """Backfill/upgrade calls table with metadata columns for operator-level reporting."""
+    inspector = inspect(engine)
+    if "calls" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("calls")}
+    add_columns_sql = {
+        "agent_name": "ALTER TABLE calls ADD COLUMN agent_name VARCHAR(255)",
+        "team": "ALTER TABLE calls ADD COLUMN team VARCHAR(255)",
+        "campaign": "ALTER TABLE calls ADD COLUMN campaign VARCHAR(255)",
+        "direction": "ALTER TABLE calls ADD COLUMN direction VARCHAR(16)",
+        "language": "ALTER TABLE calls ADD COLUMN language VARCHAR(64)",
+    }
+    with engine.begin() as conn:
+        for column_name, ddl in add_columns_sql.items():
+            if column_name not in existing_columns:
+                conn.execute(text(ddl))
