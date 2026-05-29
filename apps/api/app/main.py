@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
+from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
 app = FastAPI(title="CallQuanta API", version="0.7.0")
 logger = logging.getLogger("callquanta.api")
@@ -37,6 +37,27 @@ CORS_ORIGINS = os.environ.get(
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
 
+
+
+LANGUAGE_CATALOG = [
+    {"code": "en", "label": "English", "native_label": "English", "ui_supported": True, "llm_supported": True},
+    {"code": "ru", "label": "Russian", "native_label": "Русский", "ui_supported": True, "llm_supported": True},
+    {"code": "uz", "label": "Uzbek", "native_label": "O‘zbek", "ui_supported": True, "llm_supported": True},
+    {"code": "es", "label": "Spanish", "native_label": "Español", "ui_supported": False, "llm_supported": True},
+    {"code": "pt", "label": "Portuguese", "native_label": "Português", "ui_supported": False, "llm_supported": True},
+    {"code": "de", "label": "German", "native_label": "Deutsch", "ui_supported": False, "llm_supported": True},
+    {"code": "fr", "label": "French", "native_label": "Français", "ui_supported": False, "llm_supported": True},
+    {"code": "tr", "label": "Turkish", "native_label": "Türkçe", "ui_supported": False, "llm_supported": True},
+    {"code": "ar", "label": "Arabic", "native_label": "العربية", "ui_supported": False, "llm_supported": True},
+    {"code": "custom", "label": "Custom", "native_label": "Custom", "ui_supported": False, "llm_supported": True},
+]
+LANGUAGE_LABEL_BY_CODE = {item["code"]: item["label"] for item in LANGUAGE_CATALOG}
+WORKSPACE_SETTINGS_KEY = "workspace"
+DEFAULT_WORKSPACE_SETTINGS = {
+    "interface_language": "en",
+    "qa_report_language_mode": "workspace",
+    "qa_report_language": "English",
+}
 
 PROVIDER_PRESETS = [
     {"id": "ollama", "label": "Ollama Local", "provider_type": "openai_compatible", "default_base_url": "http://ollama:11434/v1", "default_model": "qwen2.5:1.5b", "api_key_required": False},
@@ -102,6 +123,13 @@ class ScorecardPayload(BaseModel):
     criteria: list[ScorecardCriterion]
 
 
+
+
+class WorkspaceSettingsPayload(BaseModel):
+    interface_language: str | None = None
+    qa_report_language_mode: str | None = None
+    qa_report_language: str | None = None
+
 class CallMetadataPayload(BaseModel):
     agent_name: str | None = None
     team: str | None = None
@@ -109,6 +137,58 @@ class CallMetadataPayload(BaseModel):
     direction: str | None = None
     language: str | None = None
 
+
+
+
+def _normalize_workspace_settings(value: dict | None) -> dict:
+    settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+    if isinstance(value, dict):
+        settings.update({k: v for k, v in value.items() if v is not None})
+    if settings.get("interface_language") not in LANGUAGE_LABEL_BY_CODE:
+        settings["interface_language"] = "en"
+    if settings.get("qa_report_language_mode") not in {"workspace", "same_as_transcript", "custom"}:
+        settings["qa_report_language_mode"] = "workspace"
+    language = str(settings.get("qa_report_language") or "").strip()
+    if not language:
+        language = LANGUAGE_LABEL_BY_CODE.get(settings["interface_language"], "English")
+    settings["qa_report_language"] = language
+    return settings
+
+
+def _get_workspace_settings(db: Session) -> dict:
+    setting = db.get(AppSetting, WORKSPACE_SETTINGS_KEY)
+    return _normalize_workspace_settings(setting.value if setting else None)
+
+
+def _upsert_workspace_settings(db: Session, payload: WorkspaceSettingsPayload) -> dict:
+    current = _get_workspace_settings(db)
+    updates = payload.model_dump(exclude_unset=True)
+    if "interface_language" in updates:
+        code = str(updates["interface_language"] or "").strip()
+        if code not in LANGUAGE_LABEL_BY_CODE:
+            raise HTTPException(status_code=400, detail="Unsupported interface_language")
+        current["interface_language"] = code
+        if current.get("qa_report_language_mode") == "workspace" and "qa_report_language" not in updates:
+            current["qa_report_language"] = LANGUAGE_LABEL_BY_CODE.get(code, "English")
+    if "qa_report_language_mode" in updates:
+        mode = str(updates["qa_report_language_mode"] or "").strip()
+        if mode not in {"workspace", "same_as_transcript", "custom"}:
+            raise HTTPException(status_code=400, detail="qa_report_language_mode must be one of: workspace, same_as_transcript, custom")
+        current["qa_report_language_mode"] = mode
+    if "qa_report_language" in updates:
+        language = str(updates["qa_report_language"] or "").strip()
+        if not language:
+            raise HTTPException(status_code=400, detail="qa_report_language must not be empty")
+        current["qa_report_language"] = language
+    current = _normalize_workspace_settings(current)
+    setting = db.get(AppSetting, WORKSPACE_SETTINGS_KEY)
+    if not setting:
+        setting = AppSetting(key=WORKSPACE_SETTINGS_KEY, value=current)
+        db.add(setting)
+    else:
+        setting.value = current
+    db.commit()
+    return current
 
 def _provider_test_request(provider_type: str, base_url: str, model: str, api_key: str | None, timeout_seconds: float) -> dict:
     headers = {"Content-Type": "application/json"}
@@ -691,6 +771,22 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
     return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
 
 
+
+
+@app.get("/settings/languages")
+def list_languages() -> list[dict]:
+    return LANGUAGE_CATALOG
+
+
+@app.get("/settings/workspace")
+def get_workspace_settings(db: Session = Depends(get_db)) -> dict:
+    return _get_workspace_settings(db)
+
+
+@app.patch("/settings/workspace")
+def patch_workspace_settings(payload: WorkspaceSettingsPayload, db: Session = Depends(get_db)) -> dict:
+    return _upsert_workspace_settings(db, payload)
+
 def serialize_provider_config(provider: ProviderConfig) -> dict:
     config = provider.config or {}
     return {
@@ -722,7 +818,7 @@ def _load_default_scorecard() -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("criteria"), list):
         raise HTTPException(status_code=500, detail="Default scorecard is invalid")
     data.setdefault("name", "Default Sales QA")
-    data.setdefault("report_language", "english")
+    data.setdefault("report_language", "workspace")
     return data
 
 
@@ -738,7 +834,9 @@ def _validate_scorecard(payload: ScorecardPayload) -> None:
         total_max += criterion.max_points
     if total_max <= 0:
         raise HTTPException(status_code=400, detail="Total max score must be greater than 0")
-    if payload.report_language not in {"english", "russian", "same_as_transcript"}:
+    if payload.report_language in {"english", "russian", "same_as_transcript", "workspace"}:
+        return
+    if not payload.report_language.strip():
         raise HTTPException(status_code=400, detail="Invalid report_language")
 
 
