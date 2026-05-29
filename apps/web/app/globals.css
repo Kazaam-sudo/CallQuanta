@@ -42,7 +42,11 @@ a:hover { text-decoration: underline; }
 }
 .brand-title { margin: 0; font-size: 1.2rem; }
 .brand-subtitle { margin: 2px 0 0; color: var(--text-muted); font-size: 0.9rem; }
+.header-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end; }
 .top-nav { display: flex; gap: 14px; flex-wrap: wrap; }
+.language-control { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.9rem; }
+.language-control select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.language-note { flex-basis: 100%; color: #92400e; max-width: 300px; }
 .main-container { max-width: 1040px; margin: 0 auto; padding: 24px 20px 40px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }

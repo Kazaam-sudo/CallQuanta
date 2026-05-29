@@ -1,0 +1,215 @@
+export type WorkspaceSettings = {
+  interface_language: string;
+  qa_report_language_mode: "workspace" | "same_as_transcript" | "custom";
+  qa_report_language: string;
+};
+
+export type LanguageCatalogItem = {
+  code: string;
+  label: string;
+  native_label: string;
+  ui_supported: boolean;
+  llm_supported: boolean;
+};
+
+type Dict = Record<string, string>;
+
+const en: Dict = {
+  "nav.dashboard": "Dashboard",
+  "nav.calls": "Calls",
+  "nav.settings": "Settings",
+  "language.label": "Language",
+  "language.unsupported": "UI translation is not fully available yet. QA reports will use this language.",
+  "dashboard.totalCalls": "Total calls",
+  "dashboard.analyzedCalls": "Analyzed calls",
+  "dashboard.averageScore": "Average score",
+  "dashboard.failedAnalyses": "Failed analyses",
+  "dashboard.totalQaReviews": "Total QA reviews",
+  "dashboard.latestQaReviews": "Latest QA reviews",
+  "dashboard.lowestScoreReviews": "Lowest score reviews",
+  "dashboard.criteriaAttention": "Criteria needing attention",
+  "dashboard.agentPerformance": "Agent performance",
+  "dashboard.teamPerformance": "Team performance",
+  "dashboard.campaignPerformance": "Campaign performance",
+  "calls.uploadCallAudio": "Upload call audio",
+  "calls.upload": "Upload",
+  "calls.chooseFile": "Choose file",
+  "calls.refresh": "Refresh",
+  "calls.calls": "Calls",
+  "calls.status": "Status",
+  "calls.open": "Open",
+  "calls.loading": "Loading calls...",
+  "call.metadata": "Call metadata",
+  "call.agentName": "Agent/operator name",
+  "call.team": "Team",
+  "call.campaign": "Campaign",
+  "call.direction": "Direction",
+  "call.language": "Language",
+  "call.saveMetadata": "Save metadata",
+  "call.metadataSaved": "Metadata saved",
+  "call.qaReview": "QA Review",
+  "call.analysisHistory": "Analysis history",
+  "call.exportHistoryXlsx": "Export history XLSX",
+  "call.exportHistoryCsv": "Export history CSV",
+  "call.exportReviewXlsx": "Export review XLSX",
+  "call.exportReviewCsv": "Export review CSV",
+  "call.transcriptSegments": "Transcript segments",
+  "call.analyze": "Analyze",
+  "call.analyzeAgain": "Analyze again",
+  "call.transcribe": "Transcribe",
+  "call.refresh": "Refresh",
+  "settings.llmProviders": "LLM Provider Settings",
+  "settings.scorecard": "Scorecard Settings",
+  "settings.workspaceLanguage": "Workspace Language",
+  "settings.interfaceLanguage": "Interface language",
+  "settings.qaMode": "QA report language mode",
+  "settings.useWorkspace": "Use workspace language",
+  "settings.sameAsTranscript": "Same as transcript/call language",
+  "settings.customLanguage": "Custom language",
+  "settings.customQaLanguage": "Custom QA report language",
+  "settings.explanation": "Interface language controls UI labels where supported. QA report language controls LLM-generated summary, comments, and findings. Evidence quotes may remain in the original transcript language.",
+  "settings.save": "Save workspace language",
+  "settings.saved": "Workspace language saved.",
+};
+
+const ru: Dict = {
+  "nav.dashboard": "Панель",
+  "nav.calls": "Звонки",
+  "nav.settings": "Настройки",
+  "language.label": "Язык",
+  "language.unsupported": "Перевод интерфейса пока доступен не полностью. QA-отчеты будут использовать этот язык.",
+  "dashboard.totalCalls": "Всего звонков",
+  "dashboard.analyzedCalls": "Проанализировано звонков",
+  "dashboard.averageScore": "Средний балл",
+  "dashboard.failedAnalyses": "Ошибки анализа",
+  "dashboard.totalQaReviews": "Всего QA-проверок",
+  "dashboard.latestQaReviews": "Последние QA-проверки",
+  "dashboard.lowestScoreReviews": "Проверки с низким баллом",
+  "dashboard.criteriaAttention": "Критерии, требующие внимания",
+  "dashboard.agentPerformance": "Эффективность операторов",
+  "dashboard.teamPerformance": "Эффективность команд",
+  "dashboard.campaignPerformance": "Эффективность кампаний",
+  "calls.uploadCallAudio": "Загрузить аудио звонка",
+  "calls.upload": "Загрузить",
+  "calls.chooseFile": "Выбрать файл",
+  "calls.refresh": "Обновить",
+  "calls.calls": "Звонки",
+  "calls.status": "Статус",
+  "calls.open": "Открыть",
+  "calls.loading": "Загрузка звонков...",
+  "call.metadata": "Метаданные звонка",
+  "call.agentName": "Имя оператора",
+  "call.team": "Команда",
+  "call.campaign": "Кампания",
+  "call.direction": "Направление",
+  "call.language": "Язык",
+  "call.saveMetadata": "Сохранить метаданные",
+  "call.metadataSaved": "Метаданные сохранены",
+  "call.qaReview": "QA-проверка",
+  "call.analysisHistory": "История анализа",
+  "call.exportHistoryXlsx": "Экспорт истории XLSX",
+  "call.exportHistoryCsv": "Экспорт истории CSV",
+  "call.exportReviewXlsx": "Экспорт проверки XLSX",
+  "call.exportReviewCsv": "Экспорт проверки CSV",
+  "call.transcriptSegments": "Сегменты транскрипта",
+  "call.analyze": "Анализировать",
+  "call.analyzeAgain": "Анализировать снова",
+  "call.transcribe": "Транскрибировать",
+  "call.refresh": "Обновить",
+  "settings.llmProviders": "Настройки LLM-провайдера",
+  "settings.scorecard": "Настройки оценочной карты",
+  "settings.workspaceLanguage": "Язык рабочего пространства",
+  "settings.interfaceLanguage": "Язык интерфейса",
+  "settings.qaMode": "Режим языка QA-отчета",
+  "settings.useWorkspace": "Использовать язык рабочего пространства",
+  "settings.sameAsTranscript": "Как язык транскрипта/звонка",
+  "settings.customLanguage": "Пользовательский язык",
+  "settings.customQaLanguage": "Пользовательский язык QA-отчета",
+  "settings.explanation": "Язык интерфейса управляет доступными подписями UI. Язык QA-отчета управляет сгенерированными LLM резюме, комментариями и выводами. Цитаты доказательств могут оставаться на исходном языке транскрипта.",
+  "settings.save": "Сохранить язык",
+  "settings.saved": "Язык рабочего пространства сохранен.",
+};
+
+const uz: Dict = {
+  "nav.dashboard": "Boshqaruv paneli",
+  "nav.calls": "Qo‘ng‘iroqlar",
+  "nav.settings": "Sozlamalar",
+  "language.label": "Til",
+  "language.unsupported": "Interfeys tarjimasi hali to‘liq mavjud emas. QA hisobotlari shu tildan foydalanadi.",
+  "dashboard.totalCalls": "Jami qo‘ng‘iroqlar",
+  "dashboard.analyzedCalls": "Tahlil qilingan qo‘ng‘iroqlar",
+  "dashboard.averageScore": "O‘rtacha ball",
+  "dashboard.failedAnalyses": "Muvaffaqiyatsiz tahlillar",
+  "dashboard.totalQaReviews": "Jami QA tekshiruvlari",
+  "dashboard.latestQaReviews": "So‘nggi QA tekshiruvlari",
+  "dashboard.lowestScoreReviews": "Eng past balli tekshiruvlar",
+  "dashboard.criteriaAttention": "E'tibor talab qiladigan mezonlar",
+  "dashboard.agentPerformance": "Operator samaradorligi",
+  "dashboard.teamPerformance": "Jamoa samaradorligi",
+  "dashboard.campaignPerformance": "Kampaniya samaradorligi",
+  "calls.uploadCallAudio": "Qo‘ng‘iroq audiosini yuklash",
+  "calls.upload": "Yuklash",
+  "calls.chooseFile": "Fayl tanlash",
+  "calls.refresh": "Yangilash",
+  "calls.calls": "Qo‘ng‘iroqlar",
+  "calls.status": "Holat",
+  "calls.open": "Ochish",
+  "calls.loading": "Qo‘ng‘iroqlar yuklanmoqda...",
+  "call.metadata": "Qo‘ng‘iroq metama'lumotlari",
+  "call.agentName": "Operator nomi",
+  "call.team": "Jamoa",
+  "call.campaign": "Kampaniya",
+  "call.direction": "Yo‘nalish",
+  "call.language": "Til",
+  "call.saveMetadata": "Metama'lumotlarni saqlash",
+  "call.metadataSaved": "Metama'lumotlar saqlandi",
+  "call.qaReview": "QA tekshiruvi",
+  "call.analysisHistory": "Tahlil tarixi",
+  "call.exportHistoryXlsx": "Tarixni XLSX eksport qilish",
+  "call.exportHistoryCsv": "Tarixni CSV eksport qilish",
+  "call.exportReviewXlsx": "Tekshiruvni XLSX eksport qilish",
+  "call.exportReviewCsv": "Tekshiruvni CSV eksport qilish",
+  "call.transcriptSegments": "Transkript segmentlari",
+  "call.analyze": "Tahlil qilish",
+  "call.analyzeAgain": "Qayta tahlil qilish",
+  "call.transcribe": "Transkripsiya qilish",
+  "call.refresh": "Yangilash",
+  "settings.llmProviders": "LLM provayder sozlamalari",
+  "settings.scorecard": "Baholash kartasi sozlamalari",
+  "settings.workspaceLanguage": "Ish maydoni tili",
+  "settings.interfaceLanguage": "Interfeys tili",
+  "settings.qaMode": "QA hisoboti tili rejimi",
+  "settings.useWorkspace": "Ish maydoni tilidan foydalanish",
+  "settings.sameAsTranscript": "Transkript/qo‘ng‘iroq tili bilan bir xil",
+  "settings.customLanguage": "Maxsus til",
+  "settings.customQaLanguage": "Maxsus QA hisoboti tili",
+  "settings.explanation": "Interfeys tili qo‘llab-quvvatlangan UI yozuvlarini boshqaradi. QA hisoboti tili LLM yaratgan xulosa, izohlar va topilmalarni boshqaradi. Dalil iqtiboslari transkriptning asl tilida qolishi mumkin.",
+  "settings.save": "Tilni saqlash",
+  "settings.saved": "Ish maydoni tili saqlandi.",
+};
+
+const dictionaries: Record<string, Dict> = { en, ru, uz };
+
+export const defaultWorkspaceSettings: WorkspaceSettings = {
+  interface_language: "en",
+  qa_report_language_mode: "workspace",
+  qa_report_language: "English",
+};
+
+export function getDictionary(language: string | undefined): Dict {
+  return dictionaries[language || ""] || en;
+}
+
+export function makeTranslator(language: string | undefined) {
+  const dictionary = getDictionary(language);
+  return (key: string) => dictionary[key] || en[key] || key;
+}
+
+export function languageLabel(code: string | undefined, languages: LanguageCatalogItem[]): string {
+  const found = languages.find((item) => item.code === code);
+  return found ? found.label : code || "English";
+}
+
+export function reportLanguageForCode(code: string): string {
+  return ({ en: "English", ru: "Russian", uz: "Uzbek", es: "Spanish", pt: "Portuguese", de: "German", fr: "French", tr: "Turkish", ar: "Arabic" } as Record<string, string>)[code] || languageLabel(code, []);
+}

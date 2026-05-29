@@ -70,6 +70,12 @@ class ScorecardConfig(Base):
     config: Mapped[dict] = mapped_column(JSON)
 
 
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON)
+
+
 def migrate_qa_reviews_table(engine: Engine) -> None:
     """Backfill/upgrade pre-v0.10.0 qa_reviews tables in-place.
 

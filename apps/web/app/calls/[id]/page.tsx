@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useI18n } from "../../../components/I18nProvider";
 
 type Call = {
   id: number;
@@ -45,6 +46,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
 
 export default function CallDetailsPage({ params }: { params: { id: string } }) {
+  const { t } = useI18n();
   const [call, setCall] = useState<Call | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [review, setReview] = useState<QAReview | null>(null);
@@ -290,12 +292,12 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         </div>
 
         <div className="actions" style={{ marginTop: 14 }}>
-          <button className="button button-secondary" onClick={load}>Refresh</button>
+          <button className="button button-secondary" onClick={load}>{t("call.refresh")}</button>
           <button className="button" onClick={transcribe} disabled={!call || loading || transcribing || isTranscribed}>
-            {transcribing ? "Transcribing..." : "Transcribe"}
+            {transcribing ? "Transcribing..." : t("call.transcribe")}
           </button>
           <button className="button" onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>
-            {analysisPendingState ? "Analyzing..." : canAnalyzeAgain ? "Analyze again" : "Analyze"}
+            {analysisPendingState ? "Analyzing..." : canAnalyzeAgain ? t("call.analyzeAgain") : t("call.analyze")}
           </button>
         </div>
 
@@ -320,22 +322,22 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         )}
       </section>
       <section className="card">
-        <h3 style={{ marginTop: 0 }}>Call metadata</h3>
+        <h3 style={{ marginTop: 0 }}>{t("call.metadata")}</h3>
         <div className="grid" style={{ gap: 10 }}>
-          <label>Agent/operator name<input value={metadata.agent_name} onChange={(e) => setMetadata((m) => ({ ...m, agent_name: e.target.value }))} /></label>
-          <label>Team<input value={metadata.team} onChange={(e) => setMetadata((m) => ({ ...m, team: e.target.value }))} /></label>
-          <label>Campaign<input value={metadata.campaign} onChange={(e) => setMetadata((m) => ({ ...m, campaign: e.target.value }))} /></label>
-          <label>Direction
+          <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(e) => setMetadata((m) => ({ ...m, agent_name: e.target.value }))} /></label>
+          <label>{t("call.team")}<input value={metadata.team} onChange={(e) => setMetadata((m) => ({ ...m, team: e.target.value }))} /></label>
+          <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(e) => setMetadata((m) => ({ ...m, campaign: e.target.value }))} /></label>
+          <label>{t("call.direction")}
             <select value={metadata.direction} onChange={(e) => setMetadata((m) => ({ ...m, direction: e.target.value }))}>
               <option value="unknown">unknown</option>
               <option value="inbound">inbound</option>
               <option value="outbound">outbound</option>
             </select>
           </label>
-          <label>Language<input value={metadata.language} onChange={(e) => setMetadata((m) => ({ ...m, language: e.target.value }))} /></label>
+          <label>{t("call.language")}<input value={metadata.language} onChange={(e) => setMetadata((m) => ({ ...m, language: e.target.value }))} /></label>
           <div>
             <button className="button" onClick={saveMetadata} disabled={metadataSaving}>
-              {metadataSaving ? "Saving..." : metadataSaveSuccess ? "Saved" : "Save metadata"}
+              {metadataSaving ? "Saving..." : metadataSaveSuccess ? t("call.metadataSaved") : t("call.saveMetadata")}
             </button>
             {metadataMessage && <p className="message" style={{ marginTop: 8 }}>{metadataMessage}</p>}
             {metadataError && <p className="message message-error" style={{ marginTop: 8 }}>{metadataError}</p>}
@@ -344,7 +346,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       </section>
 
       <section className="card" id="qa-review-section">
-        <h3 style={{ marginTop: 0 }}>QA Review</h3>
+        <h3 style={{ marginTop: 0 }}>{t("call.qaReview")}</h3>
         {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
           <div className="grid" style={{ gap: 10 }}>
             <p className="message" style={{ marginTop: 0 }}>
@@ -415,11 +417,11 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       </section>
 
       <section className="card">
-        <h3 style={{ marginTop: 0 }}>Analysis history</h3>
+        <h3 style={{ marginTop: 0 }}>{t("call.analysisHistory")}</h3>
         <div className="actions" style={{ marginBottom: 10 }}>
-          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","xlsx")}>Export history XLSX</a>
-          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","csv")}>Export history CSV</a>
-          {viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>Export review XLSX</a><a className="button button-secondary" href={exportUrl("single","csv")}>Export review CSV</a></>}
+          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","xlsx")}>{t("call.exportHistoryXlsx")}</a>
+          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","csv")}>{t("call.exportHistoryCsv")}</a>
+          {viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>{t("call.exportReviewXlsx")}</a><a className="button button-secondary" href={exportUrl("single","csv")}>{t("call.exportReviewCsv")}</a></>}
         </div>
         {viewingReviewId && <small>Review export uses selected review #{viewingReviewId}.</small>}
         {history.length === 0 && <p className="message">No reviews to export.</p>}
@@ -447,7 +449,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       </section>
 
       <section className="card">
-        <h3 style={{ marginTop: 0 }}>Transcript segments</h3>
+        <h3 style={{ marginTop: 0 }}>{t("call.transcriptSegments")}</h3>
         {segments.length === 0 ? (
           <p>No transcript segments yet.</p>
         ) : (

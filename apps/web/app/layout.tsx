@@ -1,26 +1,17 @@
-import Link from "next/link";
 import "./globals.css";
+import { AppHeader } from "../components/AppHeader";
+import { I18nProvider } from "../components/I18nProvider";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <div className="app-shell">
-          <header className="app-header">
-            <div className="header-inner">
-              <div>
-                <h1 className="brand-title">CallQuanta</h1>
-                <p className="brand-subtitle">Open-source AI QA for contact centers</p>
-              </div>
-              <nav className="top-nav" aria-label="Main navigation">
-                <Link href="/dashboard">Dashboard</Link>
-                <Link href="/calls">Calls</Link>
-                <Link href="/settings/llm">Settings</Link>
-              </nav>
-            </div>
-          </header>
-          <main className="main-container">{children}</main>
-        </div>
+        <I18nProvider>
+          <div className="app-shell">
+            <AppHeader />
+            <main className="main-container">{children}</main>
+          </div>
+        </I18nProvider>
       </body>
     </html>
   );

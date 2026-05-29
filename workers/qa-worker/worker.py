@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from db import Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
+from db import AppSetting, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -55,6 +55,57 @@ def handle_shutdown(signum, frame):
     running = False
 
 
+
+LANGUAGE_LABELS = {
+    "en": "English",
+    "en-us": "English",
+    "en-gb": "English",
+    "ru": "Russian",
+    "ru-ru": "Russian",
+    "uz": "Uzbek",
+    "uz-uz": "Uzbek",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "de": "German",
+    "fr": "French",
+    "tr": "Turkish",
+    "ar": "Arabic",
+}
+DEFAULT_WORKSPACE_SETTINGS = {"interface_language": "en", "qa_report_language_mode": "workspace", "qa_report_language": "English"}
+
+
+def display_language(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    return LANGUAGE_LABELS.get(raw.lower(), raw)
+
+
+def load_workspace_settings(db) -> dict[str, Any]:
+    setting = db.get(AppSetting, "workspace")
+    settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+    if setting and isinstance(setting.value, dict):
+        settings.update({k: v for k, v in setting.value.items() if v is not None})
+    if settings.get("qa_report_language_mode") not in {"workspace", "same_as_transcript", "custom"}:
+        settings["qa_report_language_mode"] = "workspace"
+    settings["qa_report_language"] = display_language(settings.get("qa_report_language")) or "English"
+    return settings
+
+
+def resolve_report_language(scorecard: dict[str, Any], workspace: dict[str, Any], call: Call) -> str:
+    scorecard_language = str(scorecard.get("report_language") or "workspace").strip()
+    if scorecard_language and scorecard_language != "workspace":
+        return display_language(scorecard_language) or "English"
+
+    mode = workspace.get("qa_report_language_mode", "workspace")
+    if mode in {"workspace", "custom"}:
+        return display_language(workspace.get("qa_report_language")) or "English"
+    if mode == "same_as_transcript":
+        return display_language(getattr(call, "language", None)) or "English"
+    return "English"
+
 def load_scorecard() -> dict[str, Any]:
     with SCORECARD_PATH.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
@@ -68,11 +119,11 @@ def load_active_scorecard(db) -> dict[str, Any]:
     if stored and isinstance(stored.config, dict) and isinstance(stored.config.get("criteria"), list):
         config = dict(stored.config)
         config.setdefault("name", stored.name or "Custom Scorecard")
-        config.setdefault("report_language", "english")
+        config.setdefault("report_language", "workspace")
         return config
     data = load_scorecard()
     data.setdefault("name", "Default Sales QA")
-    data.setdefault("report_language", "english")
+    data.setdefault("report_language", "workspace")
     return data
 
 
@@ -176,7 +227,7 @@ def resolve_active_provider(db) -> dict[str, Any]:
         }
     return default_config
 
-def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[str, Any]) -> dict[str, Any]:
+def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[str, Any], report_language: str) -> dict[str, Any]:
     if provider["provider"] != "openai_compatible":
         raise ValueError(f"unsupported provider type: {provider['provider']}")
 
@@ -199,13 +250,9 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
             + (f" | {'; '.join(extras)}" if extras else "")
         )
     scorecard_list = "\n".join(criteria_lines)
-    report_language = scorecard.get("report_language", "english")
     language_instruction = (
-        "Write summary/comment/evidence in Russian."
-        if report_language == "russian"
-        else "Write summary/comment/evidence in the same language as transcript."
-        if report_language == "same_as_transcript"
-        else "Write summary/comment/evidence in English."
+        f"Write summary, criteria comments, and findings in {report_language}. "
+        "Keep transcript evidence quotes in the original language unless translating evidence is explicitly requested."
     )
 
     payload = {
@@ -501,6 +548,9 @@ def process_qa_job(call_id: int) -> None:
 
         try:
             scorecard = load_active_scorecard(db)
+            workspace_settings = load_workspace_settings(db)
+            resolved_report_language = resolve_report_language(scorecard, workspace_settings, call)
+            scorecard["resolved_report_language"] = resolved_report_language
             if QA_MODE == "placeholder":
                 review = placeholder_review(scorecard)
             else:
@@ -510,7 +560,7 @@ def process_qa_job(call_id: int) -> None:
                         f"analyzing call_id={call_id} provider={provider.get('name', 'unknown')} "
                         f"preset={provider.get('preset', 'custom')} model={provider.get('model', '')}"
                     )
-                    raw_review = llm_review(transcript_text, scorecard, provider)
+                    raw_review = llm_review(transcript_text, scorecard, provider, resolved_report_language)
                     validated = validate_review(raw_review)
                     review = normalize_review(validated, scorecard)
                 except (json.JSONDecodeError, ValueError) as exc:
@@ -531,7 +581,7 @@ def process_qa_job(call_id: int) -> None:
                 provider_preset=provider_snapshot.get("preset"),
                 model=provider_snapshot.get("model"),
                 scorecard_name=scorecard.get("name"),
-                report_language=scorecard.get("report_language", "english"),
+                report_language=resolved_report_language,
                 score=review.get("score"),
                 summary=review.get("summary"),
                 criteria_breakdown=review.get("criteria", []),

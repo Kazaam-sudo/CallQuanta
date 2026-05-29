@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
-const ALLOWED_LANGUAGES = ["english", "russian", "same_as_transcript"] as const;
+const ALLOWED_LANGUAGES = ["workspace", "english", "russian", "same_as_transcript"] as const;
 
 type Criterion = {
   id: string;
@@ -22,7 +23,7 @@ type Scorecard = {
 
 const emptyScorecard: Scorecard = {
   name: "Default Sales QA",
-  report_language: "english",
+  report_language: "workspace",
   criteria: [],
 };
 
@@ -65,8 +66,8 @@ export default function ScorecardPage() {
     if (!scorecard.name.trim()) {
       validationErrors.push("Scorecard name must not be empty.");
     }
-    if (!ALLOWED_LANGUAGES.includes(scorecard.report_language)) {
-      validationErrors.push("Report language must be one of: english, russian, same_as_transcript.");
+    if (!scorecard.report_language.trim()) {
+      validationErrors.push("Report language must not be empty.");
     }
     if (scorecard.criteria.length === 0) {
       validationErrors.push("Scorecard must contain at least one criterion.");
@@ -139,6 +140,7 @@ export default function ScorecardPage() {
 
   return (
     <main className="grid" style={{ gap: 16 }}>
+      <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link></div>
       <section className="card">
         <h2>Scorecard Settings</h2>
 
@@ -150,9 +152,11 @@ export default function ScorecardPage() {
           value={scorecard.report_language}
           onChange={(e) => setScorecard({ ...scorecard, report_language: e.target.value as Scorecard["report_language"] })}
         >
+          <option value="workspace">Use workspace default</option>
           <option value="english">English</option>
           <option value="russian">Russian</option>
           <option value="same_as_transcript">Same as transcript</option>
+          <option value="Uzbek">Custom: Uzbek</option>
         </select>
 
         <div className="actions" style={{ marginTop: 12 }}>
