@@ -21,7 +21,7 @@ from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
-app = FastAPI(title="CallQuanta API", version="0.15.0")
+app = FastAPI(title="CallQuanta API", version="0.15.1")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -49,7 +49,16 @@ ALLOWED_UPLOAD_CONTENT_TYPES = {
     "video/webm",
 }
 UPLOAD_CHUNK_SIZE = 1024 * 1024
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "0") or "0")
+DEFAULT_MAX_UPLOAD_BYTES_PER_FILE = 100 * 1024 * 1024
+DEFAULT_MAX_BULK_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_UPLOAD_BYTES_PER_FILE = int(
+    os.environ.get(
+        "MAX_UPLOAD_BYTES_PER_FILE",
+        os.environ.get("MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES_PER_FILE)),
+    )
+    or "0"
+)
+MAX_BULK_UPLOAD_BYTES = int(os.environ.get("MAX_BULK_UPLOAD_BYTES", str(DEFAULT_MAX_BULK_UPLOAD_BYTES)) or "0")
 
 
 
@@ -303,7 +312,31 @@ def _validate_upload_file(file: UploadFile) -> str:
     return safe_name
 
 
-async def _store_upload_file(file: UploadFile, safe_name: str) -> tuple[str, Path, int]:
+def _format_upload_limit_message() -> str:
+    return (
+        "Upload too large. "
+        f"Max per file: {MAX_UPLOAD_BYTES_PER_FILE / 1024 / 1024:.0f} MB. "
+        f"Max bulk upload: {MAX_BULK_UPLOAD_BYTES / 1024 / 1024:.0f} MB."
+    )
+
+
+def _upload_size(file: UploadFile) -> int | None:
+    size = getattr(file, "size", None)
+    return int(size) if isinstance(size, int) and size >= 0 else None
+
+
+def _validate_known_upload_sizes(files: list[UploadFile]) -> None:
+    known_sizes = [_upload_size(file) for file in files]
+    if MAX_UPLOAD_BYTES_PER_FILE:
+        oversized = [size for size in known_sizes if size is not None and size > MAX_UPLOAD_BYTES_PER_FILE]
+        if oversized:
+            raise HTTPException(status_code=413, detail=_format_upload_limit_message())
+    if MAX_BULK_UPLOAD_BYTES and all(size is not None for size in known_sizes):
+        if sum(size or 0 for size in known_sizes) > MAX_BULK_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=_format_upload_limit_message())
+
+
+async def _store_upload_file(file: UploadFile, safe_name: str, bulk_state: dict[str, int] | None = None) -> tuple[str, Path, int]:
     stored_name = f"{uuid4().hex}_{safe_name}"
     stored_path = UPLOAD_DIR / stored_name
     size = 0
@@ -314,10 +347,16 @@ async def _store_upload_file(file: UploadFile, safe_name: str) -> tuple[str, Pat
             if not chunk:
                 break
             size += len(chunk)
-            if MAX_UPLOAD_BYTES and size > MAX_UPLOAD_BYTES:
+            if bulk_state is not None:
+                bulk_state["size"] = bulk_state.get("size", 0) + len(chunk)
+            if MAX_UPLOAD_BYTES_PER_FILE and size > MAX_UPLOAD_BYTES_PER_FILE:
                 handle.close()
                 stored_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes")
+                raise HTTPException(status_code=413, detail=_format_upload_limit_message())
+            if bulk_state is not None and MAX_BULK_UPLOAD_BYTES and bulk_state.get("size", 0) > MAX_BULK_UPLOAD_BYTES:
+                handle.close()
+                stored_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=_format_upload_limit_message())
             handle.write(chunk)
 
     if size == 0:
@@ -334,9 +373,9 @@ def _apply_call_metadata(call: Call, metadata: CallMetadataPayload) -> None:
     call.language = _normalize_optional_text(metadata.language)
 
 
-async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMetadataPayload | None = None) -> Call:
+async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMetadataPayload | None = None, bulk_state: dict[str, int] | None = None) -> Call:
     safe_name = _validate_upload_file(file)
-    stored_name, stored_path, size = await _store_upload_file(file, safe_name)
+    stored_name, stored_path, size = await _store_upload_file(file, safe_name, bulk_state)
     call = Call(
         filename=safe_name,
         status="uploaded",
@@ -355,8 +394,18 @@ async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMet
 
 @app.post("/calls/upload")
 async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+    _validate_known_upload_sizes([file])
     call = await _create_uploaded_call(file, db)
     return serialize_call(call)
+
+
+@app.get("/settings/upload-limits")
+def upload_limits() -> dict:
+    return {
+        "max_upload_bytes_per_file": MAX_UPLOAD_BYTES_PER_FILE,
+        "max_bulk_upload_bytes": MAX_BULK_UPLOAD_BYTES,
+        "allowed_extensions": sorted(ALLOWED_UPLOAD_EXTENSIONS),
+    }
 
 
 @app.post("/calls/upload/bulk")
@@ -376,15 +425,17 @@ async def upload_calls_bulk(
         direction=direction,
         language=language,
     )
-    # Validate shared metadata before storing any files so a bad direction is returned consistently.
+    # Validate metadata and known sizes before storing any files so hard failures are returned consistently.
     _normalize_direction(metadata.direction)
+    _validate_known_upload_sizes(files)
 
     uploaded: list[dict] = []
     failed: list[dict] = []
+    bulk_state = {"size": 0}
     for file in files:
         filename = secure_filename(file.filename or "") or (file.filename or "unknown")
         try:
-            call = await _create_uploaded_call(file, db, metadata)
+            call = await _create_uploaded_call(file, db, metadata, bulk_state)
             uploaded.append({"id": call.id, "filename": call.filename, "status": call.status})
         except HTTPException as exc:
             db.rollback()
@@ -627,12 +678,14 @@ def _status_counts(db: Session) -> dict[str, int]:
         "analyzing",
         "analysis_failed",
         "analyzed",
+        "failed",
     ]
     counts = {status: 0 for status in statuses}
     rows = db.execute(select(Call.status, func.count(Call.id)).group_by(Call.status)).all()
     for status, count in rows:
-        if status in counts:
-            counts[str(status)] = int(count)
+        status_key = str(status)
+        if status_key in counts:
+            counts[status_key] = int(count)
     return counts
 
 
@@ -657,6 +710,7 @@ def jobs_summary(db: Session = Depends(get_db)) -> dict:
         "failed": {
             "transcription_failed": counts["transcription_failed"],
             "analysis_failed": counts["analysis_failed"],
+            "failed": counts["failed"],
         },
         "pending": {
             "transcription_pending": counts["transcription_pending"],
@@ -748,7 +802,7 @@ def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(g
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
             continue
-        if call.status == "transcription_failed":
+        if call.status in {"transcription_failed", "failed"}:
             call.status = "transcription_pending"
             call.last_error_type = None
             call.last_error_message = None

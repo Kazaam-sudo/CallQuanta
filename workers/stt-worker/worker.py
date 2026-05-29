@@ -134,7 +134,7 @@ def process_transcription_job(call_id: int) -> None:
             call = db.get(Call, call_id)
             if call:
                 call.status = "transcription_failed"
-                call.last_error_type = exc.__class__.__name__
+                call.last_error_type = "transcription"
                 call.last_error_message = f"Transcription failed: {safe_error(exc)}"
                 call.last_processed_at = datetime.now(UTC)
                 db.commit()
