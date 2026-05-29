@@ -24,9 +24,15 @@ type JobSummary = {
   transcription_queue_length: number;
   qa_queue_length: number;
   processing: { transcribing: number; analyzing: number };
-  failed: { transcription_failed: number; analysis_failed: number };
+  failed: { transcription_failed: number; analysis_failed: number; failed?: number };
   pending: { transcription_pending: number; analysis_pending: number };
   warning?: string;
+};
+
+type UploadLimits = {
+  max_upload_bytes_per_file: number;
+  max_bulk_upload_bytes: number;
+  allowed_extensions: string[];
 };
 
 type BulkUploadResponse = { uploaded?: Array<{ id: number; filename: string; status: string }>; failed?: Array<{ filename: string; error: string }> };
@@ -35,19 +41,39 @@ type BatchResponse = { results?: BatchResult[] };
 type BulkMetadata = { agent_name: string; team: string; campaign: string; direction: string; language: string };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+
+function getDirectUploadBaseUrl() {
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) return process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (typeof window === "undefined") return API_BASE_URL;
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
 const activeStatuses = new Set(["transcription_pending", "transcribing", "analysis_pending", "analyzing"]);
-const failedStatuses = new Set(["transcription_failed", "analysis_failed"]);
+const failedStatuses = new Set(["transcription_failed", "analysis_failed", "failed"]);
 
 function parseErrorDetail(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
-  const detail = (data as { detail?: unknown }).detail;
+  const detail = (data as { detail?: unknown; error?: unknown; message?: unknown }).detail ?? (data as { error?: unknown }).error ?? (data as { message?: unknown }).message;
   if (typeof detail === "string" && detail) return detail;
   if (Array.isArray(detail)) {
     const messages = detail.map((item) => typeof item === "string" ? item : item && typeof item === "object" && "msg" in item ? String((item as { msg?: unknown }).msg || "") : "").filter(Boolean);
     if (messages.length > 0) return messages.join("; ");
   }
   return null;
+}
+
+async function responseErrorMessage(response: Response, fallback: string) {
+  const text = await response.text().catch(() => "");
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const detail = parseErrorDetail(parsed);
+      if (detail) return detail;
+    } catch {
+      return text;
+    }
+  }
+  return fallback;
 }
 
 const formatBytes = (value?: number | null) => {
@@ -73,6 +99,7 @@ export default function CallsPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<BulkUploadResponse | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
   const [selectedCallIds, setSelectedCallIds] = useState<Set<number>>(new Set());
   const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
@@ -82,7 +109,9 @@ export default function CallsPage() {
   const selectedCalls = useMemo(() => calls.filter((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
   const allVisibleSelected = useMemo(() => calls.length > 0 && calls.every((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
   const hasActiveProcessing = useMemo(() => calls.some((call) => activeStatuses.has(call.status)) || Boolean(jobSummary && (jobSummary.transcription_queue_length + jobSummary.qa_queue_length + jobSummary.processing.transcribing + jobSummary.processing.analyzing + jobSummary.pending.transcription_pending + jobSummary.pending.analysis_pending) > 0), [calls, jobSummary]);
-  const failedCount = (jobSummary?.failed.transcription_failed ?? 0) + (jobSummary?.failed.analysis_failed ?? 0);
+  const failedCount = (jobSummary?.failed.transcription_failed ?? 0) + (jobSummary?.failed.analysis_failed ?? 0) + (jobSummary?.failed.failed ?? 0);
+  const selectedTotalBytes = useMemo(() => selectedFiles.reduce((sum, file) => sum + file.size, 0), [selectedFiles]);
+  const largestSelectedBytes = useMemo(() => selectedFiles.reduce((max, file) => Math.max(max, file.size), 0), [selectedFiles]);
 
   const loadData = useCallback(async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
@@ -104,6 +133,17 @@ export default function CallsPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => {
+    const loadLimits = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/settings/upload-limits`);
+        if (response.ok) setUploadLimits(await response.json());
+      } catch {
+        // Upload limits are advisory in the UI; backend validation still applies.
+      }
+    };
+    loadLimits();
+  }, []);
+  useEffect(() => {
     if (!hasActiveProcessing) return;
     const interval = window.setInterval(() => loadData(false), 4000);
     return () => window.clearInterval(interval);
@@ -112,14 +152,28 @@ export default function CallsPage() {
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (selectedFiles.length === 0) return;
-    setUploadResult(null); setUploadError(null); setUploading(true);
+    setUploadResult(null); setUploadError(null);
+    if (uploadLimits) {
+      const fileLimitExceeded = uploadLimits.max_upload_bytes_per_file > 0 && largestSelectedBytes > uploadLimits.max_upload_bytes_per_file;
+      const bulkLimitExceeded = uploadLimits.max_bulk_upload_bytes > 0 && selectedTotalBytes > uploadLimits.max_bulk_upload_bytes;
+      if (fileLimitExceeded || bulkLimitExceeded) {
+        setUploadError(`${t("calls.uploadFailed")}: Upload too large. Max per file: ${formatBytes(uploadLimits.max_upload_bytes_per_file)}. Max bulk upload: ${formatBytes(uploadLimits.max_bulk_upload_bytes)}.`);
+        return;
+      }
+    }
+    setUploading(true);
     try {
       const uploadData = new FormData();
       selectedFiles.forEach((file) => uploadData.append("files", file));
       Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
-      const response = await fetch(`${API_BASE_URL}/calls/upload/bulk`, { method: "POST", body: uploadData });
-      const data = await response.json().catch(() => null) as BulkUploadResponse | null;
-      if (!response.ok) { setUploadError(`${t("calls.uploadFailed")}: ${parseErrorDetail(data) ?? `HTTP ${response.status}`}`); return; }
+      const response = await fetch(`${getDirectUploadBaseUrl()}/calls/upload/bulk`, { method: "POST", body: uploadData });
+      const data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
+      if (!response.ok) {
+        const detail = await responseErrorMessage(response, `HTTP ${response.status}`);
+        const sizeHelp = response.status === 413 ? " Upload is too large. Try fewer files or increase upload limits." : "";
+        setUploadError(`${t("calls.uploadFailed")}: ${detail}.${sizeHelp}`);
+        return;
+      }
       setUploadResult(data ?? { uploaded: [], failed: [] });
       if ((data?.uploaded?.length ?? 0) > 0) { setSelectedFiles([]); event.currentTarget.reset(); await loadData(); }
     } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files.`); }
@@ -148,7 +202,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.0</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.1</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 
@@ -167,7 +221,12 @@ export default function CallsPage() {
         <div className="section-header"><div><p className="eyebrow">{t("calls.upload")}</p><h2>{t("calls.uploadFiles")}</h2><small>{t("calls.bulkMetadataHelp")}</small></div></div>
         <form onSubmit={onUpload} className="grid" style={{ gap: 12 }}>
           <input className="input-file" type="file" name="files" multiple required accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" onChange={(event) => { setSelectedFiles(Array.from(event.currentTarget.files ?? [])); setUploadResult(null); setUploadError(null); }} />
-          <div className="selected-files"><strong>{t("calls.selectedFiles")}: {selectedFiles.length}</strong>{selectedFiles.slice(0, 5).map((file) => <span key={`${file.name}-${file.size}`}>{file.name} · {formatBytes(file.size)}</span>)}</div>
+          <div className="selected-files">
+            <strong>{t("calls.selectedFiles")}: {selectedFiles.length} · {formatBytes(selectedTotalBytes)}</strong>
+            {selectedFiles.length > 0 && <small>Selected: {selectedFiles.length} files · {formatBytes(selectedTotalBytes)}{uploadLimits ? ` · Max per file ${formatBytes(uploadLimits.max_upload_bytes_per_file)} · Max bulk ${formatBytes(uploadLimits.max_bulk_upload_bytes)}` : ""}</small>}
+            {selectedFiles.slice(0, 5).map((file) => <span key={`${file.name}-${file.size}`}>{file.name} · {formatBytes(file.size)}</span>)}
+            {selectedFiles.length > 5 && <span>+{selectedFiles.length - 5} more files</span>}
+          </div>
           <div className="grid-2">
             <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Shahzoda" /></label>
             <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Outbound Sales" /></label>
