@@ -1,15 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../components/I18nProvider";
 
 type Call = {
   id: number;
   filename: string;
   status: string;
-  stored_filename?: string | null;
-  stored_path?: string | null;
   file_size_bytes?: number | null;
   content_type?: string | null;
   agent_name?: string | null;
@@ -18,32 +16,56 @@ type Call = {
   direction?: string | null;
   language?: string | null;
   created_at?: string | null;
+  last_error_message?: string | null;
+  last_processed_at?: string | null;
 };
 
-type BulkUploadResponse = {
-  uploaded?: Array<{ id: number; filename: string; status: string }>;
-  failed?: Array<{ filename: string; error: string }>;
+type JobSummary = {
+  transcription_queue_length: number;
+  qa_queue_length: number;
+  processing: { transcribing: number; analyzing: number };
+  failed: { transcription_failed: number; analysis_failed: number };
+  pending: { transcription_pending: number; analysis_pending: number };
+  warning?: string;
 };
 
-type BatchResponse = {
-  results?: Array<{ call_id: number; status: string; reason?: string; error?: string }>;
-};
-
-type BulkMetadata = {
-  agent_name: string;
-  team: string;
-  campaign: string;
-  direction: string;
-  language: string;
-};
+type BulkUploadResponse = { uploaded?: Array<{ id: number; filename: string; status: string }>; failed?: Array<{ filename: string; error: string }> };
+type BatchResult = { call_id: number; status: string; reason?: string; error?: string };
+type BatchResponse = { results?: BatchResult[] };
+type BulkMetadata = { agent_name: string; team: string; campaign: string; direction: string; language: string };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
-
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
+const activeStatuses = new Set(["transcription_pending", "transcribing", "analysis_pending", "analyzing"]);
+const failedStatuses = new Set(["transcription_failed", "analysis_failed"]);
+
+function parseErrorDetail(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => typeof item === "string" ? item : item && typeof item === "object" && "msg" in item ? String((item as { msg?: unknown }).msg || "") : "").filter(Boolean);
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return null;
+}
+
+const formatBytes = (value?: number | null) => {
+  if (value == null) return "-";
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB"];
+  let size = value / 1024;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[index]}`;
+};
+
+const statusKey = (status: string) => `status.${status}`;
 
 export default function CallsPage() {
   const { t } = useI18n();
   const [calls, setCalls] = useState<Call[]>([]);
+  const [jobSummary, setJobSummary] = useState<JobSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -52,161 +74,124 @@ export default function CallsPage() {
   const [uploadResult, setUploadResult] = useState<BulkUploadResponse | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [selectedCallIds, setSelectedCallIds] = useState<Set<number>>(new Set());
-  const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | null>(null);
-  const [batchMessage, setBatchMessage] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
 
   const selectedCallCount = selectedCallIds.size;
+  const selectedCalls = useMemo(() => calls.filter((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
   const allVisibleSelected = useMemo(() => calls.length > 0 && calls.every((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
+  const hasActiveProcessing = useMemo(() => calls.some((call) => activeStatuses.has(call.status)) || Boolean(jobSummary && (jobSummary.transcription_queue_length + jobSummary.qa_queue_length + jobSummary.processing.transcribing + jobSummary.processing.analyzing + jobSummary.pending.transcription_pending + jobSummary.pending.analysis_pending) > 0), [calls, jobSummary]);
+  const failedCount = (jobSummary?.failed.transcription_failed ?? 0) + (jobSummary?.failed.analysis_failed ?? 0);
 
-  const parseErrorDetail = (data: unknown): string | null => {
-    if (!data || typeof data !== "object") return null;
-    const detail = (data as { detail?: unknown }).detail;
-    if (typeof detail === "string" && detail) return detail;
-    if (Array.isArray(detail)) {
-      const messages = detail.map((item) => typeof item === "string" ? item : item && typeof item === "object" && "msg" in item ? String((item as { msg?: unknown }).msg || "") : "").filter(Boolean);
-      if (messages.length > 0) return messages.join("; ");
-    }
-    return null;
-  };
-
-  const loadCalls = async () => {
-    setLoading(true);
+  const loadData = useCallback(async (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
     setLoadError(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/calls`);
-      let data: unknown = null;
-      try { data = await response.json(); } catch { data = null; }
-      if (!response.ok) throw new Error(parseErrorDetail(data) ?? `HTTP ${response.status}`);
-      if (!Array.isArray(data)) throw new Error("API returned an unexpected payload.");
-      setCalls(data as Call[]);
-      setSelectedCallIds((current) => new Set([...current].filter((id) => (data as Call[]).some((call) => call.id === id))));
+      const [callsResponse, jobsResponse] = await Promise.all([fetch(`${API_BASE_URL}/calls`), fetch(`${API_BASE_URL}/jobs/summary`)]);
+      const callsData = await callsResponse.json().catch(() => null);
+      if (!callsResponse.ok) throw new Error(parseErrorDetail(callsData) ?? `HTTP ${callsResponse.status}`);
+      if (!Array.isArray(callsData)) throw new Error("API returned an unexpected calls payload.");
+      setCalls(callsData as Call[]);
+      setSelectedCallIds((current) => new Set([...current].filter((id) => (callsData as Call[]).some((call) => call.id === id))));
+      if (jobsResponse.ok) setJobSummary(await jobsResponse.json());
     } catch (error) {
       setLoadError(`Failed to load calls: ${error instanceof Error ? error.message : "Unknown error while loading calls."}`);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadCalls(); }, []);
+  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    if (!hasActiveProcessing) return;
+    const interval = window.setInterval(() => loadData(false), 4000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveProcessing, loadData]);
 
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (selectedFiles.length === 0) return;
-    setUploadResult(null);
-    setUploadError(null);
-    setUploading(true);
-
+    setUploadResult(null); setUploadError(null); setUploading(true);
     try {
       const uploadData = new FormData();
       selectedFiles.forEach((file) => uploadData.append("files", file));
-      Object.entries(metadata).forEach(([key, value]) => {
-        if (value.trim()) uploadData.append(key, value.trim());
-      });
+      Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
       const response = await fetch(`${API_BASE_URL}/calls/upload/bulk`, { method: "POST", body: uploadData });
       const data = await response.json().catch(() => null) as BulkUploadResponse | null;
-      if (!response.ok) {
-        setUploadError(`${t("calls.uploadFailed")}: ${parseErrorDetail(data) ?? `HTTP ${response.status}`}`);
-        return;
-      }
+      if (!response.ok) { setUploadError(`${t("calls.uploadFailed")}: ${parseErrorDetail(data) ?? `HTTP ${response.status}`}`); return; }
       setUploadResult(data ?? { uploaded: [], failed: [] });
-      if ((data?.uploaded?.length ?? 0) > 0) {
-        setSelectedFiles([]);
-        event.currentTarget.reset();
-        await loadCalls();
-      }
-    } catch {
-      setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files.`);
-    } finally {
-      setUploading(false);
-    }
+      if ((data?.uploaded?.length ?? 0) > 0) { setSelectedFiles([]); event.currentTarget.reset(); await loadData(); }
+    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files.`); }
+    finally { setUploading(false); }
   };
 
-  const toggleCall = (callId: number) => {
-    setSelectedCallIds((current) => {
-      const next = new Set(current);
-      if (next.has(callId)) next.delete(callId); else next.add(callId);
-      return next;
-    });
-  };
+  const toggleCall = (callId: number) => setSelectedCallIds((current) => { const next = new Set(current); next.has(callId) ? next.delete(callId) : next.add(callId); return next; });
+  const toggleAllVisible = () => setSelectedCallIds((current) => { const next = new Set(current); allVisibleSelected ? calls.forEach((call) => next.delete(call.id)) : calls.forEach((call) => next.add(call.id)); return next; });
+  const clearSelection = () => setSelectedCallIds(new Set());
 
-  const toggleAllVisible = () => {
-    setSelectedCallIds((current) => {
-      const next = new Set(current);
-      if (allVisibleSelected) calls.forEach((call) => next.delete(call.id));
-      else calls.forEach((call) => next.add(call.id));
-      return next;
-    });
-  };
-
-  const runBatchAction = async (action: "transcribe" | "analyze") => {
+  const runBatchAction = async (action: "transcribe" | "analyze" | "retry") => {
     if (selectedCallIds.size === 0) return;
-    setBatchLoading(action);
-    setBatchMessage(null);
-    setBatchError(null);
+    setBatchLoading(action); setBatchError(null); setBatchResults([]);
     try {
-      const response = await fetch(`${API_BASE_URL}/calls/batch/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ call_ids: [...selectedCallIds] }),
-      });
+      const endpoint = action === "retry" ? "retry-failed" : action;
+      const response = await fetch(`${API_BASE_URL}/calls/batch/${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ call_ids: [...selectedCallIds] }) });
       const data = await response.json().catch(() => null) as BatchResponse | null;
       if (!response.ok) throw new Error(parseErrorDetail(data) ?? `HTTP ${response.status}`);
-      const queued = data?.results?.filter((item) => item.status.endsWith("_queued")).length ?? 0;
-      const skipped = data?.results?.filter((item) => item.status === "skipped").length ?? 0;
-      const missing = data?.results?.filter((item) => item.status === "not_found").length ?? 0;
-      setBatchMessage(`${action === "transcribe" ? t("calls.transcribeSelected") : t("calls.analyzeSelected")}: ${queued} queued, ${skipped} skipped${missing ? `, ${missing} missing` : ""}.`);
-      await loadCalls();
+      setBatchResults(data?.results ?? []);
+      await loadData();
     } catch (error) {
-      setBatchError(`${action === "transcribe" ? t("calls.transcribeSelected") : t("calls.analyzeSelected")} failed: ${error instanceof Error ? error.message : "Unknown error."}`);
-    } finally {
-      setBatchLoading(null);
-    }
+      setBatchError(`${t("calls.batchActionFailed")}: ${error instanceof Error ? error.message : "Unknown error."}`);
+    } finally { setBatchLoading(null); }
   };
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
+    <div className="grid page-stack">
+      <section className="card hero-card">
+        <div><p className="eyebrow">CallQuanta v0.15.0</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
+      </section>
+
       <section className="card">
-        <h2 style={{ marginTop: 0 }}>{t("calls.uploadFiles")}</h2>
+        <div className="section-header"><div><p className="eyebrow">{t("calls.jobSummary")}</p><h2>{t("calls.processing")}</h2></div>{jobSummary?.warning ? <span className="badge badge-warning">{jobSummary.warning}</span> : null}</div>
+        <div className="kpi-grid compact">
+          <div className="kpi-card"><small>{t("calls.transcriptionQueue")}</small><strong>{jobSummary?.transcription_queue_length ?? 0}</strong></div>
+          <div className="kpi-card"><small>{t("calls.qaQueue")}</small><strong>{jobSummary?.qa_queue_length ?? 0}</strong></div>
+          <div className="kpi-card"><small>{t("status.transcribing")}</small><strong>{jobSummary?.processing.transcribing ?? 0}</strong></div>
+          <div className="kpi-card"><small>{t("status.analyzing")}</small><strong>{jobSummary?.processing.analyzing ?? 0}</strong></div>
+          <div className="kpi-card danger"><small>{t("calls.failed")}</small><strong>{failedCount}</strong></div>
+        </div>
+      </section>
+
+      <section className="card upload-card">
+        <div className="section-header"><div><p className="eyebrow">{t("calls.upload")}</p><h2>{t("calls.uploadFiles")}</h2><small>{t("calls.bulkMetadataHelp")}</small></div></div>
         <form onSubmit={onUpload} className="grid" style={{ gap: 12 }}>
           <input className="input-file" type="file" name="files" multiple required accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" onChange={(event) => { setSelectedFiles(Array.from(event.currentTarget.files ?? [])); setUploadResult(null); setUploadError(null); }} />
-          <small style={{ color: "var(--text-muted)" }}>Accepted formats: WAV, MP3, M4A, OGG, FLAC, WEBM.</small>
-          <small>{t("calls.selectedFiles")}: {selectedFiles.length}</small>
-
-          <div className="grid">
-            <strong>{t("call.metadata")}</strong>
-            <small>{t("calls.bulkMetadataHelp")}</small>
-            <div className="grid-2">
-              <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Shahzoda" /></label>
-              <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Outbound Sales" /></label>
-              <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(event) => setMetadata({ ...metadata, campaign: event.target.value })} placeholder="Humans Promo" /></label>
-              <label>{t("call.direction")}<select value={metadata.direction} onChange={(event) => setMetadata({ ...metadata, direction: event.target.value })}><option value="">-</option><option value="inbound">inbound</option><option value="outbound">outbound</option><option value="unknown">unknown</option></select></label>
-              <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="ru-RU" /></label>
-            </div>
+          <div className="selected-files"><strong>{t("calls.selectedFiles")}: {selectedFiles.length}</strong>{selectedFiles.slice(0, 5).map((file) => <span key={`${file.name}-${file.size}`}>{file.name} · {formatBytes(file.size)}</span>)}</div>
+          <div className="grid-2">
+            <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Shahzoda" /></label>
+            <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Outbound Sales" /></label>
+            <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(event) => setMetadata({ ...metadata, campaign: event.target.value })} placeholder="Humans Promo" /></label>
+            <label>{t("call.direction")}<select value={metadata.direction} onChange={(event) => setMetadata({ ...metadata, direction: event.target.value })}><option value="">-</option><option value="inbound">inbound</option><option value="outbound">outbound</option><option value="unknown">unknown</option></select></label>
+            <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="ru-RU" /></label>
           </div>
-
           <div><button className="button" type="submit" disabled={selectedFiles.length === 0 || uploading}>{uploading ? t("calls.uploading") : t("calls.uploadSelected")}</button></div>
         </form>
         {uploadError && <p className="message message-error">{uploadError}</p>}
         {uploadResult && <div className="message message-success"><strong>{t("calls.uploadResults")}</strong><div>{t("calls.uploaded")}: {uploadResult.uploaded?.length ?? 0}</div>{(uploadResult.failed?.length ?? 0) > 0 && <div>{t("calls.failed")}: {uploadResult.failed?.map((item) => `${item.filename} (${item.error})`).join(", ")}</div>}</div>}
       </section>
 
+      {selectedCallCount > 0 && <section className="selection-bar"><strong>{t("calls.selectedCalls")}: {selectedCallCount}</strong><button className="button" type="button" onClick={() => runBatchAction("transcribe")} disabled={!!batchLoading}>{batchLoading === "transcribe" ? t("calls.working") : t("calls.transcribeSelected")}</button><button className="button" type="button" onClick={() => runBatchAction("analyze")} disabled={!!batchLoading}>{batchLoading === "analyze" ? t("calls.working") : t("calls.analyzeSelected")}</button><button className="button button-danger" type="button" onClick={() => runBatchAction("retry")} disabled={!!batchLoading || !selectedCalls.some((call) => failedStatuses.has(call.status))}>{batchLoading === "retry" ? t("calls.working") : t("calls.retryFailedSelected")}</button><button className="button button-secondary" type="button" onClick={clearSelection}>{t("calls.clearSelection")}</button></section>}
+
+      {batchResults.length > 0 && <section className="card"><div className="section-header"><h2>{t("calls.batchResults")}</h2></div><div className="table-wrap"><table><thead><tr><th>ID</th><th>{t("calls.status")}</th><th>{t("calls.reason")}</th></tr></thead><tbody>{batchResults.map((item) => <tr key={`${item.call_id}-${item.status}`}><td>#{item.call_id}</td><td><span className={`badge ${item.status.includes("queued") ? "badge-transcription_pending" : item.status === "skipped" ? "badge-uploaded" : item.status === "failed" || item.status === "not_found" ? "badge-analysis_failed" : ""}`}>{item.status.includes("queued") ? t("calls.queued") : item.status === "skipped" ? t("calls.skipped") : item.status}</span></td><td>{item.reason || item.error || "-"}</td></tr>)}</tbody></table></div></section>}
+      {batchError && <p className="message message-error">{batchError}</p>}
+
       <section className="card">
-        <div className="actions" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0 }}>{t("calls.calls")} ({calls.length})</h2>
-          <div className="actions">
-            <span style={{ alignSelf: "center" }}>{t("calls.selectedCalls")}: {selectedCallCount}</span>
-            <button className="button button-secondary" type="button" onClick={() => runBatchAction("transcribe")} disabled={selectedCallCount === 0 || !!batchLoading}>{batchLoading === "transcribe" ? t("calls.working") : t("calls.transcribeSelected")}</button>
-            <button className="button button-secondary" type="button" onClick={() => runBatchAction("analyze")} disabled={selectedCallCount === 0 || !!batchLoading}>{batchLoading === "analyze" ? t("calls.working") : t("calls.analyzeSelected")}</button>
-            <button className="button button-secondary" type="button" onClick={loadCalls} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
-          </div>
-        </div>
-        {batchMessage && <p className="message message-success">{batchMessage}</p>}
-        {batchError && <p className="message message-error">{batchError}</p>}
+        <div className="section-header"><h2>{t("calls.calls")} ({calls.length})</h2></div>
         {loadError && <p className="message message-error">{loadError}</p>}
-        {loading ? <p>{t("calls.loading")}</p> : calls.length === 0 ? <p>No calls uploaded yet.</p> : (
-          <div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all visible calls" checked={allVisibleSelected} onChange={toggleAllVisible} /></th><th>ID</th><th>Filename</th><th>{t("calls.status")}</th><th>Agent</th><th>Team</th><th>Campaign</th><th>Direction</th><th>Language</th><th>File size</th><th>Created</th><th>Action</th></tr></thead><tbody>
-            {calls.map((call) => <tr key={call.id}><td><input type="checkbox" aria-label={`Select call ${call.id}`} checked={selectedCallIds.has(call.id)} onChange={() => toggleCall(call.id)} /></td><td>#{call.id}</td><td>{call.filename}</td><td><span className={`badge badge-${call.status}`}>{call.status.replaceAll("_", " ")}</span></td><td>{call.agent_name || "-"}</td><td>{call.team || "-"}</td><td>{call.campaign || "-"}</td><td>{call.direction || "-"}</td><td>{call.language || "-"}</td><td>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</td><td>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</td><td><Link href={`/calls/${call.id}`}>{t("calls.open")}</Link></td></tr>)}
+        {loading ? <p>{t("calls.loading")}</p> : calls.length === 0 ? <p className="empty-state">{t("calls.empty")}</p> : (
+          <div className="table-wrap"><table className="data-table"><thead><tr><th><input type="checkbox" aria-label="Select all visible calls" checked={allVisibleSelected} onChange={toggleAllVisible} /></th><th>ID</th><th>{t("calls.filename")}</th><th>{t("calls.status")}</th><th>{t("calls.agent")}</th><th>{t("calls.team")}</th><th>{t("calls.campaign")}</th><th>{t("calls.direction")}</th><th>{t("calls.language")}</th><th>{t("calls.fileSize")}</th><th>{t("calls.lastError")}</th><th>{t("calls.lastProcessed")}</th><th>{t("calls.created")}</th><th>{t("calls.action")}</th></tr></thead><tbody>
+            {calls.map((call) => <tr key={call.id} className={selectedCallIds.has(call.id) ? "row-selected" : ""}><td><input type="checkbox" aria-label={`Select call ${call.id}`} checked={selectedCallIds.has(call.id)} onChange={() => toggleCall(call.id)} /></td><td>#{call.id}</td><td className="filename-cell" title={call.filename}>{call.filename}</td><td><span className={`badge badge-${call.status}`}>{t(statusKey(call.status))}</span></td><td>{call.agent_name || "-"}</td><td>{call.team || "-"}</td><td>{call.campaign || "-"}</td><td>{call.direction || "-"}</td><td>{call.language || "-"}</td><td>{formatBytes(call.file_size_bytes)}</td><td className="error-cell">{call.last_error_message || "-"}</td><td>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</td><td>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</td><td><Link className="button button-secondary table-action" href={`/calls/${call.id}`}>{t("calls.open")}</Link></td></tr>)}
           </tbody></table></div>
         )}
       </section>

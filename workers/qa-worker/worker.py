@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,15 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("
 LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
+
+
+def safe_error(exc: Exception, limit: int = 2000) -> str:
+    message = str(exc) or exc.__class__.__name__
+    for key in ("LLM_API_KEY", "OPENAI_API_KEY", "API_KEY", "SECRET", "TOKEN"):
+        value = os.environ.get(key)
+        if value:
+            message = message.replace(value, "[redacted]")
+    return message[:limit]
 
 
 def get_llm_timeout_seconds() -> float:
@@ -540,6 +550,9 @@ def process_qa_job(call_id: int) -> None:
         ).scalars().all()
         if not segments:
             call.status = "analysis_failed"
+            call.last_error_type = "missing_transcript"
+            call.last_error_message = "QA analysis failed: call has no transcript segments."
+            call.last_processed_at = datetime.now(UTC)
             db.commit()
             print(f"call {call_id} has no transcript segments")
             return
@@ -547,6 +560,10 @@ def process_qa_job(call_id: int) -> None:
         transcript_text = format_transcript(segments)
 
         try:
+            call.status = "analyzing"
+            call.last_error_type = None
+            call.last_error_message = None
+            db.commit()
             scorecard = load_active_scorecard(db)
             workspace_settings = load_workspace_settings(db)
             resolved_report_language = resolve_report_language(scorecard, workspace_settings, call)
@@ -591,15 +608,24 @@ def process_qa_job(call_id: int) -> None:
             )
             db.add(qa_review)
             call.status = "analyzed"
+            call.last_error_type = None
+            call.last_error_message = None
+            call.last_processed_at = datetime.now(UTC)
             db.commit()
             print(f"call {call_id} analyzed with mode={QA_MODE} provider={provider_snapshot.get('name','n/a')}")
         except Exception as exc:
             db.rollback()
-            failed = QAReview(call_id=call_id,status="failed",analysis_mode=QA_MODE,error_message=str(exc)[:500])
+            clean_error = safe_error(exc)
+            failed = QAReview(call_id=call_id, status="failed", analysis_mode=QA_MODE, error_message=clean_error[:500])
             db.add(failed)
-            call.status = "analysis_failed"
+            call = db.get(Call, call_id)
+            if call:
+                call.status = "analysis_failed"
+                call.last_error_type = exc.__class__.__name__
+                call.last_error_message = f"QA analysis failed: {clean_error}"
+                call.last_processed_at = datetime.now(UTC)
             db.commit()
-            print(f"failed to analyze call {call_id}: {exc}")
+            print(f"failed to analyze call {call_id}: {clean_error}")
 
 
 signal.signal(signal.SIGINT, handle_shutdown)

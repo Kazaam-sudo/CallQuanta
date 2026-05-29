@@ -15,13 +15,13 @@ from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from io import BytesIO, StringIO
 from openpyxl import Workbook
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
-app = FastAPI(title="CallQuanta API", version="0.14.0")
+app = FastAPI(title="CallQuanta API", version="0.15.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -411,6 +411,9 @@ def serialize_call(call: Call) -> dict:
         "direction": call.direction,
         "language": call.language,
         "created_at": call.created_at.isoformat() if call.created_at else None,
+        "last_error_type": call.last_error_type,
+        "last_error_message": call.last_error_message,
+        "last_processed_at": call.last_processed_at.isoformat() if call.last_processed_at else None,
     }
 
 
@@ -596,6 +599,74 @@ def list_calls(db: Session = Depends(get_db)) -> list[dict]:
 
 
 
+def _enqueue_job(queue_name: str, payload: dict) -> tuple[bool, str | None]:
+    try:
+        redis_client.lpush(queue_name, json.dumps(payload))
+        return True, None
+    except redis.RedisError as exc:
+        logger.warning("Redis enqueue failed for %s: %s", queue_name, exc)
+        return False, "Queue backend is unavailable"
+
+
+def _queue_length(queue_name: str) -> tuple[int, str | None]:
+    try:
+        return int(redis_client.llen(queue_name)), None
+    except redis.RedisError as exc:
+        logger.warning("Redis LLEN failed for %s: %s", queue_name, exc)
+        return 0, "Redis unavailable; queue lengths are reported as 0."
+
+
+def _status_counts(db: Session) -> dict[str, int]:
+    statuses = [
+        "uploaded",
+        "transcription_pending",
+        "transcribing",
+        "transcription_failed",
+        "transcribed",
+        "analysis_pending",
+        "analyzing",
+        "analysis_failed",
+        "analyzed",
+    ]
+    counts = {status: 0 for status in statuses}
+    rows = db.execute(select(Call.status, func.count(Call.id)).group_by(Call.status)).all()
+    for status, count in rows:
+        if status in counts:
+            counts[str(status)] = int(count)
+    return counts
+
+
+@app.get("/calls/processing-summary")
+def calls_processing_summary(db: Session = Depends(get_db)) -> dict:
+    return _status_counts(db)
+
+
+@app.get("/jobs/summary")
+def jobs_summary(db: Session = Depends(get_db)) -> dict:
+    transcription_queue_length, transcription_warning = _queue_length(TRANSCRIPTION_QUEUE)
+    qa_queue_length, qa_warning = _queue_length(QA_QUEUE)
+    counts = _status_counts(db)
+    warnings = [warning for warning in {transcription_warning, qa_warning} if warning]
+    payload = {
+        "transcription_queue_length": transcription_queue_length,
+        "qa_queue_length": qa_queue_length,
+        "processing": {
+            "transcribing": counts["transcribing"],
+            "analyzing": counts["analyzing"],
+        },
+        "failed": {
+            "transcription_failed": counts["transcription_failed"],
+            "analysis_failed": counts["analysis_failed"],
+        },
+        "pending": {
+            "transcription_pending": counts["transcription_pending"],
+            "analysis_pending": counts["analysis_pending"],
+        },
+    }
+    if warnings:
+        payload["warning"] = " ".join(warnings)
+    return payload
+
 
 def _unique_call_ids(call_ids: list[int]) -> list[int]:
     seen: set[int] = set()
@@ -616,16 +687,25 @@ def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
             continue
-        if call.status == "transcription_pending":
-            results.append({"call_id": call_id, "status": "skipped", "reason": "Transcription already pending"})
+        if call.status in {"transcription_pending", "transcribing"}:
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Transcription already pending or processing"})
             continue
-        if call.status in {"analysis_pending"}:
-            results.append({"call_id": call_id, "status": "skipped", "reason": "Call is already in another pending workflow"})
+        if call.status in {"analysis_pending", "analyzing"}:
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Call is already in another workflow"})
             continue
         call.status = "transcription_pending"
+        call.last_error_type = None
+        call.last_error_message = None
         db.commit()
-        redis_client.lpush(TRANSCRIPTION_QUEUE, json.dumps({"call_id": call_id}))
-        results.append({"call_id": call_id, "status": "transcription_queued"})
+        queued, warning = _enqueue_job(TRANSCRIPTION_QUEUE, {"call_id": call_id})
+        if queued:
+            results.append({"call_id": call_id, "status": "transcription_queued"})
+        else:
+            call.status = "transcription_failed"
+            call.last_error_type = "queue_unavailable"
+            call.last_error_message = warning
+            db.commit()
+            results.append({"call_id": call_id, "status": "failed", "reason": warning})
     return {"results": results}
 
 
@@ -637,19 +717,73 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
             continue
-        if call.status == "analysis_pending":
-            results.append({"call_id": call_id, "status": "skipped", "reason": "Analysis already pending"})
+        if call.status in {"analysis_pending", "analyzing"}:
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Analysis already pending or processing"})
             continue
         has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
         if not has_segments:
             results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
             continue
         call.status = "analysis_pending"
+        call.last_error_type = None
+        call.last_error_message = None
         db.commit()
-        redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
-        results.append({"call_id": call_id, "status": "analysis_queued"})
+        queued, warning = _enqueue_job(QA_QUEUE, {"call_id": call_id})
+        if queued:
+            results.append({"call_id": call_id, "status": "analysis_queued"})
+        else:
+            call.status = "analysis_failed"
+            call.last_error_type = "queue_unavailable"
+            call.last_error_message = warning
+            db.commit()
+            results.append({"call_id": call_id, "status": "failed", "reason": warning})
     return {"results": results}
 
+
+@app.post("/calls/batch/retry-failed")
+def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        if call.status == "transcription_failed":
+            call.status = "transcription_pending"
+            call.last_error_type = None
+            call.last_error_message = None
+            db.commit()
+            queued, warning = _enqueue_job(TRANSCRIPTION_QUEUE, {"call_id": call_id})
+            if queued:
+                results.append({"call_id": call_id, "status": "transcription_queued"})
+            else:
+                call.status = "transcription_failed"
+                call.last_error_type = "queue_unavailable"
+                call.last_error_message = warning
+                db.commit()
+                results.append({"call_id": call_id, "status": "failed", "reason": warning})
+            continue
+        if call.status == "analysis_failed":
+            has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
+            if not has_segments:
+                results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
+                continue
+            call.status = "analysis_pending"
+            call.last_error_type = None
+            call.last_error_message = None
+            db.commit()
+            queued, warning = _enqueue_job(QA_QUEUE, {"call_id": call_id})
+            if queued:
+                results.append({"call_id": call_id, "status": "analysis_queued"})
+            else:
+                call.status = "analysis_failed"
+                call.last_error_type = "queue_unavailable"
+                call.last_error_message = warning
+                db.commit()
+                results.append({"call_id": call_id, "status": "failed", "reason": warning})
+            continue
+        results.append({"call_id": call_id, "status": "skipped", "reason": "Call is not in a failed status"})
+    return {"results": results}
 
 @app.get("/calls/{call_id}")
 def get_call(call_id: int, db: Session = Depends(get_db)) -> dict:
@@ -666,9 +800,17 @@ def transcribe_call(call_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Call not found")
 
     call.status = "transcription_pending"
+    call.last_error_type = None
+    call.last_error_message = None
     db.commit()
 
-    redis_client.lpush(TRANSCRIPTION_QUEUE, json.dumps({"call_id": call_id}))
+    queued, warning = _enqueue_job(TRANSCRIPTION_QUEUE, {"call_id": call_id})
+    if not queued:
+        call.status = "transcription_failed"
+        call.last_error_type = "queue_unavailable"
+        call.last_error_message = warning
+        db.commit()
+        raise HTTPException(status_code=503, detail=warning)
     return {"call_id": call_id, "status": "transcription_queued"}
 
 
@@ -711,9 +853,17 @@ def analyze_call(call_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=400, detail="Call has no transcript segments")
 
     call.status = "analysis_pending"
+    call.last_error_type = None
+    call.last_error_message = None
     db.commit()
 
-    redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
+    queued, warning = _enqueue_job(QA_QUEUE, {"call_id": call_id})
+    if not queued:
+        call.status = "analysis_failed"
+        call.last_error_type = "queue_unavailable"
+        call.last_error_message = warning
+        db.commit()
+        raise HTTPException(status_code=503, detail=warning)
     return {"call_id": call_id, "status": "analysis_queued"}
 
 
