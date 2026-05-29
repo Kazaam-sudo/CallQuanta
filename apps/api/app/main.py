@@ -9,7 +9,7 @@ from uuid import uuid4
 import redis
 import requests
 import yaml
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
@@ -21,7 +21,7 @@ from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
-app = FastAPI(title="CallQuanta API", version="0.7.0")
+app = FastAPI(title="CallQuanta API", version="0.14.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -36,6 +36,20 @@ CORS_ORIGINS = os.environ.get(
 )
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/mp4",
+    "audio/aac",
+    "audio/ogg",
+    "audio/flac",
+    "audio/webm",
+    "video/webm",
+}
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "0") or "0")
 
 
 
@@ -136,6 +150,10 @@ class CallMetadataPayload(BaseModel):
     campaign: str | None = None
     direction: str | None = None
     language: str | None = None
+
+
+class BatchCallsPayload(BaseModel):
+    call_ids: list[int]
 
 
 
@@ -247,8 +265,24 @@ def get_db() -> Session:
         db.close()
 
 
-@app.post("/calls/upload")
-async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+def _normalize_optional_text(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_direction(value: str | None) -> str | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower()
+    if normalized not in {"inbound", "outbound", "unknown"}:
+        raise HTTPException(status_code=400, detail="direction must be one of: inbound, outbound, unknown")
+    return normalized
+
+
+def _validate_upload_file(file: UploadFile) -> str:
     safe_name = secure_filename(file.filename or "")
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -258,28 +292,108 @@ async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db
         allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
         raise HTTPException(status_code=400, detail=f"Unsupported file extension. Allowed extensions: {allowed}")
 
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if (
+        content_type
+        and content_type != "application/octet-stream"
+        and content_type not in ALLOWED_UPLOAD_CONTENT_TYPES
+        and not content_type.startswith("audio/")
+    ):
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    return safe_name
+
+
+async def _store_upload_file(file: UploadFile, safe_name: str) -> tuple[str, Path, int]:
     stored_name = f"{uuid4().hex}_{safe_name}"
     stored_path = UPLOAD_DIR / stored_name
+    size = 0
 
-    contents = await file.read()
-    if not contents:
+    with stored_path.open("wb") as handle:
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            size += len(chunk)
+            if MAX_UPLOAD_BYTES and size > MAX_UPLOAD_BYTES:
+                handle.close()
+                stored_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes")
+            handle.write(chunk)
+
+    if size == 0:
+        stored_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return stored_name, stored_path, size
 
-    stored_path.write_bytes(contents)
 
+def _apply_call_metadata(call: Call, metadata: CallMetadataPayload) -> None:
+    call.agent_name = _normalize_optional_text(metadata.agent_name)
+    call.team = _normalize_optional_text(metadata.team)
+    call.campaign = _normalize_optional_text(metadata.campaign)
+    call.direction = _normalize_direction(metadata.direction)
+    call.language = _normalize_optional_text(metadata.language)
+
+
+async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMetadataPayload | None = None) -> Call:
+    safe_name = _validate_upload_file(file)
+    stored_name, stored_path, size = await _store_upload_file(file, safe_name)
     call = Call(
         filename=safe_name,
         status="uploaded",
         stored_filename=stored_name,
         stored_path=str(stored_path),
-        file_size_bytes=len(contents),
+        file_size_bytes=size,
         content_type=file.content_type,
     )
+    if metadata:
+        _apply_call_metadata(call, metadata)
     db.add(call)
     db.commit()
     db.refresh(call)
+    return call
 
+
+@app.post("/calls/upload")
+async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+    call = await _create_uploaded_call(file, db)
     return serialize_call(call)
+
+
+@app.post("/calls/upload/bulk")
+async def upload_calls_bulk(
+    files: list[UploadFile] = File(...),
+    agent_name: str | None = Form(None),
+    team: str | None = Form(None),
+    campaign: str | None = Form(None),
+    direction: str | None = Form(None),
+    language: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> dict:
+    metadata = CallMetadataPayload(
+        agent_name=agent_name,
+        team=team,
+        campaign=campaign,
+        direction=direction,
+        language=language,
+    )
+    # Validate shared metadata before storing any files so a bad direction is returned consistently.
+    _normalize_direction(metadata.direction)
+
+    uploaded: list[dict] = []
+    failed: list[dict] = []
+    for file in files:
+        filename = secure_filename(file.filename or "") or (file.filename or "unknown")
+        try:
+            call = await _create_uploaded_call(file, db, metadata)
+            uploaded.append({"id": call.id, "filename": call.filename, "status": call.status})
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"filename": filename, "error": str(exc.detail)})
+        except Exception as exc:
+            db.rollback()
+            logger.exception("bulk upload failed for %s", filename)
+            failed.append({"filename": filename, "error": str(exc) or "Upload failed"})
+    return {"uploaded": uploaded, "failed": failed}
 
 
 def serialize_call(call: Call) -> dict:
@@ -306,15 +420,7 @@ def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session 
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
 
-    normalized_direction = payload.direction.lower().strip() if isinstance(payload.direction, str) else None
-    if normalized_direction is not None and normalized_direction not in {"inbound", "outbound", "unknown"}:
-        raise HTTPException(status_code=400, detail="direction must be one of: inbound, outbound, unknown")
-
-    call.agent_name = payload.agent_name.strip() if isinstance(payload.agent_name, str) and payload.agent_name.strip() else None
-    call.team = payload.team.strip() if isinstance(payload.team, str) and payload.team.strip() else None
-    call.campaign = payload.campaign.strip() if isinstance(payload.campaign, str) and payload.campaign.strip() else None
-    call.direction = normalized_direction
-    call.language = payload.language.strip() if isinstance(payload.language, str) and payload.language.strip() else None
+    _apply_call_metadata(call, payload)
     db.commit()
     db.refresh(call)
     return serialize_call(call)
@@ -487,6 +593,62 @@ def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
 def list_calls(db: Session = Depends(get_db)) -> list[dict]:
     calls = db.execute(select(Call).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
     return [serialize_call(call) for call in calls]
+
+
+
+
+def _unique_call_ids(call_ids: list[int]) -> list[int]:
+    seen: set[int] = set()
+    unique: list[int] = []
+    for call_id in call_ids:
+        if call_id in seen:
+            continue
+        seen.add(call_id)
+        unique.append(call_id)
+    return unique
+
+
+@app.post("/calls/batch/transcribe")
+def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        if call.status == "transcription_pending":
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Transcription already pending"})
+            continue
+        if call.status in {"analysis_pending"}:
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Call is already in another pending workflow"})
+            continue
+        call.status = "transcription_pending"
+        db.commit()
+        redis_client.lpush(TRANSCRIPTION_QUEUE, json.dumps({"call_id": call_id}))
+        results.append({"call_id": call_id, "status": "transcription_queued"})
+    return {"results": results}
+
+
+@app.post("/calls/batch/analyze")
+def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        if call.status == "analysis_pending":
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Analysis already pending"})
+            continue
+        has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
+        if not has_segments:
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
+            continue
+        call.status = "analysis_pending"
+        db.commit()
+        redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
+        results.append({"call_id": call_id, "status": "analysis_queued"})
+    return {"results": results}
 
 
 @app.get("/calls/{call_id}")
