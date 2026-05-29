@@ -18,6 +18,8 @@ type Call = {
   direction?: "inbound" | "outbound" | "unknown" | null;
   language?: string | null;
   created_at?: string | null;
+  last_error_message?: string | null;
+  last_processed_at?: string | null;
 };
 
 type TranscriptSegment = {
@@ -104,7 +106,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   }, [load]);
 
   useEffect(() => {
-    if (call?.status !== "transcription_pending" && call?.status !== "analysis_pending") return;
+    if (!["transcription_pending", "transcribing", "analysis_pending", "analyzing"].includes(call?.status || "")) return;
     const interval = setInterval(() => {
       load();
     }, 2000);
@@ -210,8 +212,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   };
 
   const isTranscribed = call?.status === "transcribed";
-  const pendingState = useMemo(() => call?.status === "transcription_pending" || transcribing, [call?.status, transcribing]);
-  const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || analyzing, [call?.status, analyzing]);
+  const pendingState = useMemo(() => call?.status === "transcription_pending" || call?.status === "transcribing" || transcribing, [call?.status, transcribing]);
+  const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || call?.status === "analyzing" || analyzing, [call?.status, analyzing]);
   const canAnalyzeAgain = call?.status === "analyzed" || call?.status === "analysis_failed";
   const latestReviewId = history[0]?.id ?? review?.id ?? null;
   const viewingLatest = viewingReviewId != null && latestReviewId != null && viewingReviewId === latestReviewId;
@@ -303,9 +305,9 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
         {pendingState && <p className="message">Transcription is in progress. Auto-refreshing every 2 seconds.</p>}
         {analysisPendingState && <p className="message">QA analysis is in progress. Auto-refreshing every 2 seconds.</p>}
-        {call?.status === "analysis_failed" && (
+        {call?.last_error_message && (
           <p className="message message-error">
-            QA analysis failed. The worker could not produce a valid review. Check worker logs and provider settings, then retry analysis.
+            <strong>{t("calls.lastError")}:</strong> {call.last_error_message}
             {latestFailureHint ? ` Latest hint: ${latestFailureHint}` : ""}
           </p>
         )}
@@ -316,8 +318,9 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           <div className="meta-grid" style={{ marginTop: 10 }}>
             <div className="meta-item"><small>Filename</small>{call.filename}</div>
             <div className="meta-item"><small>Created</small>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</div>
-            <div className="meta-item"><small>File size</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
+            <div className="meta-item"><small>{t("calls.fileSize")}</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
             <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
+            <div className="meta-item"><small>{t("calls.lastProcessed")}</small>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</div>
           </div>
         )}
       </section>

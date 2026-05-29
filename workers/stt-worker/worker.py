@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+from datetime import UTC, datetime
 
 import redis
 from sqlalchemy import create_engine, delete
@@ -23,6 +24,15 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 running = True
 faster_whisper_model = None
+
+
+def safe_error(exc: Exception, limit: int = 2000) -> str:
+    message = str(exc) or exc.__class__.__name__
+    for key in ("OPENAI_API_KEY", "API_KEY", "SECRET", "TOKEN"):
+        value = os.environ.get(key)
+        if value:
+            message = message.replace(value, "[redacted]")
+    return message[:limit]
 
 
 def handle_shutdown(signum, frame):
@@ -96,6 +106,11 @@ def process_transcription_job(call_id: int) -> None:
             return
 
         try:
+            call.status = "transcribing"
+            call.last_error_type = None
+            call.last_error_message = None
+            db.commit()
+
             db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
 
             if STT_MODE == "placeholder":
@@ -110,12 +125,20 @@ def process_transcription_job(call_id: int) -> None:
                 raise ValueError(f"unsupported STT_MODE: {STT_MODE}")
 
             call.status = "transcribed"
+            call.last_error_type = None
+            call.last_error_message = None
+            call.last_processed_at = datetime.now(UTC)
             db.commit()
         except Exception as exc:
             db.rollback()
-            call.status = "failed"
-            db.commit()
-            print(f"failed to process call {call_id}: {exc}")
+            call = db.get(Call, call_id)
+            if call:
+                call.status = "transcription_failed"
+                call.last_error_type = exc.__class__.__name__
+                call.last_error_message = f"Transcription failed: {safe_error(exc)}"
+                call.last_processed_at = datetime.now(UTC)
+                db.commit()
+            print(f"failed to process call {call_id}: {safe_error(exc)}")
 
 
 signal.signal(signal.SIGINT, handle_shutdown)

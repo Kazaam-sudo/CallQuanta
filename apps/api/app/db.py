@@ -11,6 +11,9 @@ class Call(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     filename: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(64), default="uploaded")
+    last_error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_processed_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stored_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     stored_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -122,6 +125,9 @@ def migrate_calls_table(engine: Engine) -> None:
 
     existing_columns = {column["name"] for column in inspector.get_columns("calls")}
     add_columns_sql = {
+        "last_error_type": "ALTER TABLE calls ADD COLUMN last_error_type VARCHAR(128)",
+        "last_error_message": "ALTER TABLE calls ADD COLUMN last_error_message TEXT",
+        "last_processed_at": "ALTER TABLE calls ADD COLUMN last_processed_at TIMESTAMPTZ",
         "agent_name": "ALTER TABLE calls ADD COLUMN agent_name VARCHAR(255)",
         "team": "ALTER TABLE calls ADD COLUMN team VARCHAR(255)",
         "campaign": "ALTER TABLE calls ADD COLUMN campaign VARCHAR(255)",
