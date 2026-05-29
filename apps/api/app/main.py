@@ -293,7 +293,12 @@ def _validate_upload_file(file: UploadFile) -> str:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension. Allowed extensions: {allowed}")
 
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
-    if content_type and content_type not in ALLOWED_UPLOAD_CONTENT_TYPES and not content_type.startswith("audio/"):
+    if (
+        content_type
+        and content_type != "application/octet-stream"
+        and content_type not in ALLOWED_UPLOAD_CONTENT_TYPES
+        and not content_type.startswith("audio/")
+    ):
         raise HTTPException(status_code=400, detail="Unsupported file type")
     return safe_name
 
