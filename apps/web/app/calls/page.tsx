@@ -42,10 +42,26 @@ type BulkMetadata = { agent_name: string; team: string; campaign: string; direct
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
 function getDirectUploadBaseUrl() {
-  if (process.env.NEXT_PUBLIC_API_BASE_URL) return process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) return trimTrailingSlash(process.env.NEXT_PUBLIC_API_BASE_URL);
   if (typeof window === "undefined") return API_BASE_URL;
-  return `${window.location.protocol}//${window.location.hostname}:8000`;
+
+  const { hostname, origin, protocol } = window.location;
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+  if (isLocalhost) return `${protocol}//${hostname}:8000`;
+
+  const isCodespacesHost = hostname.endsWith(".app.github.dev");
+  if (isCodespacesHost && hostname.includes("-3000.")) {
+    return `${protocol}//${hostname.replace("-3000.", "-8000.")}`;
+  }
+
+  if (hostname.includes("-8000.")) return origin;
+
+  return API_BASE_URL;
 }
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
 const activeStatuses = new Set(["transcription_pending", "transcribing", "analysis_pending", "analyzing"]);
@@ -104,6 +120,7 @@ export default function CallsPage() {
   const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
+  const [uploadEndpoint, setUploadEndpoint] = useState<string>(`${API_BASE_URL}/calls/upload/bulk`);
 
   const selectedCallCount = selectedCallIds.size;
   const selectedCalls = useMemo(() => calls.filter((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
@@ -132,6 +149,7 @@ export default function CallsPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { setUploadEndpoint(`${getDirectUploadBaseUrl()}/calls/upload/bulk`); }, []);
   useEffect(() => {
     const loadLimits = async () => {
       try {
@@ -161,12 +179,14 @@ export default function CallsPage() {
         return;
       }
     }
+    const uploadUrl = `${getDirectUploadBaseUrl()}/calls/upload/bulk`;
+    setUploadEndpoint(uploadUrl);
     setUploading(true);
     try {
       const uploadData = new FormData();
       selectedFiles.forEach((file) => uploadData.append("files", file));
       Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
-      const response = await fetch(`${getDirectUploadBaseUrl()}/calls/upload/bulk`, { method: "POST", body: uploadData });
+      const response = await fetch(uploadUrl, { method: "POST", body: uploadData });
       const data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
       if (!response.ok) {
         const detail = await responseErrorMessage(response, `HTTP ${response.status}`);
@@ -176,7 +196,7 @@ export default function CallsPage() {
       }
       setUploadResult(data ?? { uploaded: [], failed: [] });
       if ((data?.uploaded?.length ?? 0) > 0) { setSelectedFiles([]); event.currentTarget.reset(); await loadData(); }
-    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files.`); }
+    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. Upload URL: ${uploadUrl}`); }
     finally { setUploading(false); }
   };
 
@@ -202,7 +222,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.1</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.2</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 
@@ -235,6 +255,7 @@ export default function CallsPage() {
             <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="ru-RU" /></label>
           </div>
           <div><button className="button" type="submit" disabled={selectedFiles.length === 0 || uploading}>{uploading ? t("calls.uploading") : t("calls.uploadSelected")}</button></div>
+          {process.env.NODE_ENV !== "production" && <small className="upload-endpoint">Upload endpoint: {uploadEndpoint}</small>}
         </form>
         {uploadError && <p className="message message-error">{uploadError}</p>}
         {uploadResult && <div className="message message-success"><strong>{t("calls.uploadResults")}</strong><div>{t("calls.uploaded")}: {uploadResult.uploaded?.length ?? 0}</div>{(uploadResult.failed?.length ?? 0) > 0 && <div>{t("calls.failed")}: {uploadResult.failed?.map((item) => `${item.filename} (${item.error})`).join(", ")}</div>}</div>}
