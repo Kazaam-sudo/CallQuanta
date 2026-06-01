@@ -52,6 +52,7 @@ function getBulkUploadUrl() {
   return `${trimTrailingSlash(uploadBaseUrl)}/calls/upload/bulk`;
 }
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
+const bulkMetadataStorageKey = "callquanta.bulkUploadMetadata";
 const activeStatuses = new Set(["transcription_pending", "transcribing", "analysis_pending", "analyzing"]);
 const failedStatuses = new Set(["transcription_failed", "analysis_failed", "failed"]);
 
@@ -103,6 +104,7 @@ export default function CallsPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<BulkUploadResponse | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
   const [selectedCallIds, setSelectedCallIds] = useState<Set<number>>(new Set());
   const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
@@ -129,14 +131,27 @@ export default function CallsPage() {
       setCalls(callsData as Call[]);
       setSelectedCallIds((current) => new Set([...current].filter((id) => (callsData as Call[]).some((call) => call.id === id))));
       if (jobsResponse.ok) setJobSummary(await jobsResponse.json());
+      return true;
     } catch (error) {
       setLoadError(`Failed to load calls: ${error instanceof Error ? error.message : "Unknown error while loading calls."}`);
+      return false;
     } finally {
       if (showSpinner) setLoading(false);
     }
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    try {
+      const savedMetadata = window.localStorage.getItem(bulkMetadataStorageKey);
+      if (savedMetadata) setMetadata({ ...emptyMetadata, ...(JSON.parse(savedMetadata) as Partial<BulkMetadata>) });
+    } catch {
+      // Remembered metadata is a convenience only; ignore unavailable or malformed storage.
+    }
+  }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem(bulkMetadataStorageKey, JSON.stringify(metadata)); } catch {}
+  }, [metadata]);
   useEffect(() => {
     const loadLimits = async () => {
       try {
@@ -156,8 +171,9 @@ export default function CallsPage() {
 
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const form = event.currentTarget;
     if (selectedFiles.length === 0) return;
-    setUploadResult(null); setUploadError(null);
+    setUploadResult(null); setUploadError(null); setUploadWarning(null);
     if (uploadLimits) {
       const fileLimitExceeded = uploadLimits.max_upload_bytes_per_file > 0 && largestSelectedBytes > uploadLimits.max_upload_bytes_per_file;
       const bulkLimitExceeded = uploadLimits.max_bulk_upload_bytes > 0 && selectedTotalBytes > uploadLimits.max_bulk_upload_bytes;
@@ -169,27 +185,50 @@ export default function CallsPage() {
     const uploadUrl = getBulkUploadUrl();
     setUploadEndpoint(uploadUrl);
     setUploading(true);
+    let data: BulkUploadResponse | null = null;
     try {
       const uploadData = new FormData();
       selectedFiles.forEach((file) => uploadData.append("files", file));
       Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
       const response = await fetch(uploadUrl, { method: "POST", body: uploadData });
-      const data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
+      data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
       if (!response.ok) {
         const detail = await responseErrorMessage(response, response.statusText || "Upload request failed");
         const sizeHelp = response.status === 413 ? " Upload is too large. Try fewer files or increase upload limits." : "";
         setUploadError(`${t("calls.uploadFailed")}: HTTP ${response.status} - ${detail}.${sizeHelp}`);
         return;
       }
-      setUploadResult(data ?? { uploaded: [], failed: [] });
-      if ((data?.uploaded?.length ?? 0) > 0) { setSelectedFiles([]); event.currentTarget.reset(); await loadData(); }
-    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. The app tried same-origin upload through /api. Check web proxy logs.`); }
-    finally { setUploading(false); }
+    } catch {
+      setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. The app tried same-origin upload through /api. Check web proxy logs.`);
+      return;
+    } finally {
+      setUploading(false);
+    }
+
+    const result = data ?? { uploaded: [], failed: [] };
+    const uploadedCount = result.uploaded?.length ?? 0;
+    const failedCount = result.failed?.length ?? 0;
+    setUploadResult(result);
+    setUploadError(uploadedCount === 0 && failedCount > 0 ? `${t("calls.uploadFailed")}: ${failedCount} ${failedCount === 1 ? "file" : "files"} failed.` : null);
+    if (uploadedCount > 0) {
+      try {
+        setSelectedFiles([]);
+        form.reset();
+        const refreshed = await loadData();
+        if (!refreshed) setUploadWarning("Upload succeeded, but calls list refresh failed. Click Refresh.");
+      } catch {
+        setUploadWarning("Upload succeeded, but calls list refresh failed. Click Refresh.");
+      }
+    }
   };
 
   const toggleCall = (callId: number) => setSelectedCallIds((current) => { const next = new Set(current); next.has(callId) ? next.delete(callId) : next.add(callId); return next; });
   const toggleAllVisible = () => setSelectedCallIds((current) => { const next = new Set(current); allVisibleSelected ? calls.forEach((call) => next.delete(call.id)) : calls.forEach((call) => next.add(call.id)); return next; });
   const clearSelection = () => setSelectedCallIds(new Set());
+
+  const uploadedResultCount = uploadResult?.uploaded?.length ?? 0;
+  const failedResultCount = uploadResult?.failed?.length ?? 0;
+  const uploadResultClass = failedResultCount > 0 && uploadedResultCount === 0 ? "message-error" : failedResultCount > 0 ? "message-warning" : "message-success";
 
   const runBatchAction = async (action: "transcribe" | "analyze" | "retry") => {
     if (selectedCallIds.size === 0) return;
@@ -209,7 +248,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.3</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.4</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 
@@ -235,17 +274,19 @@ export default function CallsPage() {
             {selectedFiles.length > 5 && <span>+{selectedFiles.length - 5} more files</span>}
           </div>
           <div className="grid-2">
-            <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Shahzoda" /></label>
-            <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Outbound Sales" /></label>
-            <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(event) => setMetadata({ ...metadata, campaign: event.target.value })} placeholder="Humans Promo" /></label>
+            <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Example: Shahzoda" /></label>
+            <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Example: Outbound Sales" /></label>
+            <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(event) => setMetadata({ ...metadata, campaign: event.target.value })} placeholder="Example: Humans Promo" /></label>
             <label>{t("call.direction")}<select value={metadata.direction} onChange={(event) => setMetadata({ ...metadata, direction: event.target.value })}><option value="">-</option><option value="inbound">inbound</option><option value="outbound">outbound</option><option value="unknown">unknown</option></select></label>
-            <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="ru-RU" /></label>
+            <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="Example: ru-RU" /></label>
           </div>
+          <small>Empty fields will not be saved.</small>
           <div><button className="button" type="submit" disabled={selectedFiles.length === 0 || uploading}>{uploading ? t("calls.uploading") : t("calls.uploadSelected")}</button></div>
           {process.env.NODE_ENV !== "production" && <small className="upload-endpoint">Upload endpoint: {uploadEndpoint}</small>}
         </form>
         {uploadError && <p className="message message-error">{uploadError}</p>}
-        {uploadResult && <div className="message message-success"><strong>{t("calls.uploadResults")}</strong><div>{t("calls.uploaded")}: {uploadResult.uploaded?.length ?? 0}</div>{(uploadResult.failed?.length ?? 0) > 0 && <div>{t("calls.failed")}: {uploadResult.failed?.map((item) => `${item.filename} (${item.error})`).join(", ")}</div>}</div>}
+        {uploadWarning && <p className="message message-warning">{uploadWarning}</p>}
+        {uploadResult && <div className={`message ${uploadResultClass}`}><strong>{t("calls.uploadResults")}</strong><div>{uploadedResultCount > 0 || failedResultCount > 0 ? `Uploaded ${uploadedResultCount} ${uploadedResultCount === 1 ? "file" : "files"}. ${failedResultCount} ${failedResultCount === 1 ? "file" : "files"} failed.` : "No files were uploaded."}</div>{failedResultCount > 0 && <div>{t("calls.failed")}: {uploadResult.failed?.map((item) => `${item.filename} (${item.error})`).join(", ")}</div>}</div>}
       </section>
 
       {selectedCallCount > 0 && <section className="selection-bar"><strong>{t("calls.selectedCalls")}: {selectedCallCount}</strong><button className="button" type="button" onClick={() => runBatchAction("transcribe")} disabled={!!batchLoading}>{batchLoading === "transcribe" ? t("calls.working") : t("calls.transcribeSelected")}</button><button className="button" type="button" onClick={() => runBatchAction("analyze")} disabled={!!batchLoading}>{batchLoading === "analyze" ? t("calls.working") : t("calls.analyzeSelected")}</button><button className="button button-danger" type="button" onClick={() => runBatchAction("retry")} disabled={!!batchLoading || !selectedCalls.some((call) => failedStatuses.has(call.status))}>{batchLoading === "retry" ? t("calls.working") : t("calls.retryFailedSelected")}</button><button className="button button-secondary" type="button" onClick={clearSelection}>{t("calls.clearSelection")}</button></section>}
