@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../components/I18nProvider";
 
 type Call = {
@@ -47,9 +47,9 @@ function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
-function getBulkUploadUrl() {
+function getUploadUrl() {
   const uploadBaseUrl = DIRECT_UPLOAD_BASE_URL || API_BASE_URL;
-  return `${trimTrailingSlash(uploadBaseUrl)}/calls/upload/bulk`;
+  return `${trimTrailingSlash(uploadBaseUrl)}/calls/upload`;
 }
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
 const bulkMetadataStorageKey = "callquanta.bulkUploadMetadata";
@@ -68,6 +68,7 @@ function parseErrorDetail(data: unknown): string | null {
 }
 
 async function responseErrorMessage(response: Response, fallback: string) {
+  if (response.status === 413) return "File is too large for the current proxy/server limit.";
   const text = await response.text().catch(() => "");
   if (text) {
     try {
@@ -75,7 +76,7 @@ async function responseErrorMessage(response: Response, fallback: string) {
       const detail = parseErrorDetail(parsed);
       if (detail) return detail;
     } catch {
-      return text;
+      return text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() || fallback;
     }
   }
   return fallback;
@@ -110,7 +111,9 @@ export default function CallsPage() {
   const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
-  const [uploadEndpoint, setUploadEndpoint] = useState<string>(getBulkUploadUrl());
+  const [uploadEndpoint, setUploadEndpoint] = useState<string>(getUploadUrl());
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; filename: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedCallCount = selectedCallIds.size;
   const selectedCalls = useMemo(() => calls.filter((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
@@ -150,7 +153,10 @@ export default function CallsPage() {
     }
   }, []);
   useEffect(() => {
-    try { window.localStorage.setItem(bulkMetadataStorageKey, JSON.stringify(metadata)); } catch {}
+    try {
+      const savedMetadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value.trim())) as BulkMetadata;
+      window.localStorage.setItem(bulkMetadataStorageKey, JSON.stringify(savedMetadata));
+    } catch {}
   }, [metadata]);
   useEffect(() => {
     const loadLimits = async () => {
@@ -169,51 +175,81 @@ export default function CallsPage() {
     return () => window.clearInterval(interval);
   }, [hasActiveProcessing, loadData]);
 
+  const resetFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const clearSelectedFiles = () => {
+    setSelectedFiles([]);
+    setUploadResult(null);
+    setUploadError(null);
+    setUploadWarning(null);
+    setUploadProgress(null);
+    resetFileInput();
+  };
+
+  const removeSelectedFile = (indexToRemove: number) => {
+    setSelectedFiles((current) => current.filter((_, index) => index !== indexToRemove));
+    setUploadResult(null);
+    setUploadError(null);
+    resetFileInput();
+  };
+
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = event.currentTarget;
     if (selectedFiles.length === 0) return;
-    setUploadResult(null); setUploadError(null); setUploadWarning(null);
+    setUploadResult(null); setUploadError(null); setUploadWarning(null); setUploadProgress(null);
     if (uploadLimits) {
       const fileLimitExceeded = uploadLimits.max_upload_bytes_per_file > 0 && largestSelectedBytes > uploadLimits.max_upload_bytes_per_file;
-      const bulkLimitExceeded = uploadLimits.max_bulk_upload_bytes > 0 && selectedTotalBytes > uploadLimits.max_bulk_upload_bytes;
-      if (fileLimitExceeded || bulkLimitExceeded) {
-        setUploadError(`${t("calls.uploadFailed")}: Upload too large. Max per file: ${formatBytes(uploadLimits.max_upload_bytes_per_file)}. Max bulk upload: ${formatBytes(uploadLimits.max_bulk_upload_bytes)}.`);
+      if (fileLimitExceeded) {
+        setUploadError(`${t("calls.uploadFailed")}: Upload too large. Max per file: ${formatBytes(uploadLimits.max_upload_bytes_per_file)}.`);
         return;
       }
     }
-    const uploadUrl = getBulkUploadUrl();
+    const uploadUrl = getUploadUrl();
     setUploadEndpoint(uploadUrl);
     setUploading(true);
-    let data: BulkUploadResponse | null = null;
-    try {
-      const uploadData = new FormData();
-      selectedFiles.forEach((file) => uploadData.append("files", file));
-      Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
-      const response = await fetch(uploadUrl, { method: "POST", body: uploadData });
-      data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
-      if (!response.ok) {
-        const detail = await responseErrorMessage(response, response.statusText || "Upload request failed");
-        const sizeHelp = response.status === 413 ? " Upload is too large. Try fewer files or increase upload limits." : "";
-        setUploadError(`${t("calls.uploadFailed")}: HTTP ${response.status} - ${detail}.${sizeHelp}`);
-        return;
+    const filesToUpload = [...selectedFiles];
+    const result: BulkUploadResponse = { uploaded: [], failed: [] };
+
+    for (const [index, file] of filesToUpload.entries()) {
+      setUploadProgress({ current: index + 1, total: filesToUpload.length, filename: file.name });
+      try {
+        const uploadData = new FormData();
+        uploadData.append("file", file);
+        Object.entries(metadata).forEach(([key, value]) => { if (value.trim()) uploadData.append(key, value.trim()); });
+        const response = await fetch(uploadUrl, { method: "POST", body: uploadData });
+        const data = response.ok ? await response.json().catch(() => null) as { id?: number; filename?: string; status?: string } | null : null;
+        if (!response.ok) {
+          const detail = await responseErrorMessage(response, response.statusText || "Upload request failed");
+          result.failed?.push({ filename: file.name, error: detail });
+          continue;
+        }
+        result.uploaded?.push({ id: Number(data?.id), filename: data?.filename || file.name, status: data?.status || "uploaded" });
+      } catch {
+        result.failed?.push({ filename: file.name, error: "Network error while uploading this file through /api. Check web proxy logs." });
       }
-    } catch {
-      setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. The app tried same-origin upload through /api. Check web proxy logs.`);
-      return;
-    } finally {
-      setUploading(false);
     }
 
-    const result = data ?? { uploaded: [], failed: [] };
+    setUploading(false);
+    setUploadProgress(null);
+
     const uploadedCount = result.uploaded?.length ?? 0;
     const failedCount = result.failed?.length ?? 0;
     setUploadResult(result);
     setUploadError(uploadedCount === 0 && failedCount > 0 ? `${t("calls.uploadFailed")}: ${failedCount} ${failedCount === 1 ? "file" : "files"} failed.` : null);
+
+    if (failedCount > 0) {
+      const failedNames = new Set(result.failed?.map((item) => item.filename));
+      setSelectedFiles(filesToUpload.filter((file) => failedNames.has(file.name)));
+      resetFileInput();
+    } else {
+      setSelectedFiles([]);
+      resetFileInput();
+    }
+
     if (uploadedCount > 0) {
       try {
-        setSelectedFiles([]);
-        form.reset();
         const refreshed = await loadData();
         if (!refreshed) setUploadWarning("Upload succeeded, but calls list refresh failed. Click Refresh.");
       } catch {
@@ -248,7 +284,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.4</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.5</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 
@@ -266,12 +302,19 @@ export default function CallsPage() {
       <section className="card upload-card">
         <div className="section-header"><div><p className="eyebrow">{t("calls.upload")}</p><h2>{t("calls.uploadFiles")}</h2><small>{t("calls.bulkMetadataHelp")}</small></div></div>
         <form onSubmit={onUpload} className="grid" style={{ gap: 12 }}>
-          <input className="input-file" type="file" name="files" multiple required accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" onChange={(event) => { setSelectedFiles(Array.from(event.currentTarget.files ?? [])); setUploadResult(null); setUploadError(null); }} />
+          <input ref={fileInputRef} className="input-file" type="file" name="files" multiple accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" onChange={(event) => { setSelectedFiles(Array.from(event.currentTarget.files ?? [])); setUploadResult(null); setUploadError(null); setUploadWarning(null); }} />
           <div className="selected-files">
-            <strong>{t("calls.selectedFiles")}: {selectedFiles.length} · {formatBytes(selectedTotalBytes)}</strong>
-            {selectedFiles.length > 0 && <small>Selected: {selectedFiles.length} files · {formatBytes(selectedTotalBytes)}{uploadLimits ? ` · Max per file ${formatBytes(uploadLimits.max_upload_bytes_per_file)} · Max bulk ${formatBytes(uploadLimits.max_bulk_upload_bytes)}` : ""}</small>}
-            {selectedFiles.slice(0, 5).map((file) => <span key={`${file.name}-${file.size}`}>{file.name} · {formatBytes(file.size)}</span>)}
-            {selectedFiles.length > 5 && <span>+{selectedFiles.length - 5} more files</span>}
+            <div className="selected-files-summary">
+              <strong>{t("calls.selectedFiles")}: {selectedFiles.length} · {formatBytes(selectedTotalBytes)}</strong>
+              {selectedFiles.length > 0 && <small>Selected: {selectedFiles.length} files · {formatBytes(selectedTotalBytes)}{uploadLimits ? ` · Max per file ${formatBytes(uploadLimits.max_upload_bytes_per_file)}` : ""}</small>}
+              {selectedFiles.length > 0 && <button className="button button-secondary button-small" type="button" onClick={clearSelectedFiles} disabled={uploading}>Clear all</button>}
+            </div>
+            {selectedFiles.map((file, index) => (
+              <span className="selected-file-pill" key={`${file.name}-${file.size}-${file.lastModified}-${index}`}>
+                <span title={file.name}>{file.name} · {formatBytes(file.size)}</span>
+                <button type="button" aria-label={`Remove ${file.name}`} title="Remove" onClick={() => removeSelectedFile(index)} disabled={uploading}>×</button>
+              </span>
+            ))}
           </div>
           <div className="grid-2">
             <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(event) => setMetadata({ ...metadata, agent_name: event.target.value })} placeholder="Example: Shahzoda" /></label>
@@ -281,7 +324,8 @@ export default function CallsPage() {
             <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="Example: ru-RU" /></label>
           </div>
           <small>Empty fields will not be saved.</small>
-          <div><button className="button" type="submit" disabled={selectedFiles.length === 0 || uploading}>{uploading ? t("calls.uploading") : t("calls.uploadSelected")}</button></div>
+          {uploadProgress && <p className="upload-progress">Uploading {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.filename}</p>}
+          <div><button className="button" type="submit" disabled={selectedFiles.length === 0 || uploading}>{uploadProgress ? `Uploading ${uploadProgress.current}/${uploadProgress.total}...` : t("calls.uploadSelected")}</button></div>
           {process.env.NODE_ENV !== "production" && <small className="upload-endpoint">Upload endpoint: {uploadEndpoint}</small>}
         </form>
         {uploadError && <p className="message message-error">{uploadError}</p>}
