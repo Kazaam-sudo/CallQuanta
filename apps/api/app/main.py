@@ -21,7 +21,7 @@ from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
-app = FastAPI(title="CallQuanta API", version="0.15.1")
+app = FastAPI(title="CallQuanta API", version="0.15.2")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
