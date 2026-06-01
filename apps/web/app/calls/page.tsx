@@ -41,27 +41,15 @@ type BatchResponse = { results?: BatchResult[] };
 type BulkMetadata = { agent_name: string; team: string; campaign: string; direction: string; language: string };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+const DIRECT_UPLOAD_BASE_URL = process.env.NEXT_PUBLIC_DIRECT_UPLOAD_BASE_URL;
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
-function getDirectUploadBaseUrl() {
-  if (process.env.NEXT_PUBLIC_API_BASE_URL) return trimTrailingSlash(process.env.NEXT_PUBLIC_API_BASE_URL);
-  if (typeof window === "undefined") return API_BASE_URL;
-
-  const { hostname, origin, protocol } = window.location;
-  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
-  if (isLocalhost) return `${protocol}//${hostname}:8000`;
-
-  const isCodespacesHost = hostname.endsWith(".app.github.dev");
-  if (isCodespacesHost && hostname.includes("-3000.")) {
-    return `${protocol}//${hostname.replace("-3000.", "-8000.")}`;
-  }
-
-  if (hostname.includes("-8000.")) return origin;
-
-  return API_BASE_URL;
+function getBulkUploadUrl() {
+  const uploadBaseUrl = DIRECT_UPLOAD_BASE_URL || API_BASE_URL;
+  return `${trimTrailingSlash(uploadBaseUrl)}/calls/upload/bulk`;
 }
 const emptyMetadata: BulkMetadata = { agent_name: "", team: "", campaign: "", direction: "", language: "" };
 const activeStatuses = new Set(["transcription_pending", "transcribing", "analysis_pending", "analyzing"]);
@@ -120,7 +108,7 @@ export default function CallsPage() {
   const [batchLoading, setBatchLoading] = useState<"transcribe" | "analyze" | "retry" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
-  const [uploadEndpoint, setUploadEndpoint] = useState<string>(`${API_BASE_URL}/calls/upload/bulk`);
+  const [uploadEndpoint, setUploadEndpoint] = useState<string>(getBulkUploadUrl());
 
   const selectedCallCount = selectedCallIds.size;
   const selectedCalls = useMemo(() => calls.filter((call) => selectedCallIds.has(call.id)), [calls, selectedCallIds]);
@@ -149,7 +137,6 @@ export default function CallsPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
-  useEffect(() => { setUploadEndpoint(`${getDirectUploadBaseUrl()}/calls/upload/bulk`); }, []);
   useEffect(() => {
     const loadLimits = async () => {
       try {
@@ -179,7 +166,7 @@ export default function CallsPage() {
         return;
       }
     }
-    const uploadUrl = `${getDirectUploadBaseUrl()}/calls/upload/bulk`;
+    const uploadUrl = getBulkUploadUrl();
     setUploadEndpoint(uploadUrl);
     setUploading(true);
     try {
@@ -189,14 +176,14 @@ export default function CallsPage() {
       const response = await fetch(uploadUrl, { method: "POST", body: uploadData });
       const data = response.ok ? await response.json().catch(() => null) as BulkUploadResponse | null : null;
       if (!response.ok) {
-        const detail = await responseErrorMessage(response, `HTTP ${response.status}`);
+        const detail = await responseErrorMessage(response, response.statusText || "Upload request failed");
         const sizeHelp = response.status === 413 ? " Upload is too large. Try fewer files or increase upload limits." : "";
-        setUploadError(`${t("calls.uploadFailed")}: ${detail}.${sizeHelp}`);
+        setUploadError(`${t("calls.uploadFailed")}: HTTP ${response.status} - ${detail}.${sizeHelp}`);
         return;
       }
       setUploadResult(data ?? { uploaded: [], failed: [] });
       if ((data?.uploaded?.length ?? 0) > 0) { setSelectedFiles([]); event.currentTarget.reset(); await loadData(); }
-    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. Upload URL: ${uploadUrl}`); }
+    } catch { setUploadError(`${t("calls.uploadFailed")}: Network error while uploading files. The app tried same-origin upload through /api. Check web proxy logs.`); }
     finally { setUploading(false); }
   };
 
@@ -222,7 +209,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.2</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.3</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 

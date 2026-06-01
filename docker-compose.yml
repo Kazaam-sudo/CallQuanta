@@ -53,6 +53,7 @@ services:
     depends_on:
       - api
     environment:
+      API_INTERNAL_BASE_URL: ${API_INTERNAL_BASE_URL:-http://api:8000}
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
     ports:
