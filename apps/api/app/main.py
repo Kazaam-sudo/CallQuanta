@@ -426,10 +426,26 @@ async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMet
 
 
 @app.post("/calls/upload")
-async def upload_call(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+async def upload_call(
+    file: UploadFile = File(...),
+    agent_name: str | None = Form(None),
+    team: str | None = Form(None),
+    campaign: str | None = Form(None),
+    direction: str | None = Form(None),
+    language: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> dict:
+    metadata = CallMetadataPayload(
+        agent_name=agent_name,
+        team=team,
+        campaign=campaign,
+        direction=direction,
+        language=language,
+    )
+    _normalize_direction(metadata.direction)
     _validate_known_upload_sizes([file])
-    call = await _create_uploaded_call(file, db)
-    return serialize_call(call)
+    call = await _create_uploaded_call(file, db, metadata)
+    return {"id": call.id, "filename": call.filename, "status": call.status}
 
 
 @app.get("/settings/upload-limits")
