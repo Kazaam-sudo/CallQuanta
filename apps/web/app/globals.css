@@ -82,6 +82,7 @@ a:hover { text-decoration: underline; }
 .badge-failed { background: #fee2e2; color: #991b1b; }
 .message { padding: 10px 12px; border-radius: 8px; margin-top: 10px; }
 .message-success { background: var(--success-bg); color: var(--success-text); }
+.message-warning { background: #fef3c7; color: #92400e; }
 .message-error { background: var(--error-bg); color: var(--error-text); }
 
 .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }

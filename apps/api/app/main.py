@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -21,7 +22,7 @@ from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
 
-app = FastAPI(title="CallQuanta API", version="0.15.2")
+app = FastAPI(title="CallQuanta API", version="0.15.4")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -36,6 +37,7 @@ CORS_ORIGINS = os.environ.get(
 )
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
+MAX_DISPLAY_FILENAME_LENGTH = 255
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     "audio/wav",
     "audio/x-wav",
@@ -291,15 +293,46 @@ def _normalize_direction(value: str | None) -> str | None:
     return normalized
 
 
-def _validate_upload_file(file: UploadFile) -> str:
-    safe_name = secure_filename(file.filename or "")
-    if not safe_name:
-        raise HTTPException(status_code=400, detail="Invalid filename")
+def _original_filename_basename(filename: str | None) -> str:
+    basename = re.split(r"[\\/]+", filename or "")[-1].strip()
+    return "".join(char for char in basename if char.isprintable() and char not in {"\x7f"})
 
-    extension = Path(safe_name).suffix.lower()
+
+def _truncate_display_filename(filename: str, max_length: int = MAX_DISPLAY_FILENAME_LENGTH) -> str:
+    if len(filename) <= max_length:
+        return filename
+    extension = Path(filename).suffix
+    if extension and len(extension) < max_length:
+        return f"{filename[: max_length - len(extension)]}{extension}"
+    return filename[:max_length]
+
+
+def _display_upload_filename(filename: str | None) -> str:
+    display_name = _truncate_display_filename(_original_filename_basename(filename))
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return display_name
+
+
+def _upload_extension(display_name: str) -> str:
+    extension = Path(display_name).suffix.lower()
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
         raise HTTPException(status_code=400, detail=f"Unsupported file extension. Allowed extensions: {allowed}")
+    return extension
+
+
+def _safe_storage_filename(display_name: str, extension: str) -> str:
+    safe_name = secure_filename(display_name)
+    if not safe_name or Path(safe_name).suffix.lower() != extension:
+        stem = Path(safe_name).stem if safe_name else ""
+        safe_name = f"{stem or 'upload'}{extension}"
+    return safe_name
+
+
+def _validate_upload_file(file: UploadFile) -> tuple[str, str]:
+    display_name = _display_upload_filename(file.filename)
+    extension = _upload_extension(display_name)
 
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if (
@@ -309,7 +342,7 @@ def _validate_upload_file(file: UploadFile) -> str:
         and not content_type.startswith("audio/")
     ):
         raise HTTPException(status_code=400, detail="Unsupported file type")
-    return safe_name
+    return display_name, _safe_storage_filename(display_name, extension)
 
 
 def _format_upload_limit_message() -> str:
@@ -374,10 +407,10 @@ def _apply_call_metadata(call: Call, metadata: CallMetadataPayload) -> None:
 
 
 async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMetadataPayload | None = None, bulk_state: dict[str, int] | None = None) -> Call:
-    safe_name = _validate_upload_file(file)
+    display_name, safe_name = _validate_upload_file(file)
     stored_name, stored_path, size = await _store_upload_file(file, safe_name, bulk_state)
     call = Call(
-        filename=safe_name,
+        filename=display_name,
         status="uploaded",
         stored_filename=stored_name,
         stored_path=str(stored_path),
@@ -433,7 +466,7 @@ async def upload_calls_bulk(
     failed: list[dict] = []
     bulk_state = {"size": 0}
     for file in files:
-        filename = secure_filename(file.filename or "") or (file.filename or "unknown")
+        filename = _truncate_display_filename(_original_filename_basename(file.filename)) or "unknown"
         try:
             call = await _create_uploaded_call(file, db, metadata, bulk_state)
             uploaded.append({"id": call.id, "filename": call.filename, "status": call.status})
