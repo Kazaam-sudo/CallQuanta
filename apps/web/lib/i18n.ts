@@ -12,6 +12,13 @@ export type LanguageCatalogItem = {
   llm_supported: boolean;
 };
 
+export type SttLanguageItem = {
+  code: string;
+  label_en: string;
+  label_ru: string;
+  whisper_code: string | null;
+};
+
 type Dict = Record<string, string>;
 
 const en: Dict = {
@@ -59,6 +66,21 @@ const en: Dict = {
   "call.campaign": "Campaign",
   "call.direction": "Direction",
   "call.language": "Language",
+  "call.audioLanguage": "Audio language",
+  "call.sttLanguageUsed": "STT language used",
+  "settings.currentSttModel": "Current STT model",
+  "settings.sttMode": "STT mode",
+  "settings.sttModel": "Model",
+  "settings.sttSettings": "STT Settings",
+  "settings.sttExplanation": "Audio/STT language controls transcription only. It does not change the interface language or QA report language.",
+  "settings.uzbekTinyWarning": "tiny may be inaccurate for Uzbek. Consider small or medium for better quality.",
+  "stt.auto": "Auto-detect",
+  "stt.ru": "Russian",
+  "stt.uz": "Uzbek",
+  "stt.en": "English",
+  "stt.es": "Spanish",
+  "stt.tr": "Turkish",
+  "stt.kk": "Kazakh",
   "call.saveMetadata": "Save metadata",
   "call.metadataSaved": "Metadata saved",
   "call.qaReview": "QA Review",
@@ -172,6 +194,21 @@ const ru: Dict = {
   "call.campaign": "Кампания",
   "call.direction": "Направление",
   "call.language": "Язык",
+  "call.audioLanguage": "Язык аудио",
+  "call.sttLanguageUsed": "Использованный язык STT",
+  "settings.currentSttModel": "Текущая модель STT",
+  "settings.sttMode": "Режим STT",
+  "settings.sttModel": "Модель",
+  "settings.sttSettings": "Настройки STT",
+  "settings.sttExplanation": "Язык Audio/STT управляет только транскрипцией. Он не меняет язык интерфейса или язык QA-отчета.",
+  "settings.uzbekTinyWarning": "tiny может быть неточной для узбекского. Рекомендуется small или medium для лучшего качества.",
+  "stt.auto": "Определить автоматически",
+  "stt.ru": "Русский",
+  "stt.uz": "Узбекский",
+  "stt.en": "Английский",
+  "stt.es": "Испанский",
+  "stt.tr": "Турецкий",
+  "stt.kk": "Казахский",
   "call.saveMetadata": "Сохранить метаданные",
   "call.metadataSaved": "Метаданные сохранены",
   "call.qaReview": "QA-проверка",
@@ -285,6 +322,21 @@ const uz: Dict = {
   "call.campaign": "Kampaniya",
   "call.direction": "Yo‘nalish",
   "call.language": "Til",
+  "call.audioLanguage": "Audio tili",
+  "call.sttLanguageUsed": "STT ishlatgan til",
+  "settings.currentSttModel": "Joriy STT modeli",
+  "settings.sttMode": "STT rejimi",
+  "settings.sttModel": "Model",
+  "settings.sttSettings": "STT sozlamalari",
+  "settings.sttExplanation": "Audio/STT tili faqat transkripsiyani boshqaradi. U interfeys tili yoki QA hisoboti tilini o‘zgartirmaydi.",
+  "settings.uzbekTinyWarning": "tiny o‘zbek tili uchun noaniq bo‘lishi mumkin. Yaxshiroq sifat uchun small yoki medium tavsiya etiladi.",
+  "stt.auto": "Avtomatik aniqlash",
+  "stt.ru": "Ruscha",
+  "stt.uz": "O‘zbekcha",
+  "stt.en": "Inglizcha",
+  "stt.es": "Ispancha",
+  "stt.tr": "Turkcha",
+  "stt.kk": "Qozoqcha",
   "call.saveMetadata": "Metama'lumotlarni saqlash",
   "call.metadataSaved": "Metama'lumotlar saqlandi",
   "call.qaReview": "QA tekshiruvi",
@@ -377,4 +429,19 @@ export function languageLabel(code: string | undefined, languages: LanguageCatal
 
 export function reportLanguageForCode(code: string): string {
   return ({ en: "English", ru: "Russian", uz: "Uzbek", es: "Spanish", pt: "Portuguese", de: "German", fr: "French", tr: "Turkish", ar: "Arabic" } as Record<string, string>)[code] || languageLabel(code, []);
+}
+
+
+export function normalizeSttLanguageCode(language: string | null | undefined): string | null {
+  if (!language) return null;
+  const normalized = language.trim().toLowerCase();
+  if (!normalized || normalized === "-" || normalized === "auto") return null;
+  return normalized.replace("_", "-").split("-")[0] || null;
+}
+
+export function sttLanguageLabel(code: string | null | undefined, languages: SttLanguageItem[], t: (key: string) => string): string {
+  const normalized = normalizeSttLanguageCode(code);
+  if (!normalized) return t("stt.auto");
+  const fromCatalog = languages.find((language) => language.code === normalized);
+  return fromCatalog ? t(`stt.${fromCatalog.code}`) : normalized;
 }

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../components/I18nProvider";
+import { SttLanguageSelect } from "../../components/SttLanguageSelect";
+import { sttLanguageLabel } from "../../lib/i18n";
 
 type Call = {
   id: number;
@@ -95,7 +97,7 @@ const formatBytes = (value?: number | null) => {
 const statusKey = (status: string) => `status.${status}`;
 
 export default function CallsPage() {
-  const { t } = useI18n();
+  const { t, sttLanguages } = useI18n();
   const [calls, setCalls] = useState<Call[]>([]);
   const [jobSummary, setJobSummary] = useState<JobSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -284,7 +286,7 @@ export default function CallsPage() {
   return (
     <div className="grid page-stack">
       <section className="card hero-card">
-        <div><p className="eyebrow">CallQuanta v0.15.5</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
+        <div><p className="eyebrow">CallQuanta v0.15.6</p><h1>{t("calls.calls")}</h1><p>{t("calls.processingHelp")}</p></div>
         <button className="button button-secondary" type="button" onClick={() => loadData()} disabled={loading || uploading || !!batchLoading}>{loading ? t("calls.refreshing") : t("calls.refresh")}</button>
       </section>
 
@@ -321,7 +323,7 @@ export default function CallsPage() {
             <label>{t("call.team")}<input value={metadata.team} onChange={(event) => setMetadata({ ...metadata, team: event.target.value })} placeholder="Example: Outbound Sales" /></label>
             <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(event) => setMetadata({ ...metadata, campaign: event.target.value })} placeholder="Example: Humans Promo" /></label>
             <label>{t("call.direction")}<select value={metadata.direction} onChange={(event) => setMetadata({ ...metadata, direction: event.target.value })}><option value="">-</option><option value="inbound">inbound</option><option value="outbound">outbound</option><option value="unknown">unknown</option></select></label>
-            <label>{t("call.language")}<input value={metadata.language} onChange={(event) => setMetadata({ ...metadata, language: event.target.value })} placeholder="Example: ru-RU" /></label>
+            <label>{t("call.audioLanguage")}<SttLanguageSelect value={metadata.language} languages={sttLanguages} t={t} onChange={(value) => setMetadata({ ...metadata, language: value })} /></label>
           </div>
           <small>Empty fields will not be saved.</small>
           {uploadProgress && <p className="upload-progress">Uploading {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.filename}</p>}
@@ -342,8 +344,8 @@ export default function CallsPage() {
         <div className="section-header"><h2>{t("calls.calls")} ({calls.length})</h2></div>
         {loadError && <p className="message message-error">{loadError}</p>}
         {loading ? <p>{t("calls.loading")}</p> : calls.length === 0 ? <p className="empty-state">{t("calls.empty")}</p> : (
-          <div className="table-wrap"><table className="data-table"><thead><tr><th><input type="checkbox" aria-label="Select all visible calls" checked={allVisibleSelected} onChange={toggleAllVisible} /></th><th>ID</th><th>{t("calls.filename")}</th><th>{t("calls.status")}</th><th>{t("calls.agent")}</th><th>{t("calls.team")}</th><th>{t("calls.campaign")}</th><th>{t("calls.direction")}</th><th>{t("calls.language")}</th><th>{t("calls.fileSize")}</th><th>{t("calls.lastError")}</th><th>{t("calls.lastProcessed")}</th><th>{t("calls.created")}</th><th>{t("calls.action")}</th></tr></thead><tbody>
-            {calls.map((call) => <tr key={call.id} className={selectedCallIds.has(call.id) ? "row-selected" : ""}><td><input type="checkbox" aria-label={`Select call ${call.id}`} checked={selectedCallIds.has(call.id)} onChange={() => toggleCall(call.id)} /></td><td>#{call.id}</td><td className="filename-cell" title={call.filename}>{call.filename}</td><td><span className={`badge badge-${call.status}`}>{t(statusKey(call.status))}</span></td><td>{call.agent_name || "-"}</td><td>{call.team || "-"}</td><td>{call.campaign || "-"}</td><td>{call.direction || "-"}</td><td>{call.language || "-"}</td><td>{formatBytes(call.file_size_bytes)}</td><td className="error-cell">{call.last_error_message || "-"}</td><td>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</td><td>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</td><td><Link className="button button-secondary table-action" href={`/calls/${call.id}`}>{t("calls.open")}</Link></td></tr>)}
+          <div className="table-wrap"><table className="data-table"><thead><tr><th><input type="checkbox" aria-label="Select all visible calls" checked={allVisibleSelected} onChange={toggleAllVisible} /></th><th>ID</th><th>{t("calls.filename")}</th><th>{t("calls.status")}</th><th>{t("calls.agent")}</th><th>{t("calls.team")}</th><th>{t("calls.campaign")}</th><th>{t("calls.direction")}</th><th>{t("call.audioLanguage")}</th><th>{t("calls.fileSize")}</th><th>{t("calls.lastError")}</th><th>{t("calls.lastProcessed")}</th><th>{t("calls.created")}</th><th>{t("calls.action")}</th></tr></thead><tbody>
+            {calls.map((call) => <tr key={call.id} className={selectedCallIds.has(call.id) ? "row-selected" : ""}><td><input type="checkbox" aria-label={`Select call ${call.id}`} checked={selectedCallIds.has(call.id)} onChange={() => toggleCall(call.id)} /></td><td>#{call.id}</td><td className="filename-cell" title={call.filename}>{call.filename}</td><td><span className={`badge badge-${call.status}`}>{t(statusKey(call.status))}</span></td><td>{call.agent_name || "-"}</td><td>{call.team || "-"}</td><td>{call.campaign || "-"}</td><td>{call.direction || "-"}</td><td>{sttLanguageLabel(call.language, sttLanguages, t)}</td><td>{formatBytes(call.file_size_bytes)}</td><td className="error-cell">{call.last_error_message || "-"}</td><td>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</td><td>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</td><td><Link className="button button-secondary table-action" href={`/calls/${call.id}`}>{t("calls.open")}</Link></td></tr>)}
           </tbody></table></div>
         )}
       </section>

@@ -21,8 +21,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
+from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.15.4")
+app = FastAPI(title="CallQuanta API", version="0.15.6")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -403,7 +404,10 @@ def _apply_call_metadata(call: Call, metadata: CallMetadataPayload) -> None:
     call.team = _normalize_optional_text(metadata.team)
     call.campaign = _normalize_optional_text(metadata.campaign)
     call.direction = _normalize_direction(metadata.direction)
-    call.language = _normalize_optional_text(metadata.language)
+    normalized_language = normalize_stt_language(metadata.language)
+    if normalized_language is not None and normalized_language not in SUPPORTED_STT_LANGUAGE_CODES:
+        raise HTTPException(status_code=400, detail="Unsupported audio language")
+    call.language = normalized_language
 
 
 async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMetadataPayload | None = None, bulk_state: dict[str, int] | None = None) -> Call:
@@ -1191,6 +1195,19 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
 @app.get("/settings/languages")
 def list_languages() -> list[dict]:
     return LANGUAGE_CATALOG
+
+
+@app.get("/settings/stt-languages")
+def list_stt_languages() -> list[dict]:
+    return SUPPORTED_STT_LANGUAGES
+
+
+@app.get("/settings/stt")
+def get_stt_settings() -> dict:
+    return {
+        "mode": os.environ.get("STT_MODE", "placeholder"),
+        "model": os.environ.get("FASTER_WHISPER_MODEL", "base"),
+    }
 
 
 @app.get("/settings/workspace")

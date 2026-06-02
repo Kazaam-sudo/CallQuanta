@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../../components/I18nProvider";
+import { SttLanguageSelect } from "../../../components/SttLanguageSelect";
+import { normalizeSttLanguageCode, sttLanguageLabel } from "../../../lib/i18n";
 
 type Call = {
   id: number;
@@ -48,7 +50,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
 
 export default function CallDetailsPage({ params }: { params: { id: string } }) {
-  const { t } = useI18n();
+  const { t, sttLanguages } = useI18n();
   const [call, setCall] = useState<Call | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [review, setReview] = useState<QAReview | null>(null);
@@ -64,6 +66,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
+  const [sttSettings, setSttSettings] = useState<{ mode: string; model: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,6 +97,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       }
       if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); }
       if (historyResponse.ok) { const hist = await historyResponse.json(); setHistory(hist.reviews || []); }
+      fetch(`${API_BASE_URL}/settings/stt`).then((res) => res.ok ? res.json() : null).then((data) => { if (data) setSttSettings(data); }).catch(() => {});
     } catch {
       setError("Failed to load call.");
     } finally {
@@ -114,7 +118,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   }, [call?.status, load]);
 
   const transcribe = async () => {
-    if (!call || call.status === "transcribed" || transcribing) return;
+    if (!call || transcribing) return;
     try {
       setError(null);
       setTranscribing(true);
@@ -211,7 +215,6 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     }
   };
 
-  const isTranscribed = call?.status === "transcribed";
   const pendingState = useMemo(() => call?.status === "transcription_pending" || call?.status === "transcribing" || transcribing, [call?.status, transcribing]);
   const analysisPendingState = useMemo(() => call?.status === "analysis_pending" || call?.status === "analyzing" || analyzing, [call?.status, analyzing]);
   const canAnalyzeAgain = call?.status === "analyzed" || call?.status === "analysis_failed";
@@ -295,7 +298,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
         <div className="actions" style={{ marginTop: 14 }}>
           <button className="button button-secondary" onClick={load}>{t("call.refresh")}</button>
-          <button className="button" onClick={transcribe} disabled={!call || loading || transcribing || isTranscribed}>
+          <button className="button" onClick={transcribe} disabled={!call || loading || transcribing}>
             {transcribing ? "Transcribing..." : t("call.transcribe")}
           </button>
           <button className="button" onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>
@@ -337,7 +340,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
               <option value="outbound">outbound</option>
             </select>
           </label>
-          <label>{t("call.language")}<input value={metadata.language} onChange={(e) => setMetadata((m) => ({ ...m, language: e.target.value }))} /></label>
+          <label>{t("call.audioLanguage")}<SttLanguageSelect value={metadata.language} languages={sttLanguages} t={t} onChange={(value) => setMetadata((m) => ({ ...m, language: value }))} /></label>
           <div>
             <button className="button" onClick={saveMetadata} disabled={metadataSaving}>
               {metadataSaving ? "Saving..." : metadataSaveSuccess ? t("call.metadataSaved") : t("call.saveMetadata")}
@@ -453,6 +456,18 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
       <section className="card">
         <h3 style={{ marginTop: 0 }}>{t("call.transcriptSegments")}</h3>
+
+        {call && (
+          <div className="meta-grid" style={{ marginTop: 10 }}>
+            <div className="meta-item"><small>{t("call.audioLanguage")}</small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
+            <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{normalizeSttLanguageCode(call.language) || "auto"}</div>
+            <div className="meta-item"><small>{t("settings.sttMode")}</small>{sttSettings?.mode || "-"}</div>
+            <div className="meta-item"><small>{t("settings.currentSttModel")}</small>{sttSettings?.model || "-"}</div>
+          </div>
+        )}
+        {normalizeSttLanguageCode(call?.language) === "uz" && sttSettings?.model?.toLowerCase() === "tiny" && (
+          <p className="message message-warning">{t("settings.uzbekTinyWarning")}</p>
+        )}
         {segments.length === 0 ? (
           <p>No transcript segments yet.</p>
         ) : (

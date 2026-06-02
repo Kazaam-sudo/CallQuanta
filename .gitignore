@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# JavaScript build/dependency artifacts
+node_modules/
+.next/
