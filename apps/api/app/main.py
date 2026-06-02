@@ -20,10 +20,10 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table
+from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.15.6")
+app = FastAPI(title="CallQuanta API", version="0.16.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -85,6 +85,27 @@ DEFAULT_WORKSPACE_SETTINGS = {
     "qa_report_language": "English",
 }
 
+STT_PROVIDER_TYPES = {
+    "faster_whisper_local",
+    "openai_compatible_audio",
+    "groq_whisper",
+    "deepgram",
+    "assemblyai",
+    "google_speech",
+    "azure_speech",
+    "custom",
+}
+STT_PROVIDER_PRESETS = [
+    {"id": "local_faster_whisper", "label": "Local faster-whisper", "provider_type": "faster_whisper_local", "default_base_url": "", "default_model": "tiny", "api_key_required": False, "note": "Runs inside your STT worker using local faster-whisper settings."},
+    {"id": "openai_audio", "label": "OpenAI audio transcription", "provider_type": "openai_compatible_audio", "default_base_url": "https://api.openai.com/v1", "default_model": "whisper-1", "api_key_required": True},
+    {"id": "groq_whisper", "label": "Groq Whisper", "provider_type": "groq_whisper", "default_base_url": "https://api.groq.com/openai/v1", "default_model": "", "api_key_required": True, "note": "Preset can be saved now; transcription support is not implemented yet."},
+    {"id": "deepgram", "label": "Deepgram", "provider_type": "deepgram", "default_base_url": "https://api.deepgram.com/v1", "default_model": "", "api_key_required": True, "note": "Preset can be saved now; transcription support is not implemented yet."},
+    {"id": "assemblyai", "label": "AssemblyAI", "provider_type": "assemblyai", "default_base_url": "https://api.assemblyai.com/v2", "default_model": "", "api_key_required": True, "note": "Preset can be saved now; transcription support is not implemented yet."},
+    {"id": "google_speech", "label": "Google Speech-to-Text", "provider_type": "google_speech", "default_base_url": "", "default_model": "", "api_key_required": True, "note": "Preset can be saved now; transcription support is not implemented yet."},
+    {"id": "azure_speech", "label": "Azure Speech", "provider_type": "azure_speech", "default_base_url": "", "default_model": "", "api_key_required": True, "note": "Preset can be saved now; transcription support is not implemented yet."},
+    {"id": "custom", "label": "Custom STT provider", "provider_type": "custom", "default_base_url": "", "default_model": "", "api_key_required": False, "note": "Placeholder for future custom STT integrations."},
+]
+
 PROVIDER_PRESETS = [
     {"id": "ollama", "label": "Ollama Local", "provider_type": "openai_compatible", "default_base_url": "http://ollama:11434/v1", "default_model": "qwen2.5:1.5b", "api_key_required": False},
     {"id": "openai", "label": "OpenAI", "provider_type": "openai_compatible", "default_base_url": "https://api.openai.com/v1", "default_model": "gpt-5.4-nano", "api_key_required": True},
@@ -129,6 +150,29 @@ class ProviderTestRequest(BaseModel):
     model: str
     api_key: str | None = None
     timeout_seconds: float = 60
+
+
+class SttProviderUpsertRequest(BaseModel):
+    id: int | None = None
+    name: str
+    provider_type: str = "faster_whisper_local"
+    preset: str = "local_faster_whisper"
+    model: str = "tiny"
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int = 180
+    is_active: bool = False
+
+
+class SttProviderTestRequest(BaseModel):
+    id: int | None = None
+    name: str | None = None
+    provider_type: str = "faster_whisper_local"
+    preset: str = "local_faster_whisper"
+    model: str = "tiny"
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int = 60
 
 
 DEFAULT_SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
@@ -266,6 +310,7 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_qa_reviews_table(engine)
     migrate_calls_table(engine)
+    migrate_stt_provider_configs_table(engine)
     logger.info("CallQuanta API started")
 
 
@@ -514,6 +559,11 @@ def serialize_call(call: Call) -> dict:
         "campaign": call.campaign,
         "direction": call.direction,
         "language": call.language,
+        "stt_provider_name": call.stt_provider_name,
+        "stt_provider_type": call.stt_provider_type,
+        "stt_model": call.stt_model,
+        "stt_language_used": call.stt_language_used,
+        "detected_language": call.detected_language,
         "created_at": call.created_at.isoformat() if call.created_at else None,
         "last_error_type": call.last_error_type,
         "last_error_message": call.last_error_message,
@@ -1202,11 +1252,167 @@ def list_stt_languages() -> list[dict]:
     return SUPPORTED_STT_LANGUAGES
 
 
+
+def serialize_stt_provider_config(provider: SttProviderConfig) -> dict:
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type,
+        "preset": provider.preset,
+        "base_url": provider.base_url or "",
+        "model": provider.model or "",
+        "timeout_seconds": provider.timeout_seconds,
+        "is_active": bool(provider.is_active),
+        "api_key_configured": bool(provider.api_key),
+        "created_at": provider.created_at.isoformat() if provider.created_at else None,
+        "updated_at": provider.updated_at.isoformat() if provider.updated_at else None,
+    }
+
+
+def _active_stt_provider(db: Session) -> SttProviderConfig | None:
+    return db.execute(select(SttProviderConfig).where(SttProviderConfig.is_active.is_(True)).order_by(SttProviderConfig.id.asc())).scalars().first()
+
+
+def _validate_stt_provider_payload(payload: SttProviderUpsertRequest) -> None:
+    if payload.provider_type not in STT_PROVIDER_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported STT provider_type")
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="STT provider name is required")
+    if not payload.model.strip() and payload.provider_type != "custom":
+        raise HTTPException(status_code=400, detail="STT model is required")
+    if payload.provider_type in {"openai_compatible_audio", "groq_whisper", "deepgram", "assemblyai", "google_speech", "azure_speech"} and not (payload.api_key or payload.id):
+        raise HTTPException(status_code=400, detail="API key is required for this hosted STT provider")
+    if payload.timeout_seconds < 10:
+        raise HTTPException(status_code=400, detail="timeout_seconds must be at least 10")
+
+
+def _stt_provider_test_response(provider_type: str, model: str, base_url: str | None, api_key: str | None, timeout_seconds: int) -> dict:
+    started = time.perf_counter()
+    latency_ms = lambda: int((time.perf_counter() - started) * 1000)
+    provider_type = (provider_type or "").strip()
+    if provider_type not in STT_PROVIDER_TYPES:
+        return {"ok": False, "latency_ms": latency_ms(), "provider_error": "Unsupported STT provider_type"}
+    if provider_type == "faster_whisper_local":
+        return {
+            "ok": True,
+            "latency_ms": latency_ms(),
+            "model": model or os.environ.get("FASTER_WHISPER_MODEL", "base"),
+            "provider_type": provider_type,
+            "note": f"Configuration is valid. Worker will load model on demand using device={os.environ.get('FASTER_WHISPER_DEVICE', 'cpu')}.",
+        }
+    if provider_type == "openai_compatible_audio":
+        if not api_key:
+            return {"ok": False, "latency_ms": latency_ms(), "model": model, "provider_error": "API key is required."}
+        if not (base_url or "").strip():
+            return {"ok": False, "latency_ms": latency_ms(), "model": model, "provider_error": "Base URL is required."}
+        if not (model or "").strip():
+            return {"ok": False, "latency_ms": latency_ms(), "model": model, "provider_error": "Model is required."}
+        return {
+            "ok": True,
+            "latency_ms": latency_ms(),
+            "model": model,
+            "provider_type": provider_type,
+            "note": "Configuration validated. Provider test does not upload audio; transcription will call /audio/transcriptions.",
+        }
+    if provider_type in {"groq_whisper", "deepgram", "assemblyai", "google_speech", "azure_speech"}:
+        if not api_key:
+            return {"ok": False, "latency_ms": latency_ms(), "model": model, "provider_error": "API key is required for this hosted STT preset."}
+        return {
+            "ok": True,
+            "latency_ms": latency_ms(),
+            "model": model,
+            "provider_type": provider_type,
+            "note": "Configuration saved for future use. This STT provider integration is not implemented yet.",
+        }
+    return {
+        "ok": True,
+        "latency_ms": latency_ms(),
+        "model": model,
+        "provider_type": provider_type,
+        "note": "Custom STT provider settings validated as a placeholder. Runtime transcription is not implemented yet.",
+    }
+
+
+@app.get("/settings/stt/providers")
+def list_stt_providers(db: Session = Depends(get_db)) -> dict:
+    providers = db.execute(select(SttProviderConfig).order_by(SttProviderConfig.id.asc())).scalars().all()
+    return {"presets": STT_PROVIDER_PRESETS, "saved": [serialize_stt_provider_config(item) for item in providers]}
+
+
+@app.post("/settings/stt/providers")
+def upsert_stt_provider(payload: SttProviderUpsertRequest, db: Session = Depends(get_db)) -> dict:
+    _validate_stt_provider_payload(payload)
+    provider = db.get(SttProviderConfig, payload.id) if payload.id else None
+    if provider is None:
+        provider = SttProviderConfig(name=payload.name.strip(), provider_type=payload.provider_type, preset=payload.preset, model=payload.model.strip(), timeout_seconds=payload.timeout_seconds)
+        db.add(provider)
+    api_key = payload.api_key if payload.api_key is not None else provider.api_key
+    provider.name = payload.name.strip()
+    provider.provider_type = payload.provider_type
+    provider.preset = payload.preset.strip() or "custom"
+    provider.model = payload.model.strip()
+    provider.base_url = (payload.base_url or "").strip().rstrip("/") or None
+    provider.api_key = api_key or None
+    provider.timeout_seconds = int(payload.timeout_seconds)
+    provider.is_active = bool(payload.is_active)
+    if provider.is_active:
+        db.flush()
+        others = db.execute(select(SttProviderConfig).where(SttProviderConfig.id != provider.id)).scalars().all()
+        for other in others:
+            other.is_active = False
+    db.commit()
+    db.refresh(provider)
+    return serialize_stt_provider_config(provider)
+
+
+@app.post("/settings/stt/providers/{provider_id}/activate")
+def activate_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(SttProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="STT provider not found")
+    providers = db.execute(select(SttProviderConfig)).scalars().all()
+    for item in providers:
+        item.is_active = item.id == provider_id
+    db.commit()
+    db.refresh(provider)
+    return serialize_stt_provider_config(provider)
+
+
+@app.post("/settings/stt/providers/test")
+def test_stt_provider(payload: SttProviderTestRequest) -> dict:
+    return _stt_provider_test_response(payload.provider_type, payload.model, payload.base_url, payload.api_key, payload.timeout_seconds)
+
+
+@app.post("/settings/stt/providers/{provider_id}/test")
+def test_saved_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(SttProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="STT provider not found")
+    return _stt_provider_test_response(provider.provider_type, provider.model, provider.base_url, provider.api_key, provider.timeout_seconds)
+
+
+@app.delete("/settings/stt/providers/{provider_id}")
+def delete_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+    provider = db.get(SttProviderConfig, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="STT provider not found")
+    db.delete(provider)
+    db.commit()
+    return {"ok": True}
+
 @app.get("/settings/stt")
-def get_stt_settings() -> dict:
+def get_stt_settings(db: Session = Depends(get_db)) -> dict:
+    active = _active_stt_provider(db)
+    if active:
+        return {
+            "mode": active.provider_type,
+            "model": active.model,
+            "provider": serialize_stt_provider_config(active),
+        }
     return {
         "mode": os.environ.get("STT_MODE", "placeholder"),
         "model": os.environ.get("FASTER_WHISPER_MODEL", "base"),
+        "provider": None,
     }
 
 
