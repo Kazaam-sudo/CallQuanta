@@ -74,7 +74,7 @@ export default function Page() {
   };
 
   return <main className="grid" style={{ gap: 16 }}>
-    <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link></div>
+    <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link></div>
     <section className="card">
       <h2>LLM Provider Settings</h2>
       {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>Editing provider: {editingProvider.name}</p>}

@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+import sys
 from datetime import UTC, datetime
 
 import redis
@@ -10,6 +11,7 @@ from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import sessionmaker
 
 from db import Call, TranscriptSegment
+from stt_language import normalize_stt_language, stt_initial_prompt
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -78,9 +80,23 @@ def placeholder_segments(call_id: int):
     ]
 
 
-def faster_whisper_segments(call_id: int, stored_path: str):
+def faster_whisper_segments(call_id: int, stored_path: str, language_meta: str | None, filename: str | None):
     model = get_faster_whisper_model()
-    segments, _ = model.transcribe(stored_path)
+    stt_language = normalize_stt_language(language_meta)
+    initial_prompt = stt_initial_prompt(stt_language)
+    print(
+        f"call {call_id} transcription started: filename={filename or '-'}, "
+        f"language_meta={language_meta or '-'}, stt_language={stt_language or 'auto'}, model={FASTER_WHISPER_MODEL}"
+    )
+    if stt_language == "uz" and FASTER_WHISPER_MODEL.strip().lower() == "tiny":
+        print(f"call {call_id} warning: tiny may be inaccurate for Uzbek. Consider small or medium for better quality.")
+
+    transcribe_kwargs = {}
+    if stt_language is not None:
+        transcribe_kwargs["language"] = stt_language
+        if initial_prompt:
+            transcribe_kwargs["initial_prompt"] = initial_prompt
+    segments, info = model.transcribe(stored_path, **transcribe_kwargs)
 
     transcript_segments = []
     for segment in segments:
@@ -95,6 +111,11 @@ def faster_whisper_segments(call_id: int, stored_path: str):
                 text=segment.text.strip(),
             )
         )
+    detected_language = getattr(info, "language", None)
+    print(
+        f"call {call_id} transcription completed: detected_language={detected_language or '-'}, "
+        f"segments={len(transcript_segments)}"
+    )
     return transcript_segments
 
 
@@ -119,7 +140,7 @@ def process_transcription_job(call_id: int) -> None:
             elif STT_MODE == "faster_whisper":
                 if not call.stored_path:
                     raise ValueError(f"call {call_id} has no stored_path")
-                db.add_all(faster_whisper_segments(call_id=call_id, stored_path=call.stored_path))
+                db.add_all(faster_whisper_segments(call_id=call_id, stored_path=call.stored_path, language_meta=call.language, filename=call.filename))
                 print(f"call {call_id} transcribed with faster-whisper")
             else:
                 raise ValueError(f"unsupported STT_MODE: {STT_MODE}")
@@ -144,21 +165,26 @@ def process_transcription_job(call_id: int) -> None:
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-print(f"stt-worker started. mode={STT_MODE}. Waiting for transcription jobs...")
+def run_worker() -> None:
+    print(f"stt-worker started. mode={STT_MODE}. Waiting for transcription jobs...")
 
-while running:
-    job = redis_client.brpop(TRANSCRIPTION_QUEUE, timeout=2)
-    if not job:
-        continue
+    while running:
+        job = redis_client.brpop(TRANSCRIPTION_QUEUE, timeout=2)
+        if not job:
+            continue
 
-    _, payload = job
-    try:
-        data = json.loads(payload)
-        call_id = int(data["call_id"])
-    except Exception:
-        print(f"invalid transcription job payload: {payload}")
-        continue
+        _, payload = job
+        try:
+            data = json.loads(payload)
+            call_id = int(data["call_id"])
+        except Exception:
+            print(f"invalid transcription job payload: {payload}")
+            continue
 
-    process_transcription_job(call_id)
+        process_transcription_job(call_id)
 
-print("stt-worker stopped gracefully.")
+    print("stt-worker stopped gracefully.")
+
+
+if __name__ == "__main__" and "pytest" not in sys.modules:
+    run_worker()

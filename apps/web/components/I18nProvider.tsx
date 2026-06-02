@@ -1,13 +1,14 @@
 "use client";
 
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { defaultWorkspaceSettings, LanguageCatalogItem, makeTranslator, WorkspaceSettings } from "../lib/i18n";
+import { defaultWorkspaceSettings, LanguageCatalogItem, makeTranslator, SttLanguageItem, WorkspaceSettings } from "../lib/i18n";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 type I18nContextValue = {
   settings: WorkspaceSettings;
   languages: LanguageCatalogItem[];
+  sttLanguages: SttLanguageItem[];
   t: (key: string) => string;
   setInterfaceLanguage: (code: string) => Promise<void>;
   updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) => Promise<WorkspaceSettings>;
@@ -18,16 +19,19 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<WorkspaceSettings>(defaultWorkspaceSettings);
   const [languages, setLanguages] = useState<LanguageCatalogItem[]>([]);
+  const [sttLanguages, setSttLanguages] = useState<SttLanguageItem[]>([]);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [settingsRes, languagesRes] = await Promise.all([
+        const [settingsRes, languagesRes, sttLanguagesRes] = await Promise.all([
           fetch(`${API_BASE_URL}/settings/workspace`),
           fetch(`${API_BASE_URL}/settings/languages`),
+          fetch(`${API_BASE_URL}/settings/stt-languages`),
         ]);
         if (settingsRes.ok) setSettings(await settingsRes.json());
         if (languagesRes.ok) setLanguages(await languagesRes.json());
+        if (sttLanguagesRes.ok) setSttLanguages(await sttLanguagesRes.json());
       } catch {
         // Keep English fallback if API is unavailable during local development.
       }
@@ -54,10 +58,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     settings,
     languages,
+    sttLanguages,
     t: makeTranslator(settings.interface_language),
     setInterfaceLanguage,
     updateWorkspaceSettings,
-  }), [settings, languages, setInterfaceLanguage, updateWorkspaceSettings]);
+  }), [settings, languages, sttLanguages, setInterfaceLanguage, updateWorkspaceSettings]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
