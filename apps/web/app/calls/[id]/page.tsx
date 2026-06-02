@@ -22,6 +22,11 @@ type Call = {
   created_at?: string | null;
   last_error_message?: string | null;
   last_processed_at?: string | null;
+  stt_provider_name?: string | null;
+  stt_provider_type?: string | null;
+  stt_model?: string | null;
+  stt_language_used?: string | null;
+  detected_language?: string | null;
 };
 
 type TranscriptSegment = {
@@ -66,7 +71,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
-  const [sttSettings, setSttSettings] = useState<{ mode: string; model: string } | null>(null);
+  const [sttSettings, setSttSettings] = useState<{ mode: string; model: string; provider?: { name?: string; provider_type?: string; model?: string } | null } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -460,12 +465,13 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {call && (
           <div className="meta-grid" style={{ marginTop: 10 }}>
             <div className="meta-item"><small>{t("call.audioLanguage")}</small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
-            <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{normalizeSttLanguageCode(call.language) || "auto"}</div>
-            <div className="meta-item"><small>{t("settings.sttMode")}</small>{sttSettings?.mode || "-"}</div>
-            <div className="meta-item"><small>{t("settings.currentSttModel")}</small>{sttSettings?.model || "-"}</div>
+            <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{call.stt_language_used || normalizeSttLanguageCode(call.language) || "auto"}</div>
+            <div className="meta-item"><small>{t("settings.sttProvider")}</small>{call.stt_provider_name || sttSettings?.provider?.name || sttSettings?.mode || "-"}</div>
+            <div className="meta-item"><small>{t("settings.currentSttModel")}</small>{call.stt_model || sttSettings?.model || "-"}</div>
+            <div className="meta-item"><small>Detected language</small>{call.detected_language || "-"}</div>
           </div>
         )}
-        {normalizeSttLanguageCode(call?.language) === "uz" && sttSettings?.model?.toLowerCase() === "tiny" && (
+        {normalizeSttLanguageCode(call?.language) === "uz" && (call?.stt_provider_type || sttSettings?.provider?.provider_type || sttSettings?.mode) === "faster_whisper_local" && (call?.stt_model || sttSettings?.model || "").toLowerCase() === "tiny" && (
           <p className="message message-warning">{t("settings.uzbekTinyWarning")}</p>
         )}
         {segments.length === 0 ? (
