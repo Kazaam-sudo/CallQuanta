@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -22,6 +23,8 @@ STT_MODE = os.environ.get("STT_MODE", "placeholder")
 FASTER_WHISPER_MODEL = os.environ.get("FASTER_WHISPER_MODEL", "base")
 FASTER_WHISPER_DEVICE = os.environ.get("FASTER_WHISPER_DEVICE", "cpu")
 FASTER_WHISPER_COMPUTE_TYPE = os.environ.get("FASTER_WHISPER_COMPUTE_TYPE", "int8")
+STT_PROVIDER_STARTUP_WAIT_SECONDS = int(os.environ.get("STT_PROVIDER_STARTUP_WAIT_SECONDS", "60"))
+STT_PROVIDER_STARTUP_RETRY_SECONDS = float(os.environ.get("STT_PROVIDER_STARTUP_RETRY_SECONDS", "2"))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -233,6 +236,39 @@ def fallback_stt_provider_config() -> RuntimeProviderConfig | None:
     return None
 
 
+def log_provider_settings_warning(exc: Exception, context: str) -> None:
+    print(f"STT provider settings not ready yet during {context}, using env fallback / retrying: {safe_error(exc)}")
+
+
+def active_stt_provider_config_or_fallback(db: Session, context: str) -> RuntimeProviderConfig | None:
+    try:
+        return active_stt_provider_config(db)
+    except Exception as exc:
+        db.rollback()
+        log_provider_settings_warning(exc, context)
+        return None
+
+
+def wait_for_provider_settings_ready(timeout_seconds: int = STT_PROVIDER_STARTUP_WAIT_SECONDS) -> RuntimeProviderConfig | None:
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    attempt = 1
+    last_error: Exception | None = None
+    while running:
+        try:
+            with SessionLocal() as db:
+                return active_stt_provider_config(db)
+        except Exception as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                break
+            log_provider_settings_warning(exc, f"startup attempt {attempt}")
+            time.sleep(min(STT_PROVIDER_STARTUP_RETRY_SECONDS, max(deadline - time.monotonic(), 0)))
+            attempt += 1
+    if last_error is not None:
+        log_provider_settings_warning(last_error, "startup timeout")
+    return None
+
+
 def transcribe_with_provider(call: Call, config: RuntimeProviderConfig) -> TranscriptionResult:
     if not call.stored_path:
         raise ValueError(f"call {call.id} has no stored_path")
@@ -267,7 +303,7 @@ def process_transcription_job(call_id: int) -> None:
             db.commit()
 
             db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
-            config = active_stt_provider_config(db)
+            config = active_stt_provider_config_or_fallback(db, f"call {call_id} provider lookup")
             if config is None and STT_MODE == "placeholder":
                 db.add_all(placeholder_segments(call_id))
                 call.stt_provider_name = "Env placeholder"
@@ -319,8 +355,7 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 
 
 def run_worker() -> None:
-    with SessionLocal() as db:
-        active = active_stt_provider_config(db)
+    active = wait_for_provider_settings_ready()
     if active:
         print(f"stt-worker started. active_provider={active.name} provider_type={active.provider_type} model={active.model}. Waiting for transcription jobs...")
     else:
