@@ -99,7 +99,28 @@ jobs:
           uploaded_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
           curl -fsS http://localhost:8000/calls > /tmp/calls.json
-          python -c "import json; calls=json.load(open('/tmp/calls.json')); assert isinstance(calls, list); assert any(c.get('id') == int('${uploaded_id}') for c in calls)"
+          UPLOADED_ID="$uploaded_id" python - <<'PY'
+          import json
+          import os
+
+          data = json.load(open('/tmp/calls.json'))
+          uploaded_id = int(os.environ['UPLOADED_ID'])
+
+          if isinstance(data, list):
+              calls = data
+          else:
+              assert isinstance(data, dict), f"Expected list or dict response, got {type(data)}"
+              assert 'items' in data, f"Paginated response missing items: {data}"
+              assert isinstance(data['items'], list), 'items must be a list'
+              assert isinstance(data.get('total'), int), 'total must be an integer'
+              assert data['total'] >= 1, 'total must be at least 1'
+              assert isinstance(data.get('limit'), int), 'limit must be an integer'
+              assert data['limit'] >= 1, 'limit must be at least 1'
+              assert data.get('offset') == 0, 'offset must be 0 for the default request'
+              calls = data['items']
+
+          assert any(c.get('id') == uploaded_id for c in calls), f"Uploaded call {uploaded_id} not found"
+          PY
 
 
       - name: Smoke test rejects non-audio upload

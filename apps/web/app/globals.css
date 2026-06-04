@@ -158,3 +158,11 @@ small { color: var(--text-muted); }
   .selection-bar { top: 0; }
   .kpi-card strong { font-size: 1.35rem; }
 }
+.filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; }
+.filter-actions, .pagination-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filter-actions { margin-top: 12px; }
+.pagination-controls label { min-width: 120px; margin: 0; }
+.pagination-controls select { padding: 6px 8px; }
+.calls-table-wrap { max-height: 70vh; overflow: auto; }
+.table-sort { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; padding: 0; text-align: left; }
+.table-sort:hover { color: var(--accent-dark); text-decoration: underline; }
