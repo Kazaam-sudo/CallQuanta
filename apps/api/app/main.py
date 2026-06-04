@@ -6,6 +6,7 @@ import re
 import time
 from pathlib import Path
 from uuid import uuid4
+from datetime import datetime, time as datetime_time
 
 import redis
 import requests
@@ -16,14 +17,14 @@ from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from io import BytesIO, StringIO
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, or_, select, text, delete
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.16.0")
+app = FastAPI(title="CallQuanta API", version="0.17.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -212,6 +213,14 @@ class BatchCallsPayload(BaseModel):
     call_ids: list[int]
 
 
+class BatchMetadataPayload(CallMetadataPayload):
+    call_ids: list[int]
+
+
+class BatchDeletePayload(BaseModel):
+    call_ids: list[int]
+    delete_files: bool = True
+
 
 
 def _normalize_workspace_settings(value: dict | None) -> dict:
@@ -334,8 +343,8 @@ def _normalize_direction(value: str | None) -> str | None:
     if normalized is None:
         return None
     normalized = normalized.lower()
-    if normalized not in {"inbound", "outbound", "unknown"}:
-        raise HTTPException(status_code=400, detail="direction must be one of: inbound, outbound, unknown")
+    if normalized not in {"inbound", "outbound", "internal", "unknown"}:
+        raise HTTPException(status_code=400, detail="direction must be one of: inbound, outbound, internal, unknown")
     return normalized
 
 
@@ -587,12 +596,135 @@ def _group_key(value: str | None) -> str:
     return (value or "").strip() or "Unassigned"
 
 
-def _get_latest_successful_reviews(db: Session) -> tuple[dict[int, Call], list[QAReview], dict[int, QAReview]]:
-    calls = db.execute(select(Call)).scalars().all()
+
+CALL_FILTER_STATUSES = {
+    "uploaded",
+    "transcription_pending",
+    "transcribing",
+    "transcription_failed",
+    "transcribed",
+    "analysis_pending",
+    "analyzing",
+    "analysis_failed",
+    "analyzed",
+    "failed",
+}
+CALL_SORT_COLUMNS = {
+    "id": Call.id,
+    "filename": Call.filename,
+    "status": Call.status,
+    "agent_name": Call.agent_name,
+    "team": Call.team,
+    "campaign": Call.campaign,
+    "direction": Call.direction,
+    "language": Call.language,
+    "file_size_bytes": Call.file_size_bytes,
+    "created_at": Call.created_at,
+    "last_processed_at": Call.last_processed_at,
+}
+
+
+def _clean_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned or cleaned.lower() == "all":
+        return None
+    return cleaned
+
+
+def _parse_created_bound(value: str | None, end_of_day: bool = False) -> datetime | None:
+    cleaned = _clean_filter(value)
+    if not cleaned:
+        return None
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+            parsed_date = datetime.fromisoformat(cleaned).date()
+            return datetime.combine(parsed_date, datetime_time.max if end_of_day else datetime_time.min)
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date filter: {value}")
+
+
+def _apply_call_filters(
+    stmt,
+    *,
+    q: str | None = None,
+    status: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+):
+    search = _clean_filter(q)
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(or_(Call.filename.ilike(pattern), Call.agent_name.ilike(pattern), Call.team.ilike(pattern), Call.campaign.ilike(pattern)))
+
+    exact_filters = [
+        (Call.status, _clean_filter(status), False),
+        (Call.agent_name, _clean_filter(agent_name), False),
+        (Call.team, _clean_filter(team), False),
+        (Call.campaign, _clean_filter(campaign), False),
+        (Call.direction, _clean_filter(direction), True),
+        (Call.language, _clean_filter(language), True),
+    ]
+    for column, value, allow_empty_alias in exact_filters:
+        if value is None:
+            continue
+        if allow_empty_alias and value.lower() in {"unknown", "empty", "auto"}:
+            stmt = stmt.where(or_(column == value, column.is_(None), column == ""))
+        else:
+            stmt = stmt.where(column == value)
+
+    from_dt = _parse_created_bound(created_from)
+    to_dt = _parse_created_bound(created_to, end_of_day=True)
+    if from_dt:
+        stmt = stmt.where(Call.created_at >= from_dt)
+    if to_dt:
+        stmt = stmt.where(Call.created_at <= to_dt)
+    return stmt
+
+
+def _filtered_calls_statement(**filters):
+    return _apply_call_filters(select(Call), **filters)
+
+
+def _call_filter_query_params(
+    q: str | None,
+    status: str | None,
+    agent_name: str | None,
+    team: str | None,
+    campaign: str | None,
+    direction: str | None,
+    language: str | None,
+    created_from: str | None,
+    created_to: str | None,
+) -> dict:
+    return {
+        "q": q,
+        "status": status,
+        "agent_name": agent_name,
+        "team": team,
+        "campaign": campaign,
+        "direction": direction,
+        "language": language,
+        "created_from": created_from,
+        "created_to": created_to,
+    }
+
+
+def _get_latest_successful_reviews(db: Session, **filters) -> tuple[dict[int, Call], list[QAReview], dict[int, QAReview]]:
+    calls = db.execute(_filtered_calls_statement(**filters)).scalars().all()
     calls_by_id = {call.id: call for call in calls}
+    if not calls_by_id:
+        return calls_by_id, [], {}
     successful_reviews = db.execute(
         select(QAReview)
-        .where(QAReview.status == "success", QAReview.score.is_not(None))
+        .where(QAReview.call_id.in_(list(calls_by_id.keys())), QAReview.status == "success", QAReview.score.is_not(None))
         .order_by(QAReview.call_id.asc(), QAReview.created_at.desc(), QAReview.id.desc())
     ).scalars().all()
     latest_by_call: dict[int, QAReview] = {}
@@ -602,8 +734,19 @@ def _get_latest_successful_reviews(db: Session) -> tuple[dict[int, Call], list[Q
 
 
 @app.get("/dashboard/metrics")
-def dashboard_metrics(db: Session = Depends(get_db)) -> dict:
-    calls_by_id, successful_reviews, latest_by_call = _get_latest_successful_reviews(db)
+def dashboard_metrics(
+    q: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    filters = _call_filter_query_params(q, None, agent_name, team, campaign, direction, language, created_from, created_to)
+    calls_by_id, successful_reviews, latest_by_call = _get_latest_successful_reviews(db, **filters)
     calls = list(calls_by_id.values())
 
     total_calls = len(calls)
@@ -611,7 +754,8 @@ def dashboard_metrics(db: Session = Depends(get_db)) -> dict:
     transcribed_calls = sum(1 for c in calls if c.status and c.status.startswith("transcribed"))
     analyzed_calls = len(latest_by_call)
     analysis_failed_calls = sum(1 for c in calls if c.status == "analysis_failed")
-    total_qa_reviews = db.execute(select(QAReview.id)).all()
+    filtered_call_ids = set(calls_by_id)
+    total_qa_reviews = db.execute(select(QAReview.id).where(QAReview.call_id.in_(filtered_call_ids))).all() if filtered_call_ids else []
 
     latest_scores = [float(r.score) for r in latest_by_call.values() if r.score is not None]
     average_score = round(sum(latest_scores) / len(latest_scores), 2) if latest_scores else None
@@ -742,15 +886,132 @@ def dashboard_metrics(db: Session = Depends(get_db)) -> dict:
 
 @app.get("/dashboard/agent-metrics")
 def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
-    metrics = dashboard_metrics(db)
+    metrics = dashboard_metrics(db=db)
     return {"agents": metrics["agent_metrics"]}
 
 
 @app.get("/calls")
-def list_calls(db: Session = Depends(get_db)) -> list[dict]:
-    calls = db.execute(select(Call).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
-    return [serialize_call(call) for call in calls]
+def list_calls(
+    q: str | None = None,
+    status: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    db: Session = Depends(get_db),
+) -> dict:
+    filters = _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to)
+    filtered = _filtered_calls_statement(**filters)
+    total = db.execute(select(func.count()).select_from(filtered.subquery())).scalar_one()
+    sort_column = CALL_SORT_COLUMNS.get(sort_by, Call.created_at)
+    order = sort_column.asc() if sort_dir.lower() == "asc" else sort_column.desc()
+    tie_breaker = Call.id.asc() if sort_dir.lower() == "asc" else Call.id.desc()
+    calls = db.execute(filtered.order_by(order, tie_breaker).limit(limit).offset(offset)).scalars().all()
+    return {"items": [serialize_call(call) for call in calls], "total": int(total), "limit": limit, "offset": offset}
 
+
+@app.get("/calls/filter-options")
+def call_filter_options(db: Session = Depends(get_db)) -> dict:
+    def distinct_values(column):
+        rows = db.execute(select(column).where(column.is_not(None), column != "").distinct().order_by(column.asc())).scalars().all()
+        return [row for row in rows if str(row).strip()]
+
+    statuses = set(CALL_FILTER_STATUSES)
+    statuses.update(str(row) for row in db.execute(select(Call.status).where(Call.status.is_not(None)).distinct()).scalars().all() if str(row).strip())
+    return {
+        "agents": distinct_values(Call.agent_name),
+        "teams": distinct_values(Call.team),
+        "campaigns": distinct_values(Call.campaign),
+        "directions": distinct_values(Call.direction),
+        "languages": distinct_values(Call.language),
+        "statuses": sorted(statuses),
+    }
+
+
+def _calls_csv_rows(calls: list[Call]) -> list[list]:
+    return [[
+        call.id,
+        call.filename,
+        call.status,
+        call.agent_name or "",
+        call.team or "",
+        call.campaign or "",
+        call.direction or "",
+        call.language or "",
+        call.file_size_bytes or "",
+        call.content_type or "",
+        call.created_at.isoformat() if call.created_at else "",
+        call.last_processed_at.isoformat() if call.last_processed_at else "",
+        call.last_error_message or "",
+    ] for call in calls]
+
+
+def _filtered_calls_for_export(db: Session, filters: dict) -> list[Call]:
+    return db.execute(_filtered_calls_statement(**filters).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
+
+
+@app.get("/calls/export")
+def export_calls(
+    format: str = Query("csv", pattern="^(xlsx|csv)$"),
+    q: str | None = None,
+    status: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to))
+    headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error"]
+    safe_name = "callquanta-filtered-calls"
+    if format == "csv":
+        buf = StringIO(); buf.write("\ufeff")
+        writer = csv.writer(buf); writer.writerow(headers); writer.writerows(_calls_csv_rows(calls))
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'})
+    wb = Workbook(); ws = wb.active; ws.title = "Calls"; ws.append(headers)
+    for row in _calls_csv_rows(calls): ws.append(row)
+    out = BytesIO(); wb.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
+
+
+@app.get("/qa-reviews/export")
+def export_filtered_reviews(
+    format: str = Query("csv", pattern="^(xlsx|csv)$"),
+    q: str | None = None,
+    status: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to))
+    calls_by_id = {call.id: call for call in calls}
+    reviews = db.execute(select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys()))).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all() if calls_by_id else []
+    headers = ["Review ID", "Call ID", "Filename", "Review created at", "Status", "Score", "Agent", "Team", "Campaign", "Provider", "Model", "Scorecard", "Summary"]
+    rows = [[r.id, r.call_id, calls_by_id[r.call_id].filename, r.created_at.isoformat() if r.created_at else "", r.status, r.score if r.score is not None else "", calls_by_id[r.call_id].agent_name or "", calls_by_id[r.call_id].team or "", calls_by_id[r.call_id].campaign or "", r.provider_name or "", r.model or "", r.scorecard_name or "", r.summary or ""] for r in reviews]
+    safe_name = "callquanta-filtered-qa-reviews"
+    if format == "csv":
+        buf = StringIO(); buf.write("\ufeff")
+        writer = csv.writer(buf); writer.writerow(headers); writer.writerows(rows)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'})
+    wb = Workbook(); ws = wb.active; ws.title = "QA reviews"; ws.append(headers)
+    for row in rows: ws.append(row)
+    out = BytesIO(); wb.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
 
 
 def _enqueue_job(queue_name: str, payload: dict) -> tuple[bool, str | None]:
@@ -894,6 +1155,61 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
             call.last_error_message = warning
             db.commit()
             results.append({"call_id": call_id, "status": "failed", "reason": warning})
+    return {"results": results}
+
+
+
+@app.patch("/calls/batch/metadata")
+def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db)) -> dict:
+    updates = payload.model_dump(exclude={"call_ids"}, exclude_unset=True)
+    updates = {key: value for key, value in updates.items() if value is not None and (not isinstance(value, str) or value.strip())}
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        if "agent_name" in updates:
+            call.agent_name = _normalize_optional_text(updates["agent_name"])
+        if "team" in updates:
+            call.team = _normalize_optional_text(updates["team"])
+        if "campaign" in updates:
+            call.campaign = _normalize_optional_text(updates["campaign"])
+        if "direction" in updates:
+            call.direction = _normalize_direction(updates["direction"])
+        if "language" in updates:
+            normalized_language = normalize_stt_language(updates["language"])
+            if normalized_language is not None and normalized_language not in SUPPORTED_STT_LANGUAGE_CODES:
+                raise HTTPException(status_code=400, detail="Unsupported audio language")
+            call.language = normalized_language
+        results.append({"call_id": call_id, "status": "updated"})
+    db.commit()
+    return {"results": results}
+
+
+@app.delete("/calls/batch")
+def batch_delete_calls(payload: BatchDeletePayload, db: Session = Depends(get_db)) -> dict:
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        file_error = None
+        if payload.delete_files and call.stored_path:
+            try:
+                path = Path(call.stored_path)
+                if not path.is_absolute():
+                    path = Path.cwd() / path
+                if path.exists() and path.is_file():
+                    path.unlink()
+            except OSError as exc:
+                file_error = str(exc)
+        db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
+        db.execute(delete(QAReview).where(QAReview.call_id == call_id))
+        db.delete(call)
+        results.append({"call_id": call_id, "status": "deleted", **({"file_error": file_error} if file_error else {})})
+    db.commit()
     return {"results": results}
 
 
