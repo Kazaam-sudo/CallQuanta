@@ -795,3 +795,85 @@ a.disabled {
 .table-wrap .data-table {
   min-width: 1180px;
 }
+
+.telephony-boolean-fields {
+  display: grid;
+  gap: 8px;
+}
+.telephony-toggle-row {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.telephony-toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+}
+.telephony-integration-card {
+  display: grid;
+  gap: 14px;
+}
+.telephony-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.telephony-saved-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.telephony-saved-grid .meta-item {
+  min-width: 0;
+}
+.telephony-wide-field {
+  grid-column: span 2;
+}
+.telephony-saved-grid code {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.telephony-card-actions {
+  margin-top: 0;
+}
+.telephony-payload-details {
+  margin-top: 0;
+}
+.telephony-payload-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.telephony-code-block {
+  margin: 10px 0 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .telephony-wide-field {
+    grid-column: span 1;
+  }
+}

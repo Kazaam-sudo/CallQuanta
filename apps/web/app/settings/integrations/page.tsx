@@ -142,9 +142,20 @@ export default function TelephonyIntegrationsPage() {
               {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}{preset.implemented === false ? " (preset)" : ""}</option>)}
             </select>
           </label>
-          <label><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} /> Active</label>
-          <label><input type="checkbox" checked={form.auto_transcribe} onChange={(e) => setForm({ ...form, auto_transcribe: e.target.checked })} /> {t("telephony.autoTranscribe")}</label>
-          <label><input type="checkbox" checked={form.auto_analyze} onChange={(e) => setForm({ ...form, auto_analyze: e.target.checked, auto_transcribe: e.target.checked ? true : form.auto_transcribe })} /> {t("telephony.autoAnalyze")}</label>
+          <div className="telephony-boolean-fields" aria-label="Integration processing options">
+            <label className="telephony-toggle-row">
+              <span>Active</span>
+              <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
+            </label>
+            <label className="telephony-toggle-row">
+              <span>{t("telephony.autoTranscribe")}</span>
+              <input type="checkbox" checked={form.auto_transcribe} onChange={(e) => setForm({ ...form, auto_transcribe: e.target.checked })} />
+            </label>
+            <label className="telephony-toggle-row">
+              <span>{t("telephony.autoAnalyze")}</span>
+              <input type="checkbox" checked={form.auto_analyze} onChange={(e) => setForm({ ...form, auto_analyze: e.target.checked, auto_transcribe: e.target.checked ? true : form.auto_transcribe })} />
+            </label>
+          </div>
           <div className="grid grid-2">
             <label>Default agent<input value={form.default_agent_name} onChange={(e) => setForm({ ...form, default_agent_name: e.target.value })} /></label>
             <label>Default team<input value={form.default_team} onChange={(e) => setForm({ ...form, default_team: e.target.value })} /></label>
@@ -161,24 +172,24 @@ export default function TelephonyIntegrationsPage() {
         <div className="grid" style={{ gap: 12 }}>
           {integrations.map((item) => {
             const fullWebhook = `${webhookBase.replace(/\/+$/, "")}${item.webhook_path}`;
-            return <article key={item.id} className="segment">
-              <div className="actions" style={{ justifyContent: "space-between" }}>
+            return <article key={item.id} className="segment telephony-integration-card">
+              <div className="telephony-card-header">
                 <strong>{item.name}</strong>
                 <span className={`badge ${item.is_active ? "badge-success" : "badge-warning"}`}>{item.is_active ? "active" : "inactive"}</span>
               </div>
-              <div className="meta-grid" style={{ marginTop: 10 }}>
+              <div className="telephony-saved-grid">
                 <div className="meta-item"><small>{t("telephony.provider")}</small>{item.provider_type}</div>
-                <div className="meta-item"><small>{t("telephony.webhookUrl")}</small><code>{fullWebhook}</code></div>
+                <div className="meta-item telephony-wide-field"><small>{t("telephony.webhookUrl")}</small><code>{fullWebhook}</code></div>
                 <div className="meta-item"><small>{t("telephony.integrationToken")}</small>{latestTokens[item.id] ? <code>{latestTokens[item.id]}</code> : item.token_configured ? "configured" : "missing"}</div>
                 <div className="meta-item"><small>{t("telephony.autoTranscribe")}</small>{item.auto_transcribe ? "yes" : "no"}</div>
                 <div className="meta-item"><small>{t("telephony.autoAnalyze")}</small>{item.auto_analyze ? "yes" : "no"}</div>
               </div>
-              <div className="actions" style={{ marginTop: 10 }}>
+              <div className="actions telephony-card-actions">
                 <button className="button button-secondary" onClick={() => navigator.clipboard?.writeText(fullWebhook)}>Copy URL</button>
                 <button className="button button-secondary" onClick={() => regenerate(item.id)}>{t("telephony.regenerateToken")}</button>
                 <button className="button button-secondary" onClick={() => toggle(item.id)}>{item.is_active ? "Deactivate" : "Activate"}</button>
               </div>
-              <details style={{ marginTop: 10 }}><summary>Test payload example</summary><pre>{testPayload}</pre></details>
+              <details className="telephony-payload-details"><summary>Test payload example</summary><pre className="telephony-code-block">{testPayload}</pre></details>
             </article>;
           })}
           {integrations.length === 0 && <p>No telephony integrations yet.</p>}
