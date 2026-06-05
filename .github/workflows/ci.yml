@@ -26,6 +26,34 @@ jobs:
           if [ ! -f .env ]; then
             cp .env.example .env
           fi
+          python - <<'PY'
+          from pathlib import Path
+
+          env_path = Path('.env')
+          required = {
+              'ADMIN_EMAIL': 'admin@example.com',
+              'ADMIN_PASSWORD': 'admin-password',
+              'SESSION_SECRET': 'ci-session-secret',
+              'REQUIRE_AUTH': 'true',
+              'APP_ENV': 'test',
+          }
+          lines = env_path.read_text().splitlines()
+          seen = set()
+          updated = []
+          for line in lines:
+              if '=' in line and not line.lstrip().startswith('#'):
+                  key = line.split('=', 1)[0].strip()
+                  if key in required:
+                      if key not in seen:
+                          updated.append(f'{key}={required[key]}')
+                          seen.add(key)
+                      continue
+              updated.append(line)
+          for key, value in required.items():
+              if key not in seen:
+                  updated.append(f'{key}={value}')
+          env_path.write_text('\n'.join(updated) + '\n')
+          PY
 
       - name: Validate Python syntax
         run: python -m compileall apps/api workers packages
@@ -77,6 +105,25 @@ jobs:
           exit 1
 
 
+      - name: Authenticate smoke tests
+        run: |
+          set -euo pipefail
+          curl -fsS -c /tmp/cookies.txt \
+            -H "Content-Type: application/json" \
+            -d '{"email":"admin@example.com","password":"admin-password"}' \
+            http://localhost:8000/auth/login > /tmp/login.json
+
+          python - <<'PY'
+          import json
+
+          data = json.load(open('/tmp/login.json'))
+          user = data.get('user', data)
+          assert user.get('email') == 'admin@example.com', data
+          assert user.get('role') == 'admin', data
+          PY
+
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/auth/me > /tmp/me.json
+
       - name: Smoke test CORS preflight
         run: |
           set -euo pipefail
@@ -91,14 +138,25 @@ jobs:
       - name: Smoke test upload/list/get
         run: |
           set -euo pipefail
+          diagnostics() {
+            echo "/tmp/login.json"
+            cat /tmp/login.json || true
+            echo "GET /auth/me"
+            curl -fsS -b /tmp/cookies.txt http://localhost:8000/auth/me || true
+            echo "docker compose logs --no-color api --tail=150"
+            docker compose logs --no-color api --tail=150 || true
+          }
+          trap 'diagnostics' ERR
+
           printf 'RIFF....WAVEfmt ' > /tmp/sample.wav
 
-          upload_response=$(curl -fsS -X POST \
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST \
             -F "file=@/tmp/sample.wav" \
             http://localhost:8000/calls/upload)
           uploaded_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
-          curl -fsS http://localhost:8000/calls > /tmp/calls.json
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls > /tmp/calls.json
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${uploaded_id} > /tmp/uploaded-call.json
           UPLOADED_ID="$uploaded_id" python - <<'PY'
           import json
           import os
@@ -120,6 +178,8 @@ jobs:
               calls = data['items']
 
           assert any(c.get('id') == uploaded_id for c in calls), f"Uploaded call {uploaded_id} not found"
+          uploaded_call = json.load(open('/tmp/uploaded-call.json'))
+          assert uploaded_call.get('id') == uploaded_id, uploaded_call
           PY
 
 
@@ -128,7 +188,7 @@ jobs:
           set -euo pipefail
           printf '\x89PNG\r\n\x1a\n' > /tmp/sample.png
 
-          status=$(curl -sS -o /tmp/reject.json -w "%{http_code}" -X POST \
+          status=$(curl -sS -b /tmp/cookies.txt -o /tmp/reject.json -w "%{http_code}" -X POST \
             -F "file=@/tmp/sample.png" \
             http://localhost:8000/calls/upload)
 
@@ -140,26 +200,26 @@ jobs:
           set -euo pipefail
           printf 'RIFF....WAVEfmt ' > /tmp/sample2.wav
 
-          upload_response=$(curl -fsS -X POST -F "file=@/tmp/sample2.wav" http://localhost:8000/calls/upload)
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample2.wav" http://localhost:8000/calls/upload)
           call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
-          curl -fsS -X POST http://localhost:8000/calls/${call_id}/transcribe
+          curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/transcribe
 
           for i in {1..30}; do
-            status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
             if [ "$status" = "transcribed" ]; then
               break
             fi
             sleep 1
           done
 
-          final_status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+          final_status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
           if [ "$final_status" != "transcribed" ]; then
             echo "Expected transcribed status, got: $final_status"
             echo "GET /calls/${call_id}"
-            curl -fsS http://localhost:8000/calls/${call_id} || true
+            curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} || true
             echo "GET /jobs/summary"
-            curl -fsS http://localhost:8000/jobs/summary || true
+            curl -fsS -b /tmp/cookies.txt http://localhost:8000/jobs/summary || true
             echo "docker compose ps"
             docker compose ps || true
             echo "docker compose logs stt-worker"
@@ -167,7 +227,7 @@ jobs:
             exit 1
           fi
 
-          curl -fsS http://localhost:8000/calls/${call_id}/transcript | python -c "import json,sys; data=json.load(sys.stdin); assert len(data['segments']) > 0"
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/transcript | python -c "import json,sys; data=json.load(sys.stdin); assert len(data['segments']) > 0"
 
 
       - name: Smoke test QA analysis flow
@@ -175,42 +235,42 @@ jobs:
           set -euo pipefail
           printf 'RIFF....WAVEfmt ' > /tmp/sample3.wav
 
-          upload_response=$(curl -fsS -X POST -F "file=@/tmp/sample3.wav" http://localhost:8000/calls/upload)
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3.wav" http://localhost:8000/calls/upload)
           call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
-          curl -fsS -X POST http://localhost:8000/calls/${call_id}/transcribe
+          curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/transcribe
 
           for i in {1..30}; do
-            status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
             if [ "$status" = "transcribed" ]; then
               break
             fi
             sleep 1
           done
 
-          curl -fsS -X POST http://localhost:8000/calls/${call_id}/analyze
+          curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/analyze
 
           for i in {1..30}; do
-            status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
             if [ "$status" = "analyzed" ]; then
               break
             fi
             sleep 1
           done
 
-          final_status=$(curl -fsS http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+          final_status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
           if [ "$final_status" != "analyzed" ]; then
             echo "Expected analyzed status, got: $final_status"
             echo "GET /calls/${call_id}"
-            curl -fsS http://localhost:8000/calls/${call_id} || true
+            curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} || true
             echo "GET /calls/${call_id}/qa"
-            curl -fsS http://localhost:8000/calls/${call_id}/qa || true
+            curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa || true
             echo "docker compose logs qa-worker"
             docker compose logs --no-color qa-worker || true
             exit 1
           fi
 
-          curl -fsS http://localhost:8000/calls/${call_id}/qa | python -c "import json,sys; d=json.load(sys.stdin); r=d['review']; assert isinstance(r, dict); assert isinstance(r['score'], (int,float)); assert isinstance(r['summary'], str) and r['summary']; assert isinstance(r['findings'], list)"
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa | python -c "import json,sys; d=json.load(sys.stdin); r=d['review']; assert isinstance(r, dict); assert isinstance(r['score'], (int,float)); assert isinstance(r['summary'], str) and r['summary']; assert isinstance(r['findings'], list)"
 
       - name: Print Docker Compose logs on failure
         if: failure()

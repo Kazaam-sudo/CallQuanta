@@ -6,6 +6,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(32), default="viewer")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Call(Base):
     __tablename__ = "calls"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -41,6 +52,8 @@ class Call(Base):
     ingestion_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_analyze_after_transcription: Mapped[bool] = mapped_column(Boolean, default=False)
+    audio_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    audio_deleted_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -216,6 +229,8 @@ def migrate_calls_table(engine: Engine) -> None:
         "ingestion_error": "ALTER TABLE calls ADD COLUMN ingestion_error TEXT",
         "imported_at": "ALTER TABLE calls ADD COLUMN imported_at TIMESTAMPTZ",
         "auto_analyze_after_transcription": "ALTER TABLE calls ADD COLUMN auto_analyze_after_transcription BOOLEAN DEFAULT FALSE",
+        "audio_deleted": "ALTER TABLE calls ADD COLUMN audio_deleted BOOLEAN DEFAULT FALSE",
+        "audio_deleted_at": "ALTER TABLE calls ADD COLUMN audio_deleted_at TIMESTAMPTZ",
     }
     with engine.begin() as conn:
         for column_name, ddl in add_columns_sql.items():
@@ -271,3 +286,20 @@ def migrate_telephony_ingestion_tables(engine: Engine) -> None:
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_calls_source_provider_external_call_id ON calls (source_provider, external_call_id) WHERE external_call_id IS NOT NULL"))
     Base.metadata.tables["telephony_integrations"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["ingestion_events"].create(bind=engine, checkfirst=True)
+
+
+def migrate_production_readiness_tables(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["app_settings"].create(bind=engine, checkfirst=True)
+    if "calls" in existing_tables:
+        existing_columns = {column["name"] for column in inspector.get_columns("calls")}
+        add_columns_sql = {
+            "audio_deleted": "ALTER TABLE calls ADD COLUMN audio_deleted BOOLEAN DEFAULT FALSE",
+            "audio_deleted_at": "ALTER TABLE calls ADD COLUMN audio_deleted_at TIMESTAMPTZ",
+        }
+        with engine.begin() as conn:
+            for column_name, ddl in add_columns_sql.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))

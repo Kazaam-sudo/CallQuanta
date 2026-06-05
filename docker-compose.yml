@@ -51,6 +51,12 @@ services:
       - "${API_PORT:-8000}:8000"
     environment:
       UPLOAD_DIR: /app/uploads
+      APP_ENV: ${APP_ENV:-development}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-true}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
+      WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
     volumes:
       - api_uploads:/app/uploads
 
@@ -62,6 +68,7 @@ services:
       API_INTERNAL_BASE_URL: ${API_INTERNAL_BASE_URL:-http://api:8000}
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-callquanta_session}
     ports:
       - "${WEB_PORT:-3000}:3000"
 
@@ -74,6 +81,8 @@ services:
       api:
         condition: service_healthy
     restart: on-failure
+    environment:
+      WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
     volumes:
       - api_uploads:/app/uploads:ro
 
@@ -93,6 +102,7 @@ services:
       UPLOAD_DIR: /app/uploads
       RECORDING_DOWNLOAD_MAX_BYTES: ${RECORDING_DOWNLOAD_MAX_BYTES:-104857600}
       RECORDING_DOWNLOAD_TIMEOUT_SECONDS: ${RECORDING_DOWNLOAD_TIMEOUT_SECONDS:-120}
+      WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
     volumes:
       - api_uploads:/app/uploads
 
@@ -107,6 +117,8 @@ services:
       api:
         condition: service_healthy
     restart: on-failure
+    environment:
+      WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
 
 volumes:
   postgres_data:
