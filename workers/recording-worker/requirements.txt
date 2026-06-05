@@ -1,0 +1,5 @@
+redis==5.0.8
+sqlalchemy==2.0.35
+psycopg[binary]==3.2.1
+requests==2.32.3
+werkzeug==3.0.4

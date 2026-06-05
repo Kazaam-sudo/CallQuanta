@@ -27,6 +27,18 @@ type Call = {
   stt_model?: string | null;
   stt_language_used?: string | null;
   detected_language?: string | null;
+  source?: string | null;
+  source_provider?: string | null;
+  external_call_id?: string | null;
+  external_recording_url?: string | null;
+  customer_phone?: string | null;
+  agent_phone?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
+  ingestion_status?: string | null;
+  ingestion_error?: string | null;
+  imported_at?: string | null;
 };
 
 type TranscriptSegment = {
@@ -319,6 +331,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             {latestFailureHint ? ` Latest hint: ${latestFailureHint}` : ""}
           </p>
         )}
+        {call?.ingestion_error && <p className="message message-error"><strong>{t("telephony.ingestionStatus")}:</strong> {call.ingestion_error}</p>}
         {error && <p className="message message-error">{error}</p>}
         {loading && <p>Loading...</p>}
 
@@ -329,6 +342,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             <div className="meta-item"><small>{t("calls.fileSize")}</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
             <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
             <div className="meta-item"><small>{t("calls.lastProcessed")}</small>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>{t("telephony.sourceProvider")}</small>{call.source_provider || call.source || "-"}</div>
+            <div className="meta-item"><small>{t("telephony.externalCallId")}</small>{call.external_call_id || "-"}</div>
+            <div className="meta-item"><small>{t("telephony.ingestionStatus")}</small>{call.ingestion_status ? t(`status.${call.ingestion_status}`) : "-"}</div>
+            <div className="meta-item"><small>Imported</small>{call.imported_at ? new Date(call.imported_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>Customer phone</small>{call.customer_phone || "-"}</div>
+            <div className="meta-item"><small>Agent phone</small>{call.agent_phone || "-"}</div>
+            <div className="meta-item"><small>Started</small>{call.started_at ? new Date(call.started_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>Ended</small>{call.ended_at ? new Date(call.ended_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>Duration</small>{call.duration_seconds != null ? `${call.duration_seconds}s` : "-"}</div>
           </div>
         )}
       </section>

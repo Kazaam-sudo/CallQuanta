@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -28,6 +28,23 @@ class Call(Base):
     stt_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     stt_language_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detected_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    auto_analyze_after_transcription: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestionEvent(Base):
+    __tablename__ = "ingestion_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_provider: Mapped[str] = mapped_column(String(64))
+    external_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    call_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

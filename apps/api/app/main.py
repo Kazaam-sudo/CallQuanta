@@ -1,5 +1,8 @@
 import csv
+import hashlib
+import hmac
 import json
+import secrets
 import logging
 import os
 import re
@@ -11,7 +14,7 @@ from datetime import datetime, time as datetime_time
 import redis
 import requests
 import yaml
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
@@ -21,16 +24,17 @@ from sqlalchemy import create_engine, func, or_, select, text, delete
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table
+from .db import AppSetting, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.17.1")
+app = FastAPI(title="CallQuanta API", version="0.18.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
 DATABASE_URL = os.environ.get("DATABASE_URL", DATABASE_URL)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs")
+RECORDING_QUEUE = os.environ.get("RECORDING_QUEUE", "recording_jobs")
 QA_QUEUE = os.environ.get("QA_QUEUE", "qa_jobs")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 CORS_ORIGINS = os.environ.get(
@@ -40,6 +44,7 @@ CORS_ORIGINS = os.environ.get(
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
 MAX_DISPLAY_FILENAME_LENGTH = 255
+INGESTION_PAYLOAD_LOGGING = os.environ.get("INGESTION_PAYLOAD_LOGGING", "false").lower() in {"1", "true", "yes", "on"}
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     "audio/wav",
     "audio/x-wav",
@@ -85,6 +90,17 @@ DEFAULT_WORKSPACE_SETTINGS = {
     "qa_report_language_mode": "workspace",
     "qa_report_language": "English",
 }
+
+
+TELEPHONY_PROVIDER_TYPES = {"generic_webhook", "voximplant", "asterisk", "twilio", "zadarma", "custom"}
+TELEPHONY_PROVIDER_PRESETS = [
+    {"id": "generic_webhook", "label": "Generic webhook", "implemented": True},
+    {"id": "voximplant", "label": "Voximplant", "implemented": False},
+    {"id": "asterisk", "label": "Asterisk", "implemented": False},
+    {"id": "twilio", "label": "Twilio", "implemented": False},
+    {"id": "zadarma", "label": "Zadarma", "implemented": False},
+    {"id": "custom", "label": "Custom", "implemented": False},
+]
 
 STT_PROVIDER_TYPES = {
     "faster_whisper_local",
@@ -209,6 +225,41 @@ class CallMetadataPayload(BaseModel):
     language: str | None = None
 
 
+
+
+class TelephonyIntegrationPayload(BaseModel):
+    id: int | None = None
+    name: str
+    provider_type: str = "generic_webhook"
+    is_active: bool = True
+    auto_transcribe: bool = True
+    auto_analyze: bool = False
+    default_agent_name: str | None = None
+    default_team: str | None = None
+    default_campaign: str | None = None
+    default_direction: str | None = None
+    default_language: str | None = None
+    generate_token: bool = False
+
+
+class TelephonyImportPayload(BaseModel):
+    external_call_id: str
+    recording_url: str
+    filename: str | None = None
+    agent_name: str | None = None
+    team: str | None = None
+    campaign: str | None = None
+    direction: str | None = None
+    language: str | None = None
+    customer_phone: str | None = None
+    agent_phone: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: int | None = None
+    auto_transcribe: bool | None = None
+    auto_analyze: bool | None = None
+
+
 class BatchCallsPayload(BaseModel):
     call_ids: list[int]
 
@@ -320,6 +371,7 @@ def on_startup() -> None:
     migrate_qa_reviews_table(engine)
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
+    migrate_telephony_ingestion_tables(engine)
     logger.info("CallQuanta API started")
 
 
@@ -453,6 +505,130 @@ async def _store_upload_file(file: UploadFile, safe_name: str, bulk_state: dict[
     return stored_name, stored_path, size
 
 
+
+
+def _hash_ingestion_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _new_ingestion_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _verify_ingestion_token(token: str | None, token_hash: str | None) -> bool:
+    if not token or not token_hash:
+        return False
+    return hmac.compare_digest(_hash_ingestion_token(token), token_hash)
+
+
+def _bearer_or_header_token(authorization: str | None, x_callquanta_token: str | None) -> str | None:
+    if x_callquanta_token:
+        return x_callquanta_token.strip()
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return None
+
+
+def _safe_ingestion_message(message: str | None, limit: int = 500) -> str | None:
+    if not message:
+        return None
+    cleaned = re.sub(r"(token|authorization|api[_-]?key)=?[^\s,;]+", r"\1=[redacted]", str(message), flags=re.I)
+    return cleaned[:limit]
+
+
+def _sanitized_ingestion_payload(payload: TelephonyImportPayload | None) -> dict | None:
+    if payload is None:
+        return None
+    data = payload.model_dump(mode="json")
+    if INGESTION_PAYLOAD_LOGGING:
+        return {k: ("[redacted]" if k in {"customer_phone", "agent_phone"} else v) for k, v in data.items()}
+    return {
+        "external_call_id": data.get("external_call_id"),
+        "filename": data.get("filename"),
+        "direction": data.get("direction"),
+        "language": data.get("language"),
+        "duration_seconds": data.get("duration_seconds"),
+        "auto_transcribe": data.get("auto_transcribe"),
+        "auto_analyze": data.get("auto_analyze"),
+    }
+
+
+def _log_ingestion_event(db: Session, *, integration_id: int | None, source_provider: str, external_call_id: str | None, event_type: str, status: str, message: str | None = None, payload: TelephonyImportPayload | None = None, call_id: int | None = None) -> None:
+    db.add(IngestionEvent(
+        integration_id=integration_id,
+        source_provider=source_provider,
+        external_call_id=external_call_id,
+        event_type=event_type,
+        status=status,
+        message=_safe_ingestion_message(message),
+        payload_json=_sanitized_ingestion_payload(payload),
+        call_id=call_id,
+    ))
+
+
+def _serialize_telephony_integration(integration: TelephonyIntegration, token: str | None = None) -> dict:
+    return {
+        "id": integration.id,
+        "name": integration.name,
+        "provider_type": integration.provider_type,
+        "is_active": integration.is_active,
+        "token_configured": bool(integration.ingestion_token_hash),
+        "token": token,
+        "auto_transcribe": integration.auto_transcribe,
+        "auto_analyze": integration.auto_analyze,
+        "default_agent_name": integration.default_agent_name,
+        "default_team": integration.default_team,
+        "default_campaign": integration.default_campaign,
+        "default_direction": integration.default_direction,
+        "default_language": integration.default_language,
+        "webhook_path": f"/integrations/telephony/webhook/{integration.id}",
+        "created_at": integration.created_at.isoformat() if integration.created_at else None,
+        "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
+    }
+
+
+def _serialize_ingestion_event(event: IngestionEvent) -> dict:
+    return {
+        "id": event.id,
+        "integration_id": event.integration_id,
+        "source_provider": event.source_provider,
+        "external_call_id": event.external_call_id,
+        "event_type": event.event_type,
+        "status": event.status,
+        "message": event.message,
+        "call_id": event.call_id,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+def _validate_telephony_payload(payload: TelephonyImportPayload) -> None:
+    if not _normalize_optional_text(payload.external_call_id):
+        raise HTTPException(status_code=422, detail="external_call_id is required")
+    if not _normalize_optional_text(payload.recording_url):
+        raise HTTPException(status_code=422, detail="recording_url is required")
+    if not re.match(r"^https?://", payload.recording_url.strip(), flags=re.I):
+        raise HTTPException(status_code=400, detail="recording_url must be an http(s) URL")
+    if payload.duration_seconds is not None and payload.duration_seconds < 0:
+        raise HTTPException(status_code=400, detail="duration_seconds must be non-negative")
+    _normalize_direction(payload.direction)
+    normalized_language = normalize_stt_language(payload.language)
+    if normalized_language is not None and normalized_language not in SUPPORTED_STT_LANGUAGE_CODES:
+        raise HTTPException(status_code=400, detail="Unsupported audio language")
+
+
+def _apply_telephony_payload(call: Call, payload: TelephonyImportPayload, integration: TelephonyIntegration) -> None:
+    call.agent_name = _normalize_optional_text(payload.agent_name) or integration.default_agent_name
+    call.team = _normalize_optional_text(payload.team) or integration.default_team
+    call.campaign = _normalize_optional_text(payload.campaign) or integration.default_campaign
+    call.direction = _normalize_direction(payload.direction) or integration.default_direction
+    call.language = normalize_stt_language(payload.language) or integration.default_language
+    call.customer_phone = _normalize_optional_text(payload.customer_phone)
+    call.agent_phone = _normalize_optional_text(payload.agent_phone)
+    call.started_at = payload.started_at
+    call.ended_at = payload.ended_at
+    call.duration_seconds = payload.duration_seconds
+
+
 def _apply_call_metadata(call: Call, metadata: CallMetadataPayload) -> None:
     call.agent_name = _normalize_optional_text(metadata.agent_name)
     call.team = _normalize_optional_text(metadata.team)
@@ -515,6 +691,137 @@ def upload_limits() -> dict:
     }
 
 
+
+
+@app.get("/settings/telephony/integrations")
+def list_telephony_integrations(db: Session = Depends(get_db)) -> dict:
+    integrations = db.execute(select(TelephonyIntegration).order_by(TelephonyIntegration.id.asc())).scalars().all()
+    events = db.execute(select(IngestionEvent).order_by(IngestionEvent.created_at.desc(), IngestionEvent.id.desc()).limit(50)).scalars().all()
+    return {
+        "presets": TELEPHONY_PROVIDER_PRESETS,
+        "saved": [_serialize_telephony_integration(item) for item in integrations],
+        "events": [_serialize_ingestion_event(event) for event in events],
+    }
+
+
+@app.post("/settings/telephony/integrations")
+def upsert_telephony_integration(payload: TelephonyIntegrationPayload, db: Session = Depends(get_db)) -> dict:
+    if payload.provider_type not in TELEPHONY_PROVIDER_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported provider_type")
+    name = _normalize_optional_text(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    default_direction = _normalize_direction(payload.default_direction)
+    default_language = normalize_stt_language(payload.default_language)
+    if default_language is not None and default_language not in SUPPORTED_STT_LANGUAGE_CODES:
+        raise HTTPException(status_code=400, detail="Unsupported default_language")
+
+    integration = db.get(TelephonyIntegration, payload.id) if payload.id else None
+    if integration is None:
+        integration = TelephonyIntegration(name=name, provider_type=payload.provider_type)
+        db.add(integration)
+    token: str | None = None
+    if payload.generate_token or not integration.ingestion_token_hash:
+        token = _new_ingestion_token()
+        integration.ingestion_token_hash = _hash_ingestion_token(token)
+    integration.name = name
+    integration.provider_type = payload.provider_type
+    integration.is_active = payload.is_active
+    integration.auto_transcribe = payload.auto_transcribe or payload.auto_analyze
+    integration.auto_analyze = payload.auto_analyze
+    integration.default_agent_name = _normalize_optional_text(payload.default_agent_name)
+    integration.default_team = _normalize_optional_text(payload.default_team)
+    integration.default_campaign = _normalize_optional_text(payload.default_campaign)
+    integration.default_direction = default_direction
+    integration.default_language = default_language
+    db.commit()
+    db.refresh(integration)
+    return _serialize_telephony_integration(integration, token=token)
+
+
+@app.post("/settings/telephony/integrations/{integration_id}/regenerate-token")
+def regenerate_telephony_token(integration_id: int, db: Session = Depends(get_db)) -> dict:
+    integration = db.get(TelephonyIntegration, integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    token = _new_ingestion_token()
+    integration.ingestion_token_hash = _hash_ingestion_token(token)
+    db.commit()
+    db.refresh(integration)
+    return _serialize_telephony_integration(integration, token=token)
+
+
+@app.post("/settings/telephony/integrations/{integration_id}/toggle")
+def toggle_telephony_integration(integration_id: int, db: Session = Depends(get_db)) -> dict:
+    integration = db.get(TelephonyIntegration, integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    integration.is_active = not integration.is_active
+    db.commit()
+    db.refresh(integration)
+    return _serialize_telephony_integration(integration)
+
+
+@app.get("/integrations/telephony/events")
+def list_ingestion_events(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict:
+    events = db.execute(select(IngestionEvent).order_by(IngestionEvent.created_at.desc(), IngestionEvent.id.desc()).limit(limit)).scalars().all()
+    return {"events": [_serialize_ingestion_event(event) for event in events]}
+
+
+def _ingest_telephony_payload(integration: TelephonyIntegration, payload: TelephonyImportPayload, db: Session) -> dict:
+    _validate_telephony_payload(payload)
+    external_call_id = _normalize_optional_text(payload.external_call_id) or ""
+    source_provider = integration.provider_type or "generic_webhook"
+    _log_ingestion_event(db, integration_id=integration.id, source_provider=source_provider, external_call_id=external_call_id, event_type="webhook_received", status="success", payload=payload)
+
+    existing = db.execute(select(Call).where(Call.source_provider == source_provider, Call.external_call_id == external_call_id)).scalars().first()
+    if existing:
+        _log_ingestion_event(db, integration_id=integration.id, source_provider=source_provider, external_call_id=external_call_id, event_type="duplicate_ignored", status="success", call_id=existing.id)
+        db.commit()
+        return {"status": "duplicate", "call_id": existing.id, "external_call_id": external_call_id}
+
+    display_name = _display_upload_filename(payload.filename or f"{external_call_id}.wav")
+    auto_analyze = bool(payload.auto_analyze if payload.auto_analyze is not None else integration.auto_analyze)
+    auto_transcribe = bool(payload.auto_transcribe if payload.auto_transcribe is not None else integration.auto_transcribe) or auto_analyze
+    call = Call(
+        filename=display_name,
+        status="recording_download_pending",
+        source="telephony",
+        source_provider=source_provider,
+        external_call_id=external_call_id,
+        external_recording_url=payload.recording_url,
+        ingestion_status="recording_download_pending",
+        auto_analyze_after_transcription=auto_analyze,
+    )
+    _apply_telephony_payload(call, payload, integration)
+    db.add(call)
+    db.flush()
+    queued, warning = _enqueue_job(RECORDING_QUEUE, {"call_id": call.id, "recording_url": payload.recording_url, "filename": payload.filename or display_name, "auto_transcribe": auto_transcribe, "integration_id": integration.id})
+    _log_ingestion_event(db, integration_id=integration.id, source_provider=source_provider, external_call_id=external_call_id, event_type="recording_download_queued", status="success" if queued else "failed", message=warning, call_id=call.id)
+    if not queued:
+        call.status = "recording_download_failed"
+        call.ingestion_status = "recording_download_failed"
+        call.ingestion_error = warning
+        call.last_error_type = "ingestion"
+        call.last_error_message = warning
+    db.commit()
+    db.refresh(call)
+    return {"status": "accepted", "call_id": call.id, "external_call_id": external_call_id, "ingestion_status": call.ingestion_status}
+
+
+@app.post("/integrations/telephony/webhook/{integration_id}")
+def telephony_webhook(integration_id: int, payload: TelephonyImportPayload, authorization: str | None = Header(None), x_callquanta_token: str | None = Header(None), db: Session = Depends(get_db)) -> dict:
+    integration = db.get(TelephonyIntegration, integration_id)
+    if not integration or not integration.is_active:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    token = _bearer_or_header_token(authorization, x_callquanta_token)
+    if not _verify_ingestion_token(token, integration.ingestion_token_hash):
+        _log_ingestion_event(db, integration_id=integration.id, source_provider=integration.provider_type or "generic_webhook", external_call_id=getattr(payload, "external_call_id", None), event_type="webhook_received", status="failed", message="Invalid ingestion token")
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid ingestion token")
+    return _ingest_telephony_payload(integration, payload, db)
+
+
 @app.post("/calls/upload/bulk")
 async def upload_calls_bulk(
     files: list[UploadFile] = File(...),
@@ -573,6 +880,19 @@ def serialize_call(call: Call) -> dict:
         "stt_model": call.stt_model,
         "stt_language_used": call.stt_language_used,
         "detected_language": call.detected_language,
+        "source": call.source,
+        "source_provider": call.source_provider,
+        "external_call_id": call.external_call_id,
+        "external_recording_url": call.external_recording_url,
+        "customer_phone": call.customer_phone,
+        "agent_phone": call.agent_phone,
+        "started_at": call.started_at.isoformat() if call.started_at else None,
+        "ended_at": call.ended_at.isoformat() if call.ended_at else None,
+        "duration_seconds": call.duration_seconds,
+        "ingestion_status": call.ingestion_status,
+        "ingestion_error": call.ingestion_error,
+        "imported_at": call.imported_at.isoformat() if call.imported_at else None,
+        "auto_analyze_after_transcription": call.auto_analyze_after_transcription,
         "created_at": call.created_at.isoformat() if call.created_at else None,
         "last_error_type": call.last_error_type,
         "last_error_message": call.last_error_message,
@@ -608,6 +928,9 @@ CALL_FILTER_STATUSES = {
     "analysis_failed",
     "analyzed",
     "failed",
+    "recording_download_pending",
+    "recording_download_failed",
+    "ingestion_failed",
 }
 CALL_SORT_COLUMNS = {
     "id": Call.id,
@@ -971,6 +1294,14 @@ def _calls_csv_rows(calls: list[Call]) -> list[list]:
         call.created_at.isoformat() if call.created_at else "",
         call.last_processed_at.isoformat() if call.last_processed_at else "",
         call.last_error_message or "",
+        call.source_provider or "",
+        call.external_call_id or "",
+        call.customer_phone or "",
+        call.agent_phone or "",
+        call.started_at.isoformat() if call.started_at else "",
+        call.ended_at.isoformat() if call.ended_at else "",
+        call.duration_seconds or "",
+        call.ingestion_status or "",
     ] for call in calls]
 
 
@@ -1018,7 +1349,7 @@ def export_calls(
     db: Session = Depends(get_db),
 ):
     calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids)
-    headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error"]
+    headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error", "Source provider", "External call ID", "Customer phone", "Agent phone", "Started at", "Ended at", "Duration seconds", "Ingestion status"]
     safe_name = "callquanta-filtered-calls"
     if format == "csv":
         buf = StringIO(); buf.write("\ufeff")
@@ -1090,6 +1421,9 @@ def _status_counts(db: Session) -> dict[str, int]:
         "analysis_failed",
         "analyzed",
         "failed",
+        "recording_download_pending",
+        "recording_download_failed",
+        "ingestion_failed",
     ]
     counts = {status: 0 for status in statuses}
     rows = db.execute(select(Call.status, func.count(Call.id)).group_by(Call.status)).all()

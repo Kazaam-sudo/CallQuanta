@@ -28,6 +28,51 @@ class Call(Base):
     stt_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     stt_language_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detected_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingestion_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ingestion_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_analyze_after_transcription: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TelephonyIntegration(Base):
+    __tablename__ = "telephony_integrations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    provider_type: Mapped[str] = mapped_column(String(64), default="generic_webhook")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    ingestion_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    auto_transcribe: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_analyze: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_team: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_campaign: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    default_direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    default_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class IngestionEvent(Base):
+    __tablename__ = "ingestion_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int | None] = mapped_column(ForeignKey("telephony_integrations.id"), nullable=True)
+    source_provider: Mapped[str] = mapped_column(String(64))
+    external_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    call_id: Mapped[int | None] = mapped_column(ForeignKey("calls.id"), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -158,6 +203,19 @@ def migrate_calls_table(engine: Engine) -> None:
         "stt_model": "ALTER TABLE calls ADD COLUMN stt_model VARCHAR(128)",
         "stt_language_used": "ALTER TABLE calls ADD COLUMN stt_language_used VARCHAR(64)",
         "detected_language": "ALTER TABLE calls ADD COLUMN detected_language VARCHAR(64)",
+        "source": "ALTER TABLE calls ADD COLUMN source VARCHAR(64)",
+        "source_provider": "ALTER TABLE calls ADD COLUMN source_provider VARCHAR(64)",
+        "external_call_id": "ALTER TABLE calls ADD COLUMN external_call_id VARCHAR(255)",
+        "external_recording_url": "ALTER TABLE calls ADD COLUMN external_recording_url TEXT",
+        "customer_phone": "ALTER TABLE calls ADD COLUMN customer_phone VARCHAR(64)",
+        "agent_phone": "ALTER TABLE calls ADD COLUMN agent_phone VARCHAR(64)",
+        "started_at": "ALTER TABLE calls ADD COLUMN started_at TIMESTAMPTZ",
+        "ended_at": "ALTER TABLE calls ADD COLUMN ended_at TIMESTAMPTZ",
+        "duration_seconds": "ALTER TABLE calls ADD COLUMN duration_seconds INTEGER",
+        "ingestion_status": "ALTER TABLE calls ADD COLUMN ingestion_status VARCHAR(64)",
+        "ingestion_error": "ALTER TABLE calls ADD COLUMN ingestion_error TEXT",
+        "imported_at": "ALTER TABLE calls ADD COLUMN imported_at TIMESTAMPTZ",
+        "auto_analyze_after_transcription": "ALTER TABLE calls ADD COLUMN auto_analyze_after_transcription BOOLEAN DEFAULT FALSE",
     }
     with engine.begin() as conn:
         for column_name, ddl in add_columns_sql.items():
@@ -184,3 +242,32 @@ def migrate_stt_provider_configs_table(engine: Engine) -> None:
                     conn.execute(text(ddl))
     if "stt_provider_configs" not in existing_tables:
         Base.metadata.tables["stt_provider_configs"].create(bind=engine, checkfirst=True)
+
+
+def migrate_telephony_ingestion_tables(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "calls" in existing_tables:
+        existing_columns = {column["name"] for column in inspector.get_columns("calls")}
+        add_columns_sql = {
+            "source": "ALTER TABLE calls ADD COLUMN source VARCHAR(64)",
+            "source_provider": "ALTER TABLE calls ADD COLUMN source_provider VARCHAR(64)",
+            "external_call_id": "ALTER TABLE calls ADD COLUMN external_call_id VARCHAR(255)",
+            "external_recording_url": "ALTER TABLE calls ADD COLUMN external_recording_url TEXT",
+            "customer_phone": "ALTER TABLE calls ADD COLUMN customer_phone VARCHAR(64)",
+            "agent_phone": "ALTER TABLE calls ADD COLUMN agent_phone VARCHAR(64)",
+            "started_at": "ALTER TABLE calls ADD COLUMN started_at TIMESTAMPTZ",
+            "ended_at": "ALTER TABLE calls ADD COLUMN ended_at TIMESTAMPTZ",
+            "duration_seconds": "ALTER TABLE calls ADD COLUMN duration_seconds INTEGER",
+            "ingestion_status": "ALTER TABLE calls ADD COLUMN ingestion_status VARCHAR(64)",
+            "ingestion_error": "ALTER TABLE calls ADD COLUMN ingestion_error TEXT",
+            "imported_at": "ALTER TABLE calls ADD COLUMN imported_at TIMESTAMPTZ",
+            "auto_analyze_after_transcription": "ALTER TABLE calls ADD COLUMN auto_analyze_after_transcription BOOLEAN DEFAULT FALSE",
+        }
+        with engine.begin() as conn:
+            for column_name, ddl in add_columns_sql.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_calls_source_provider_external_call_id ON calls (source_provider, external_call_id) WHERE external_call_id IS NOT NULL"))
+    Base.metadata.tables["telephony_integrations"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["ingestion_events"].create(bind=engine, checkfirst=True)

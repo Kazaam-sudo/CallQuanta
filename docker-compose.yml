@@ -77,6 +77,25 @@ services:
     volumes:
       - api_uploads:/app/uploads:ro
 
+
+  recording-worker:
+    build: ./workers/recording-worker
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_started
+      api:
+        condition: service_healthy
+    restart: on-failure
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      UPLOAD_DIR: /app/uploads
+      RECORDING_DOWNLOAD_MAX_BYTES: ${RECORDING_DOWNLOAD_MAX_BYTES:-104857600}
+      RECORDING_DOWNLOAD_TIMEOUT_SECONDS: ${RECORDING_DOWNLOAD_TIMEOUT_SECONDS:-120}
+    volumes:
+      - api_uploads:/app/uploads
+
   qa-worker:
     build:
       context: .
