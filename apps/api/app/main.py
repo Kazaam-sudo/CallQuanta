@@ -22,9 +22,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.utils import secure_filename
 
 from .db import AppSetting, Base, Call, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table
-from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_stt_language
+from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.17.0")
+app = FastAPI(title="CallQuanta API", version="0.17.1")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -670,7 +670,6 @@ def _apply_call_filters(
         (Call.team, _clean_filter(team), False),
         (Call.campaign, _clean_filter(campaign), False),
         (Call.direction, _clean_filter(direction), True),
-        (Call.language, _clean_filter(language), True),
     ]
     for column, value, allow_empty_alias in exact_filters:
         if value is None:
@@ -679,6 +678,15 @@ def _apply_call_filters(
             stmt = stmt.where(or_(column == value, column.is_(None), column == ""))
         else:
             stmt = stmt.where(column == value)
+
+    language_value = _clean_filter(language)
+    if language_value:
+        normalized_language = normalize_language_code(language_value)
+        lowered_language = func.lower(func.trim(Call.language))
+        if normalized_language == "auto":
+            stmt = stmt.where(or_(Call.language.is_(None), func.trim(Call.language) == "", func.trim(Call.language) == "-", lowered_language == "auto"))
+        else:
+            stmt = stmt.where(or_(lowered_language == normalized_language, lowered_language.like(f"{normalized_language}-%"), lowered_language.like(f"{normalized_language}_%")))
 
     from_dt = _parse_created_bound(created_from)
     to_dt = _parse_created_bound(created_to, end_of_day=True)
@@ -925,12 +933,25 @@ def call_filter_options(db: Session = Depends(get_db)) -> dict:
 
     statuses = set(CALL_FILTER_STATUSES)
     statuses.update(str(row) for row in db.execute(select(Call.status).where(Call.status.is_not(None)).distinct()).scalars().all() if str(row).strip())
+    language_codes = {normalize_language_code(value) for value in distinct_values(Call.language)}
+    language_codes.add("auto")
+    language_catalog = {item["code"]: item for item in SUPPORTED_STT_LANGUAGES}
+    language_order = [item["code"] for item in SUPPORTED_STT_LANGUAGES]
+    languages = [
+        {
+            "code": code,
+            "label": language_catalog.get(code, {}).get("label_en", code),
+            "label_ru": language_catalog.get(code, {}).get("label_ru", code),
+        }
+        for code in language_order
+        if code in language_codes
+    ]
     return {
         "agents": distinct_values(Call.agent_name),
         "teams": distinct_values(Call.team),
         "campaigns": distinct_values(Call.campaign),
         "directions": distinct_values(Call.direction),
-        "languages": distinct_values(Call.language),
+        "languages": languages,
         "statuses": sorted(statuses),
     }
 
@@ -953,7 +974,31 @@ def _calls_csv_rows(calls: list[Call]) -> list[list]:
     ] for call in calls]
 
 
-def _filtered_calls_for_export(db: Session, filters: dict) -> list[Call]:
+def _parse_call_ids(call_ids: str | None) -> list[int] | None:
+    cleaned = _clean_filter(call_ids)
+    if not cleaned:
+        return None
+    ids: list[int] = []
+    for raw_id in cleaned.split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            parsed = int(raw_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="call_ids must be a comma-separated list of integers")
+        if parsed > 0:
+            ids.append(parsed)
+    return list(dict.fromkeys(ids))
+
+
+def _filtered_calls_for_export(db: Session, filters: dict, call_ids: str | None = None) -> list[Call]:
+    """Return export calls; explicit call_ids win over any filter parameters."""
+    selected_ids = _parse_call_ids(call_ids)
+    if selected_ids is not None:
+        if not selected_ids:
+            return []
+        return db.execute(select(Call).where(Call.id.in_(selected_ids)).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
     return db.execute(_filtered_calls_statement(**filters).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
 
 
@@ -969,9 +1014,10 @@ def export_calls(
     language: str | None = None,
     created_from: str | None = None,
     created_to: str | None = None,
+    call_ids: str | None = None,
     db: Session = Depends(get_db),
 ):
-    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to))
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids)
     headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error"]
     safe_name = "callquanta-filtered-calls"
     if format == "csv":
@@ -996,9 +1042,10 @@ def export_filtered_reviews(
     language: str | None = None,
     created_from: str | None = None,
     created_to: str | None = None,
+    call_ids: str | None = None,
     db: Session = Depends(get_db),
 ):
-    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to))
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids)
     calls_by_id = {call.id: call for call in calls}
     reviews = db.execute(select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys()))).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all() if calls_by_id else []
     headers = ["Review ID", "Call ID", "Filename", "Review created at", "Status", "Score", "Agent", "Team", "Campaign", "Provider", "Model", "Scorecard", "Summary"]
