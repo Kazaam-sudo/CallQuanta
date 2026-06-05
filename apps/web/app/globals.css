@@ -877,3 +877,37 @@ a.disabled {
     grid-column: span 1;
   }
 }
+
+.user-chip {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  max-width: 420px;
+}
+
+.user-chip > span:first-child {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice-danger {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.badge-error {
+  background: #fee2e2;
+  color: #991b1b;
+}

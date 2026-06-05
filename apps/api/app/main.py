@@ -9,25 +9,26 @@ import re
 import time
 from pathlib import Path
 from uuid import uuid4
-from datetime import datetime, time as datetime_time
+from datetime import UTC, datetime, timedelta, time as datetime_time
 
 import redis
 import requests
 import yaml
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from io import BytesIO, StringIO
 from openpyxl import Workbook
 from sqlalchemy import create_engine, func, or_, select, text, delete
 from sqlalchemy.orm import Session, sessionmaker
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, migrate_calls_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
+from .db import AppSetting, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.18.0")
+app = FastAPI(title="CallQuanta API", version="0.19.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -69,7 +70,21 @@ MAX_UPLOAD_BYTES_PER_FILE = int(
 )
 MAX_BULK_UPLOAD_BYTES = int(os.environ.get("MAX_BULK_UPLOAD_BYTES", str(DEFAULT_MAX_BULK_UPLOAD_BYTES)) or "0")
 
-
+APP_ENV = os.environ.get("APP_ENV", "development").lower()
+REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() in {"1", "true", "yes", "on"}
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-session-secret-change-me")
+SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "callquanta_session")
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(7 * 24 * 60 * 60)))
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+WORKER_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+RETENTION_SETTINGS_KEY = "retention"
+DEFAULT_RETENTION_SETTINGS = {
+    "audio_days": None,
+    "transcripts_days": None,
+    "qa_reviews_days": None,
+    "ingestion_events_days": None,
+}
 
 LANGUAGE_CATALOG = [
     {"code": "en", "label": "English", "native_label": "English", "ui_supported": True, "llm_supported": True},
@@ -273,6 +288,145 @@ class BatchDeletePayload(BaseModel):
     delete_files: bool = True
 
 
+def get_db() -> Session:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+class RetentionSettingsPayload(BaseModel):
+    audio_days: int | None = None
+    transcripts_days: int | None = None
+    qa_reviews_days: int | None = None
+    ingestion_events_days: int | None = None
+
+
+AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/auth/login"}
+AUTH_EXEMPT_PREFIXES = ("/integrations/telephony/webhook/",)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _normalize_email(email: str | None) -> str:
+    return (email or "").strip().lower()
+
+
+def _hash_password(password: str) -> str:
+    return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    return check_password_hash(password_hash, password)
+
+
+def _session_signature(payload: str) -> str:
+    return hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _create_session_token(user: User) -> str:
+    expires_at = int(time.time()) + SESSION_TTL_SECONDS
+    payload = f"{user.id}:{expires_at}:{secrets.token_urlsafe(8)}"
+    return f"{payload}.{_session_signature(payload)}"
+
+
+def _decode_session_token(token: str | None) -> int | None:
+    if not token or "." not in token:
+        return None
+    payload, signature = token.rsplit(".", 1)
+    if not hmac.compare_digest(_session_signature(payload), signature):
+        return None
+    parts = payload.split(":", 2)
+    if len(parts) < 2:
+        return None
+    try:
+        user_id = int(parts[0])
+        expires_at = int(parts[1])
+    except ValueError:
+        return None
+    if expires_at < int(time.time()):
+        return None
+    return user_id
+
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+    }
+
+
+def _get_user_from_request(request: Request, db: Session) -> User | None:
+    user_id = _decode_session_token(request.cookies.get(SESSION_COOKIE_NAME))
+    if not user_id:
+        return None
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return None
+    return user
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    if not REQUIRE_AUTH:
+        user = db.execute(select(User).where(User.is_active == True).limit(1)).scalar_one_or_none()
+        if user:
+            return user
+        return User(id=0, email="development@callquanta.local", role="admin", is_active=True, password_hash="")
+    user = _get_user_from_request(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return user
+
+
+def _auth_is_exempt(path: str) -> bool:
+    return path in AUTH_EXEMPT_PATHS or any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES)
+
+
+@app.middleware("http")
+async def require_auth_middleware(request: Request, call_next):
+    if request.method == "OPTIONS" or not REQUIRE_AUTH or _auth_is_exempt(request.url.path):
+        return await call_next(request)
+    with SessionLocal() as db:
+        user = _get_user_from_request(request, db)
+        if not user:
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        request.state.user = _serialize_user(user)
+    return await call_next(request)
+
+
+def _bootstrap_admin_user(db: Session) -> None:
+    has_user = db.execute(select(User.id).limit(1)).first()
+    if has_user:
+        return
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        message = "No users exist and ADMIN_EMAIL/ADMIN_PASSWORD are not fully configured; login will be unavailable."
+        if APP_ENV in {"production", "prod"}:
+            logger.warning("%s Set ADMIN_EMAIL and ADMIN_PASSWORD before production use.", message)
+        else:
+            logger.warning("%s Development mode allows you to set them and restart.", message)
+        return
+    db.add(User(email=ADMIN_EMAIL, password_hash=_hash_password(ADMIN_PASSWORD), role="admin", is_active=True))
+    db.commit()
+    logger.info("Created first admin user from ADMIN_EMAIL: %s", ADMIN_EMAIL)
+
 
 def _normalize_workspace_settings(value: dict | None) -> dict:
     settings = dict(DEFAULT_WORKSPACE_SETTINGS)
@@ -363,6 +517,64 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+
+
+def _check_db_ready() -> tuple[bool, str | None]:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, None
+    except Exception as exc:
+        return False, str(exc)[:300]
+
+
+def _check_redis_ready() -> tuple[bool, str | None]:
+    try:
+        redis_client.ping()
+        return True, None
+    except redis.RedisError as exc:
+        return False, str(exc)[:300]
+
+
+@app.get("/health/ready")
+def health_ready(response: Response) -> dict:
+    db_ok, db_error = _check_db_ready()
+    redis_ok, redis_error = _check_redis_ready()
+    ready = db_ok and redis_ok
+    if not ready:
+        response.status_code = 503
+    return {"status": "ready" if ready else "not_ready", "checks": {"db": {"ok": db_ok, "error": db_error}, "redis": {"ok": redis_ok, "error": redis_error}}}
+
+
+@app.post("/auth/login")
+def login(payload: LoginPayload, response: Response, db: Session = Depends(get_db)) -> dict:
+    email = _normalize_email(payload.email)
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if not user or not user.is_active or not _verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = _create_session_token(user)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=APP_ENV in {"production", "prod"},
+        samesite="lax",
+        path="/",
+    )
+    return {"user": _serialize_user(user)}
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/auth/me")
+def auth_me(user: User = Depends(get_current_user)) -> dict:
+    return {"user": _serialize_user(user), "auth_required": REQUIRE_AUTH}
+
 @app.on_event("startup")
 def on_startup() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -372,15 +584,12 @@ def on_startup() -> None:
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
     migrate_telephony_ingestion_tables(engine)
+    migrate_production_readiness_tables(engine)
+    with SessionLocal() as db:
+        _bootstrap_admin_user(db)
+    if APP_ENV in {"production", "prod"} and REQUIRE_AUTH and not ADMIN_PASSWORD:
+        logger.warning("ADMIN_PASSWORD is missing in production mode; set it before exposing CallQuanta.")
     logger.info("CallQuanta API started")
-
-
-def get_db() -> Session:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -705,7 +914,7 @@ def list_telephony_integrations(db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/settings/telephony/integrations")
-def upsert_telephony_integration(payload: TelephonyIntegrationPayload, db: Session = Depends(get_db)) -> dict:
+def upsert_telephony_integration(payload: TelephonyIntegrationPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     if payload.provider_type not in TELEPHONY_PROVIDER_TYPES:
         raise HTTPException(status_code=400, detail="Unsupported provider_type")
     name = _normalize_optional_text(payload.name)
@@ -740,7 +949,7 @@ def upsert_telephony_integration(payload: TelephonyIntegrationPayload, db: Sessi
 
 
 @app.post("/settings/telephony/integrations/{integration_id}/regenerate-token")
-def regenerate_telephony_token(integration_id: int, db: Session = Depends(get_db)) -> dict:
+def regenerate_telephony_token(integration_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     integration = db.get(TelephonyIntegration, integration_id)
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
@@ -752,7 +961,7 @@ def regenerate_telephony_token(integration_id: int, db: Session = Depends(get_db
 
 
 @app.post("/settings/telephony/integrations/{integration_id}/toggle")
-def toggle_telephony_integration(integration_id: int, db: Session = Depends(get_db)) -> dict:
+def toggle_telephony_integration(integration_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     integration = db.get(TelephonyIntegration, integration_id)
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
@@ -893,6 +1102,8 @@ def serialize_call(call: Call) -> dict:
         "ingestion_error": call.ingestion_error,
         "imported_at": call.imported_at.isoformat() if call.imported_at else None,
         "auto_analyze_after_transcription": call.auto_analyze_after_transcription,
+        "audio_deleted": bool(call.audio_deleted),
+        "audio_deleted_at": call.audio_deleted_at.isoformat() if call.audio_deleted_at else None,
         "created_at": call.created_at.isoformat() if call.created_at else None,
         "last_error_type": call.last_error_type,
         "last_error_message": call.last_error_message,
@@ -901,7 +1112,7 @@ def serialize_call(call: Call) -> dict:
 
 
 @app.patch("/calls/{call_id}/metadata")
-def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session = Depends(get_db)) -> dict:
+def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
@@ -1541,7 +1752,7 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
 
 
 @app.patch("/calls/batch/metadata")
-def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db)) -> dict:
+def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     updates = payload.model_dump(exclude={"call_ids"}, exclude_unset=True)
     updates = {key: value for key, value in updates.items() if value is not None and (not isinstance(value, str) or value.strip())}
     results: list[dict] = []
@@ -1569,7 +1780,7 @@ def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depen
 
 
 @app.delete("/calls/batch")
-def batch_delete_calls(payload: BatchDeletePayload, db: Session = Depends(get_db)) -> dict:
+def batch_delete_calls(payload: BatchDeletePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     results: list[dict] = []
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
@@ -1939,6 +2150,187 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
 
 
 
+
+
+def _normalize_retention_settings(value: dict | None) -> dict:
+    settings = dict(DEFAULT_RETENTION_SETTINGS)
+    if isinstance(value, dict):
+        settings.update({key: value.get(key) for key in settings if key in value})
+    env_map = {
+        "audio_days": "RETENTION_AUDIO_DAYS",
+        "transcripts_days": "RETENTION_TRANSCRIPTS_DAYS",
+        "qa_reviews_days": "RETENTION_QA_REVIEWS_DAYS",
+        "ingestion_events_days": "RETENTION_INGESTION_EVENTS_DAYS",
+    }
+    for key, env_name in env_map.items():
+        if settings.get(key) is None and os.environ.get(env_name):
+            settings[key] = os.environ.get(env_name)
+        if settings.get(key) in {"", "forever", "none"}:
+            settings[key] = None
+        if settings.get(key) is not None:
+            try:
+                settings[key] = int(settings[key])
+            except (TypeError, ValueError):
+                settings[key] = None
+            if settings[key] is not None and settings[key] < 1:
+                settings[key] = None
+    return settings
+
+
+def _get_retention_settings(db: Session) -> dict:
+    setting = db.get(AppSetting, RETENTION_SETTINGS_KEY)
+    return _normalize_retention_settings(setting.value if setting else None)
+
+
+def _upsert_retention_settings(db: Session, payload: RetentionSettingsPayload) -> dict:
+    settings = _normalize_retention_settings(payload.model_dump())
+    setting = db.get(AppSetting, RETENTION_SETTINGS_KEY)
+    if not setting:
+        db.add(AppSetting(key=RETENTION_SETTINGS_KEY, value=settings))
+    else:
+        setting.value = settings
+    db.commit()
+    return settings
+
+
+def _upload_dir_usage() -> dict:
+    count = 0
+    size = 0
+    if UPLOAD_DIR.exists():
+        for path in UPLOAD_DIR.rglob("*"):
+            if path.is_file():
+                count += 1
+                try:
+                    size += path.stat().st_size
+                except OSError:
+                    pass
+    return {"files_count": count, "total_bytes": size}
+
+
+def _worker_heartbeat_status(name: str) -> dict:
+    key = f"worker:{name}:heartbeat"
+    try:
+        raw = redis_client.get(key)
+    except redis.RedisError as exc:
+        return {"name": name, "ok": False, "last_heartbeat": None, "age_seconds": None, "error": str(exc)[:200]}
+    if not raw:
+        return {"name": name, "ok": False, "last_heartbeat": None, "age_seconds": None, "warning": "No heartbeat recorded"}
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        age = int((_utcnow() - ts).total_seconds())
+    except ValueError:
+        return {"name": name, "ok": False, "last_heartbeat": raw, "age_seconds": None, "warning": "Invalid heartbeat timestamp"}
+    stale_after = max(60, WORKER_HEARTBEAT_SECONDS * 2)
+    return {"name": name, "ok": age <= stale_after, "last_heartbeat": ts.isoformat(), "age_seconds": age, "warning": "Heartbeat is stale" if age > stale_after else None}
+
+
+def _system_status(db: Session) -> dict:
+    db_ok, db_error = _check_db_ready()
+    redis_ok, redis_error = _check_redis_ready()
+    llm_providers = db.execute(select(ProviderConfig).order_by(ProviderConfig.id.asc())).scalars().all()
+    active_llm = next((item for item in llm_providers if (item.config or {}).get("is_active")), None) or (llm_providers[0] if llm_providers else None)
+    active_stt = db.execute(select(SttProviderConfig).where(SttProviderConfig.is_active == True).limit(1)).scalar_one_or_none()
+    return {
+        "api": {"status": "ok", "version": app.version, "app_env": APP_ENV, "require_auth": REQUIRE_AUTH},
+        "postgres": {"ok": db_ok, "error": db_error},
+        "redis": {"ok": redis_ok, "error": redis_error},
+        "queues": {
+            "transcription": {"name": TRANSCRIPTION_QUEUE, "length": _queue_length(TRANSCRIPTION_QUEUE)[0]},
+            "qa": {"name": QA_QUEUE, "length": _queue_length(QA_QUEUE)[0]},
+            "recording": {"name": RECORDING_QUEUE, "length": _queue_length(RECORDING_QUEUE)[0]},
+        },
+        "workers": {name: _worker_heartbeat_status(name) for name in ["stt-worker", "qa-worker", "recording-worker"]},
+        "providers": {
+            "llm": serialize_provider_config(active_llm) if active_llm else None,
+            "stt": serialize_stt_provider_config(active_stt) if active_stt else None,
+        },
+        "upload_limits": upload_limits(),
+        "storage": _upload_dir_usage(),
+    }
+
+
+def _retention_cutoff(days: int | None) -> datetime | None:
+    return _utcnow() - timedelta(days=days) if days else None
+
+
+def _retention_plan(db: Session, settings: dict) -> dict:
+    plan = {"audio": {"count": 0, "bytes": 0}, "transcripts": {"count": 0}, "qa_reviews": {"count": 0}, "ingestion_events": {"count": 0}}
+    audio_cutoff = _retention_cutoff(settings.get("audio_days"))
+    if audio_cutoff:
+        calls = db.execute(select(Call).where(Call.created_at < audio_cutoff, Call.audio_deleted == False, Call.stored_path.is_not(None))).scalars().all()
+        for call in calls:
+            plan["audio"]["count"] += 1
+            try:
+                plan["audio"]["bytes"] += Path(call.stored_path).stat().st_size if call.stored_path else 0
+            except OSError:
+                pass
+    transcript_cutoff = _retention_cutoff(settings.get("transcripts_days"))
+    if transcript_cutoff:
+        plan["transcripts"]["count"] = db.execute(select(func.count(TranscriptSegment.id)).join(Call, TranscriptSegment.call_id == Call.id).where(Call.created_at < transcript_cutoff)).scalar() or 0
+    qa_cutoff = _retention_cutoff(settings.get("qa_reviews_days"))
+    if qa_cutoff:
+        plan["qa_reviews"]["count"] = db.execute(select(func.count(QAReview.id)).where(QAReview.created_at < qa_cutoff)).scalar() or 0
+    ingestion_cutoff = _retention_cutoff(settings.get("ingestion_events_days"))
+    if ingestion_cutoff:
+        plan["ingestion_events"]["count"] = db.execute(select(func.count(IngestionEvent.id)).where(IngestionEvent.created_at < ingestion_cutoff)).scalar() or 0
+    return plan
+
+
+@app.get("/system/status")
+def system_status(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    return _system_status(db)
+
+
+@app.get("/settings/retention")
+def get_retention_settings(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    settings = _get_retention_settings(db)
+    return {"settings": settings, "preview": _retention_plan(db, settings)}
+
+
+@app.patch("/settings/retention")
+def patch_retention_settings(payload: RetentionSettingsPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    settings = _upsert_retention_settings(db, payload)
+    return {"settings": settings, "preview": _retention_plan(db, settings)}
+
+
+@app.post("/settings/retention/preview")
+def preview_retention_cleanup(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    settings = _get_retention_settings(db)
+    return {"settings": settings, "preview": _retention_plan(db, settings)}
+
+
+@app.post("/settings/retention/run-cleanup")
+def run_retention_cleanup(confirm: bool = Query(False), db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Cleanup requires confirm=true after reviewing the dry-run preview")
+    settings = _get_retention_settings(db)
+    plan = _retention_plan(db, settings)
+    audio_cutoff = _retention_cutoff(settings.get("audio_days"))
+    if audio_cutoff:
+        calls = db.execute(select(Call).where(Call.created_at < audio_cutoff, Call.audio_deleted == False, Call.stored_path.is_not(None))).scalars().all()
+        for call in calls:
+            if call.stored_path:
+                Path(call.stored_path).unlink(missing_ok=True)
+            call.audio_deleted = True
+            call.audio_deleted_at = _utcnow()
+            call.stored_path = None
+            call.stored_filename = None
+            call.file_size_bytes = None
+    transcript_cutoff = _retention_cutoff(settings.get("transcripts_days"))
+    if transcript_cutoff:
+        old_call_ids = select(Call.id).where(Call.created_at < transcript_cutoff)
+        db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id.in_(old_call_ids)))
+    qa_cutoff = _retention_cutoff(settings.get("qa_reviews_days"))
+    if qa_cutoff:
+        db.execute(delete(QAReview).where(QAReview.created_at < qa_cutoff))
+    ingestion_cutoff = _retention_cutoff(settings.get("ingestion_events_days"))
+    if ingestion_cutoff:
+        db.execute(delete(IngestionEvent).where(IngestionEvent.created_at < ingestion_cutoff))
+    db.commit()
+    return {"ok": True, "deleted": plan}
+
 @app.get("/settings/languages")
 def list_languages() -> list[dict]:
     return LANGUAGE_CATALOG
@@ -2037,7 +2429,7 @@ def list_stt_providers(db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/settings/stt/providers")
-def upsert_stt_provider(payload: SttProviderUpsertRequest, db: Session = Depends(get_db)) -> dict:
+def upsert_stt_provider(payload: SttProviderUpsertRequest, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     _validate_stt_provider_payload(payload)
     provider = db.get(SttProviderConfig, payload.id) if payload.id else None
     if provider is None:
@@ -2063,7 +2455,7 @@ def upsert_stt_provider(payload: SttProviderUpsertRequest, db: Session = Depends
 
 
 @app.post("/settings/stt/providers/{provider_id}/activate")
-def activate_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def activate_stt_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(SttProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="STT provider not found")
@@ -2076,12 +2468,12 @@ def activate_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> di
 
 
 @app.post("/settings/stt/providers/test")
-def test_stt_provider(payload: SttProviderTestRequest) -> dict:
+def test_stt_provider(payload: SttProviderTestRequest, user: User = Depends(require_admin)) -> dict:
     return _stt_provider_test_response(payload.provider_type, payload.model, payload.base_url, payload.api_key, payload.timeout_seconds)
 
 
 @app.post("/settings/stt/providers/{provider_id}/test")
-def test_saved_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def test_saved_stt_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(SttProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="STT provider not found")
@@ -2089,7 +2481,7 @@ def test_saved_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> 
 
 
 @app.delete("/settings/stt/providers/{provider_id}")
-def delete_stt_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def delete_stt_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(SttProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="STT provider not found")
@@ -2119,7 +2511,7 @@ def get_workspace_settings(db: Session = Depends(get_db)) -> dict:
 
 
 @app.patch("/settings/workspace")
-def patch_workspace_settings(payload: WorkspaceSettingsPayload, db: Session = Depends(get_db)) -> dict:
+def patch_workspace_settings(payload: WorkspaceSettingsPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     return _upsert_workspace_settings(db, payload)
 
 def serialize_provider_config(provider: ProviderConfig) -> dict:
@@ -2184,7 +2576,7 @@ def get_scorecard_settings(db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/settings/scorecard")
-def upsert_scorecard_settings(payload: ScorecardPayload, db: Session = Depends(get_db)) -> dict:
+def upsert_scorecard_settings(payload: ScorecardPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     _validate_scorecard(payload)
     scorecard = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
     if not scorecard:
@@ -2198,7 +2590,7 @@ def upsert_scorecard_settings(payload: ScorecardPayload, db: Session = Depends(g
 
 
 @app.post("/settings/scorecard/reset")
-def reset_scorecard_settings(db: Session = Depends(get_db)) -> dict:
+def reset_scorecard_settings(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     default_scorecard = _load_default_scorecard()
     payload = ScorecardPayload(**default_scorecard)
     _validate_scorecard(payload)
@@ -2222,7 +2614,7 @@ def list_llm_providers(db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/settings/llm/providers")
-def upsert_llm_provider(payload: ProviderUpsertRequest, db: Session = Depends(get_db)) -> dict:
+def upsert_llm_provider(payload: ProviderUpsertRequest, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(ProviderConfig, payload.id) if payload.id else None
     if provider is None:
         provider = ProviderConfig(provider_type=payload.provider_type, name=payload.name, config={})
@@ -2247,7 +2639,7 @@ def upsert_llm_provider(payload: ProviderUpsertRequest, db: Session = Depends(ge
 
 
 @app.post("/settings/llm/providers/{provider_id}/activate")
-def activate_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def activate_llm_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(ProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -2262,7 +2654,7 @@ def activate_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> di
 
 
 @app.delete("/settings/llm/providers/{provider_id}")
-def delete_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def delete_llm_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(ProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -2272,12 +2664,12 @@ def delete_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict
 
 
 @app.post("/settings/llm/providers/test")
-def test_llm_provider(payload: ProviderTestRequest) -> dict:
+def test_llm_provider(payload: ProviderTestRequest, user: User = Depends(require_admin)) -> dict:
     return _provider_test_request(payload.provider_type, payload.base_url, payload.model, payload.api_key, payload.timeout_seconds)
 
 
 @app.post("/settings/llm/providers/{provider_id}/test")
-def test_saved_llm_provider(provider_id: int, db: Session = Depends(get_db)) -> dict:
+def test_saved_llm_provider(provider_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     provider = db.get(ProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")

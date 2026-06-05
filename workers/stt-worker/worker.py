@@ -30,6 +30,8 @@ STT_PROVIDER_STARTUP_RETRY_SECONDS = float(os.environ.get("STT_PROVIDER_STARTUP_
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+WORKER_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+WORKER_NAME = os.environ.get("WORKER_NAME", "stt-worker")
 running = True
 _faster_whisper_models: dict[tuple[str, str, str], object] = {}
 
@@ -74,6 +76,14 @@ def safe_error(exc: Exception, limit: int = 2000) -> str:
         if value:
             message = message.replace(value, "[redacted]")
     return message[:limit]
+
+
+
+def write_heartbeat() -> None:
+    try:
+        redis_client.set(f"worker:{WORKER_NAME}:heartbeat", datetime.now(UTC).isoformat(), ex=max(120, WORKER_HEARTBEAT_SECONDS * 4))
+    except redis.RedisError as exc:
+        print(f"failed to write heartbeat for {WORKER_NAME}: {exc}")
 
 
 def handle_shutdown(signum, frame):
@@ -376,6 +386,7 @@ def run_worker() -> None:
         print(f"stt-worker started. no active STT provider; fallback mode={STT_MODE} model={FASTER_WHISPER_MODEL}. Waiting for transcription jobs...")
 
     while running:
+        write_heartbeat()
         job = redis_client.brpop(TRANSCRIPTION_QUEUE, timeout=2)
         if not job:
             continue

@@ -32,7 +32,17 @@ CHUNK_SIZE = 1024 * 1024
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+WORKER_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+WORKER_NAME = os.environ.get("WORKER_NAME", "recording-worker")
 running = True
+
+
+
+def write_heartbeat() -> None:
+    try:
+        redis_client.set(f"worker:{WORKER_NAME}:heartbeat", datetime.now(UTC).isoformat(), ex=max(120, WORKER_HEARTBEAT_SECONDS * 4))
+    except redis.RedisError as exc:
+        print(f"failed to write heartbeat for {WORKER_NAME}: {exc}")
 
 
 def handle_shutdown(signum, frame):
@@ -172,6 +182,7 @@ def process_job(data: dict) -> None:
 def run_worker() -> None:
     print("recording-worker started. Waiting for recording jobs...")
     while running:
+        write_heartbeat()
         job = redis_client.brpop(RECORDING_QUEUE, timeout=2)
         if not job:
             continue

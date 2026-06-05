@@ -20,9 +20,11 @@ function buildProxyHeaders(request: Request) {
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   const contentLength = request.headers.get("content-length");
+  const cookie = request.headers.get("cookie");
 
   if (contentType) headers.set("content-type", contentType);
   if (contentLength) headers.set("content-length", contentLength);
+  if (cookie) headers.set("cookie", cookie);
 
   return headers;
 }

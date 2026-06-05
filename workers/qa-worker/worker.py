@@ -55,7 +55,17 @@ LLM_PROVIDER_CONFIG_SOURCE = os.environ.get("LLM_PROVIDER_CONFIG_SOURCE", "db_or
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+WORKER_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+WORKER_NAME = os.environ.get("WORKER_NAME", "qa-worker")
 running = True
+
+
+
+def write_heartbeat() -> None:
+    try:
+        redis_client.set(f"worker:{WORKER_NAME}:heartbeat", datetime.now(UTC).isoformat(), ex=max(120, WORKER_HEARTBEAT_SECONDS * 4))
+    except redis.RedisError as exc:
+        print(f"failed to write heartbeat for {WORKER_NAME}: {exc}")
 
 
 def handle_shutdown(signum, frame):
@@ -634,6 +644,7 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE}")
 
 while running:
+    write_heartbeat()
     job = redis_client.brpop(QA_QUEUE, timeout=2)
     if not job:
         continue
