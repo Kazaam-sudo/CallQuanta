@@ -663,7 +663,7 @@ export default function CallsPage() {
     <div className="grid page-stack">
       <section className="card hero-card">
         <div>
-          <p className="eyebrow">CallQuanta v0.17.1</p>
+          <p className="eyebrow">CallQuanta v0.17.2</p>
           <h1>{t("calls.calls")}</h1>
           <p>{t("calls.processingHelp")}</p>
         </div>
@@ -937,7 +937,7 @@ export default function CallsPage() {
       {selectedCallCount > 0 && (
         <section className="selection-bar">
           <strong>
-            {selectedCallCount} {t("calls.selected")}
+            {t("calls.selectedCalls")}: {selectedCallCount}
           </strong>
           <div className="selection-actions">
             <button
@@ -1171,147 +1171,6 @@ export default function CallsPage() {
           </div>
         )}
       </section>
-
-      <section className="card">
-        <div className="section-header">
-          <h2>
-            {t("calls.calls")} ({total})
-          </h2>
-          <div className="pagination-controls">
-            <label>
-              {t("calls.pageSize")}
-              <select
-                value={limit}
-                onChange={(e) => {
-                  setLimit(Number(e.target.value));
-                  setOffset(0);
-                }}
-              >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
-            </label>
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={offset === 0 || loading}
-              onClick={() => setOffset(Math.max(0, offset - limit))}
-            >
-              ‹ {t("calls.previous")}
-            </button>
-            <span>
-              {t("calls.showing")
-                .replace("{start}", String(rangeStart))
-                .replace("{end}", String(rangeEnd))
-                .replace("{total}", String(total))}
-            </span>
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={offset + limit >= total || loading}
-              onClick={() => setOffset(offset + limit)}
-            >
-              {t("calls.next")} ›
-            </button>
-          </div>
-        </div>
-        {loadError && <p className="message message-error">{loadError}</p>}
-        {loading ? (
-          <p>{t("calls.loading")}</p>
-        ) : calls.length === 0 ? (
-          <p className="empty-state">
-            {total === 0 ? t("calls.noCallsMatchFilters") : t("calls.empty")}
-          </p>
-        ) : (
-          <div className="table-wrap calls-table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>
-                    <input
-                      type="checkbox"
-                      aria-label="Select all visible calls"
-                      checked={allVisibleSelected}
-                      onChange={toggleAllVisible}
-                    />
-                  </th>
-                  <th>{sortHeader("id", "ID")}</th>
-                  <th>{sortHeader("filename", t("calls.filename"))}</th>
-                  <th>{sortHeader("status", t("calls.status"))}</th>
-                  <th>{sortHeader("agent_name", t("calls.agent"))}</th>
-                  <th>{sortHeader("team", t("calls.team"))}</th>
-                  <th>{sortHeader("campaign", t("calls.campaign"))}</th>
-                  <th>{sortHeader("direction", t("calls.direction"))}</th>
-                  <th>{sortHeader("language", t("call.audioLanguage"))}</th>
-                  <th>{sortHeader("file_size_bytes", t("calls.fileSize"))}</th>
-                  <th>{t("calls.lastError")}</th>
-                  <th>
-                    {sortHeader("last_processed_at", t("calls.lastProcessed"))}
-                  </th>
-                  <th>{sortHeader("created_at", t("calls.created"))}</th>
-                  <th>{t("calls.action")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calls.map((call) => (
-                  <tr
-                    key={call.id}
-                    className={
-                      selectedCallIds.has(call.id) ? "row-selected" : ""
-                    }
-                  >
-                    <td>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select call ${call.id}`}
-                        checked={selectedCallIds.has(call.id)}
-                        onChange={() => toggleCall(call.id)}
-                      />
-                    </td>
-                    <td>#{call.id}</td>
-                    <td className="filename-cell" title={call.filename}>
-                      {call.filename}
-                    </td>
-                    <td>
-                      <span className={`badge badge-${call.status}`}>
-                        {t(statusKey(call.status))}
-                      </span>
-                    </td>
-                    <td>{call.agent_name || "-"}</td>
-                    <td>{call.team || "-"}</td>
-                    <td>{call.campaign || "-"}</td>
-                    <td>{call.direction || "-"}</td>
-                    <td>{sttLanguageLabel(call.language, sttLanguages, t)}</td>
-                    <td>{formatBytes(call.file_size_bytes)}</td>
-                    <td className="error-cell">
-                      {call.last_error_message || "-"}
-                    </td>
-                    <td>
-                      {call.last_processed_at
-                        ? new Date(call.last_processed_at).toLocaleString()
-                        : "-"}
-                    </td>
-                    <td>
-                      {call.created_at
-                        ? new Date(call.created_at).toLocaleString()
-                        : "-"}
-                    </td>
-                    <td>
-                      <Link
-                        className="button button-secondary table-action"
-                        href={`/calls/${call.id}`}
-                      >
-                        {t("calls.open")}
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
     </div>
   );
 }
@@ -1330,46 +1189,109 @@ function ExportMenu({
   ) => string;
   selectedOnly?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const closeMenu = () => setOpen(false);
+
   return (
-    <details className="export-menu">
-      <summary className="button button-secondary button-small">
+    <div className="export-menu" ref={menuRef}>
+      <button
+        className="button button-secondary button-small export-menu-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
         {t("calls.export")}
-      </summary>
-      <div className="export-menu-panel">
-        {!selectedOnly && (
-          <>
-            <a href={exportUrl("calls", "csv")}>
-              {t("calls.exportFilteredCallsCsv")}
-            </a>
-            <a href={exportUrl("calls", "xlsx")}>
-              {t("calls.exportFilteredCallsXlsx")}
-            </a>
-            <a href={exportUrl("reviews", "csv")}>
-              {t("calls.exportFilteredReviewsCsv")}
-            </a>
-            <a href={exportUrl("reviews", "xlsx")}>
-              {t("calls.exportFilteredReviewsXlsx")}
-            </a>
-          </>
-        )}
-        {selectedExportUrl && (
-          <>
-            <a href={selectedExportUrl("calls", "csv")}>
-              {t("calls.exportSelectedCallsCsv")}
-            </a>
-            <a href={selectedExportUrl("calls", "xlsx")}>
-              {t("calls.exportSelectedCallsXlsx")}
-            </a>
-            <a href={selectedExportUrl("reviews", "csv")}>
-              {t("calls.exportSelectedReviewsCsv")}
-            </a>
-            <a href={selectedExportUrl("reviews", "xlsx")}>
-              {t("calls.exportSelectedReviewsXlsx")}
-            </a>
-          </>
-        )}
-      </div>
-    </details>
+      </button>
+      {open && (
+        <div className="export-menu-panel" role="menu">
+          {!selectedOnly && (
+            <>
+              <a
+                role="menuitem"
+                href={exportUrl("calls", "csv")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportFilteredCallsCsv")}
+              </a>
+              <a
+                role="menuitem"
+                href={exportUrl("calls", "xlsx")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportFilteredCallsXlsx")}
+              </a>
+              <a
+                role="menuitem"
+                href={exportUrl("reviews", "csv")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportFilteredReviewsCsv")}
+              </a>
+              <a
+                role="menuitem"
+                href={exportUrl("reviews", "xlsx")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportFilteredReviewsXlsx")}
+              </a>
+            </>
+          )}
+          {selectedExportUrl && (
+            <>
+              <a
+                role="menuitem"
+                href={selectedExportUrl("calls", "csv")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportSelectedCallsCsv")}
+              </a>
+              <a
+                role="menuitem"
+                href={selectedExportUrl("calls", "xlsx")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportSelectedCallsXlsx")}
+              </a>
+              <a
+                role="menuitem"
+                href={selectedExportUrl("reviews", "csv")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportSelectedReviewsCsv")}
+              </a>
+              <a
+                role="menuitem"
+                href={selectedExportUrl("reviews", "xlsx")}
+                onClick={closeMenu}
+              >
+                {t("calls.exportSelectedReviewsXlsx")}
+              </a>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
