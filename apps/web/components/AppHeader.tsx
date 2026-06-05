@@ -11,7 +11,9 @@ export function AppHeader() {
       <div className="header-inner">
         <div>
           <h1 className="brand-title">CallQuanta</h1>
-          <p className="brand-subtitle">Open-source AI QA for contact centers</p>
+          <p className="brand-subtitle">
+            Open-source AI QA for contact centers
+          </p>
         </div>
         <div className="header-actions">
           <nav className="top-nav" aria-label="Main navigation">
