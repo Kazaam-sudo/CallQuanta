@@ -27,7 +27,7 @@ export default function WorkspaceLanguagePage() {
   return (
     <main className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link></div>
+        <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link><Link href="/settings/integrations">Telephony</Link></div>
         <h2>{t("settings.workspaceLanguage")}</h2>
         <p className="message">{t("settings.explanation")}</p>
         <form className="grid" style={{ gap: 12 }} onSubmit={save}>

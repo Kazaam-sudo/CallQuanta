@@ -140,7 +140,7 @@ export default function ScorecardPage() {
 
   return (
     <main className="grid" style={{ gap: 16 }}>
-      <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link></div>
+      <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link><Link href="/settings/integrations">Telephony</Link></div>
       <section className="card">
         <h2>Scorecard Settings</h2>
 

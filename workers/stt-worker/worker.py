@@ -13,12 +13,13 @@ import requests
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from db import Call, SttProviderConfig, TranscriptSegment
+from db import Call, IngestionEvent, SttProviderConfig, TranscriptSegment
 from stt_language import normalize_stt_language, stt_initial_prompt
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs")
+QA_QUEUE = os.environ.get("QA_QUEUE", "qa_jobs")
 STT_MODE = os.environ.get("STT_MODE", "placeholder")
 FASTER_WHISPER_MODEL = os.environ.get("FASTER_WHISPER_MODEL", "base")
 FASTER_WHISPER_DEVICE = os.environ.get("FASTER_WHISPER_DEVICE", "cpu")
@@ -333,9 +334,22 @@ def process_transcription_job(call_id: int) -> None:
                 call.stt_language_used = result.stt_language_used
                 call.detected_language = result.detected_language
 
-            call.status = "transcribed"
-            call.last_error_type = None
-            call.last_error_message = None
+            if call.auto_analyze_after_transcription:
+                call.status = "analysis_pending"
+                try:
+                    redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
+                    db.add(IngestionEvent(source_provider=call.source_provider or "generic_webhook", external_call_id=call.external_call_id, event_type="analysis_queued", status="success", call_id=call.id))
+                    print(f"call {call_id} QA analysis queued after auto transcription")
+                except redis.RedisError as exc:
+                    call.status = "analysis_failed"
+                    call.last_error_type = "queue_unavailable"
+                    call.last_error_message = "Queue backend is unavailable"
+                    db.add(IngestionEvent(source_provider=call.source_provider or "generic_webhook", external_call_id=call.external_call_id, event_type="analysis_queued", status="failed", message="Queue backend is unavailable", call_id=call.id))
+                    print(f"failed to enqueue QA for call {call_id}: {safe_error(exc)}")
+            else:
+                call.status = "transcribed"
+            call.last_error_type = None if call.status != "analysis_failed" else call.last_error_type
+            call.last_error_message = None if call.status != "analysis_failed" else call.last_error_message
             call.last_processed_at = datetime.now(UTC)
             db.commit()
         except Exception as exc:
