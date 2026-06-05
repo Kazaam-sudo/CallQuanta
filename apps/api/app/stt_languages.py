@@ -12,11 +12,17 @@ SUPPORTED_STT_LANGUAGES = [
 SUPPORTED_STT_LANGUAGE_CODES = {item["code"] for item in SUPPORTED_STT_LANGUAGES if item["code"] != "auto"}
 
 
-def normalize_stt_language(language: str | None) -> str | None:
-    if language is None or not isinstance(language, str):
-        return None
-    normalized = language.strip().lower()
+def normalize_language_code(value: str | None) -> str | None:
+    """Return the canonical API filter code for stored audio language values."""
+    if value is None or not isinstance(value, str):
+        return "auto"
+    normalized = value.strip().lower()
     if normalized in {"", "-", "auto", "auto-detect", "autodetect", "none", "null"}:
-        return None
+        return "auto"
     code = normalized.replace("_", "-").split("-", 1)[0]
     return code or None
+
+
+def normalize_stt_language(language: str | None) -> str | None:
+    normalized = normalize_language_code(language)
+    return None if normalized == "auto" else normalized
