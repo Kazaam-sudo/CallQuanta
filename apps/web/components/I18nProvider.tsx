@@ -1,9 +1,8 @@
 "use client";
 
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { defaultWorkspaceSettings, LanguageCatalogItem, makeTranslator, SttLanguageItem, WorkspaceSettings } from "../lib/i18n";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+import { API_BASE_URL, fetchWithCredentials } from "../lib/api";
+import { defaultInterfaceLanguages, defaultWorkspaceSettings, LanguageCatalogItem, makeTranslator, SttLanguageItem, WorkspaceSettings } from "../lib/i18n";
 
 type I18nContextValue = {
   settings: WorkspaceSettings;
@@ -18,19 +17,23 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<WorkspaceSettings>(defaultWorkspaceSettings);
-  const [languages, setLanguages] = useState<LanguageCatalogItem[]>([]);
+  const [languages, setLanguages] = useState<LanguageCatalogItem[]>(defaultInterfaceLanguages);
   const [sttLanguages, setSttLanguages] = useState<SttLanguageItem[]>([]);
 
   useEffect(() => {
     const load = async () => {
       try {
         const [settingsRes, languagesRes, sttLanguagesRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/settings/workspace`),
-          fetch(`${API_BASE_URL}/settings/languages`),
-          fetch(`${API_BASE_URL}/settings/stt-languages`),
+          fetchWithCredentials(`${API_BASE_URL}/settings/workspace`),
+          fetchWithCredentials(`${API_BASE_URL}/settings/languages`),
+          fetchWithCredentials(`${API_BASE_URL}/settings/stt-languages`),
         ]);
         if (settingsRes.ok) setSettings(await settingsRes.json());
-        if (languagesRes.ok) setLanguages(await languagesRes.json());
+        if (languagesRes.ok) {
+          const catalog = (await languagesRes.json()) as LanguageCatalogItem[];
+          const supportedInterfaceLanguages = catalog.filter((language) => ["en", "ru", "uz"].includes(language.code));
+          setLanguages(supportedInterfaceLanguages.length ? supportedInterfaceLanguages : defaultInterfaceLanguages);
+        }
         if (sttLanguagesRes.ok) setSttLanguages(await sttLanguagesRes.json());
       } catch {
         // Keep English fallback if API is unavailable during local development.
@@ -40,7 +43,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateWorkspaceSettings = useCallback(async (updates: Partial<WorkspaceSettings>) => {
-    const response = await fetch(`${API_BASE_URL}/settings/workspace`, {
+    const response = await fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updates),

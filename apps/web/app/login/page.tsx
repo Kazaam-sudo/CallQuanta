@@ -3,7 +3,7 @@
 import { FormEvent, Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+import { API_BASE_URL, fetchWithCredentials } from "../../lib/api";
 
 function LoginForm() {
   const router = useRouter();
@@ -18,7 +18,7 @@ function LoginForm() {
     setError("");
     setIsSubmitting(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      const response = await fetchWithCredentials(`${API_BASE_URL}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -27,6 +27,7 @@ function LoginForm() {
         const body = await response.json().catch(() => null);
         throw new Error(body?.detail || "Invalid email or password");
       }
+      window.dispatchEvent(new Event("callquanta-auth-changed"));
       router.push(searchParams.get("next") || "/dashboard");
       router.refresh();
     } catch (err) {

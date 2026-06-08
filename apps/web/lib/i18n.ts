@@ -21,10 +21,25 @@ export type SttLanguageItem = {
 
 type Dict = Record<string, string>;
 
+export const defaultInterfaceLanguages: LanguageCatalogItem[] = [
+  { code: "en", label: "English", native_label: "English", ui_supported: true, llm_supported: true },
+  { code: "ru", label: "Russian", native_label: "Русский", ui_supported: true, llm_supported: true },
+  { code: "uz", label: "Uzbek", native_label: "O‘zbek", ui_supported: true, llm_supported: true },
+];
+
+
 const en: Dict = {
   "nav.dashboard": "Dashboard",
   "nav.calls": "Calls",
   "nav.settings": "Settings",
+  "auth.login": "Login",
+  "auth.logout": "Logout",
+  "settings.sttProviders": "STT Providers",
+  "settings.telephonyIntegrations": "Telephony Integrations",
+  "settings.systemStatus": "System Status",
+  "settings.retention": "Retention",
+  "settings.adminOnly": "Admin only",
+  "settings.adminOnlyHelp": "This settings area is available to administrators only.",
   "language.label": "Language",
   "language.unsupported": "UI translation is not fully available yet. QA reports will use this language.",
   "dashboard.totalCalls": "Total calls",
@@ -212,6 +227,14 @@ const ru: Dict = {
   "nav.dashboard": "Панель",
   "nav.calls": "Звонки",
   "nav.settings": "Настройки",
+  "auth.login": "Войти",
+  "auth.logout": "Выйти",
+  "settings.sttProviders": "STT-провайдеры",
+  "settings.telephonyIntegrations": "Телефония",
+  "settings.systemStatus": "Состояние системы",
+  "settings.retention": "Хранение данных",
+  "settings.adminOnly": "Только для администраторов",
+  "settings.adminOnlyHelp": "Этот раздел настроек доступен только администраторам.",
   "language.label": "Язык",
   "language.unsupported": "Перевод интерфейса пока доступен не полностью. QA-отчеты будут использовать этот язык.",
   "dashboard.totalCalls": "Всего звонков",
@@ -398,6 +421,14 @@ const uz: Dict = {
   "nav.dashboard": "Boshqaruv paneli",
   "nav.calls": "Qo‘ng‘iroqlar",
   "nav.settings": "Sozlamalar",
+  "auth.login": "Kirish",
+  "auth.logout": "Chiqish",
+  "settings.sttProviders": "STT provayderlar",
+  "settings.telephonyIntegrations": "Telefoniya integratsiyalari",
+  "settings.systemStatus": "Tizim holati",
+  "settings.retention": "Saqlash muddati",
+  "settings.adminOnly": "Faqat adminlar uchun",
+  "settings.adminOnlyHelp": "Bu sozlamalar bo‘limi faqat administratorlar uchun mavjud.",
   "language.label": "Til",
   "language.unsupported": "Interfeys tarjimasi hali to‘liq mavjud emas. QA hisobotlari shu tildan foydalanadi.",
   "dashboard.totalCalls": "Jami qo‘ng‘iroqlar",

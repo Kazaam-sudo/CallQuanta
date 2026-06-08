@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../../components/I18nProvider";
 
@@ -86,8 +87,8 @@ export default function Page() {
   };
 
   return (
-    <main className="grid" style={{ gap: 16 }}>
-      <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT Providers</Link><Link href="/settings/integrations">Telephony</Link></div>
+    <AdminOnly><main className="grid" style={{ gap: 16 }}>
+      <SettingsNav />
       <section className="card">
         <h2>{t("settings.sttProviderSettings")}</h2>
         {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>Editing STT provider: {editingProvider.name}</p>}
@@ -115,6 +116,6 @@ export default function Page() {
         {message && <p className={`message ${message.kind === "success" ? "message-success" : "message-error"}`}>{message.text}</p>}
       </section>
       <section className="card"><h3>Saved STT providers</h3><div className="grid" style={{ gap: 10 }}>{providers.length === 0 ? <p>No STT providers saved yet. Local faster-whisper remains available through environment fallback.</p> : providers.map((provider) => <article key={provider.id} className="segment"><div className="actions" style={{ justifyContent: "space-between" }}><strong>{provider.name}</strong><div className="actions">{provider.is_active && <span className="badge badge-transcribed">Active</span>}{provider.api_key_configured && <span className="badge badge-uploaded">{t("settings.apiKeyConfigured")}</span>}</div></div><p style={{ marginBottom: 6 }}>{provider.provider_type} • {provider.model || "-"}</p><p style={{ marginTop: 0, color: "#4b5563" }}>{provider.base_url || "local"}</p><div className="actions"><button className="button button-secondary" onClick={() => { setForm({ ...provider, api_key: "" }); setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0); }}>Edit</button><button className="button button-secondary" onClick={() => fetch(`${API_BASE_URL}/settings/stt/providers/${provider.id}/activate`, { method: "POST" }).then(load)}>{t("settings.activate")}</button><button className="button button-secondary" onClick={() => testProvider(provider)} disabled={isTesting}>{isTesting ? "Testing..." : "Test"}</button></div></article>)}</div></section>
-    </main>
+    </main></AdminOnly>
   );
 }

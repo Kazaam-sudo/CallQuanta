@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { defaultInterfaceLanguages } from "../lib/i18n";
 import { useI18n } from "./I18nProvider";
 
 export function LanguageSelector() {
@@ -9,17 +10,8 @@ export function LanguageSelector() {
     () => languages.find((item) => item.code === settings.interface_language),
     [languages, settings.interface_language],
   );
-  const options = languages.length
-    ? languages.filter((item) => item.code !== "custom")
-    : [
-        {
-          code: "en",
-          label: "English",
-          native_label: "English",
-          ui_supported: true,
-          llm_supported: true,
-        },
-      ];
+  const options = (languages.length ? languages : defaultInterfaceLanguages)
+    .filter((item) => ["en", "ru", "uz"].includes(item.code));
 
   return (
     <div className="language-control">
@@ -31,7 +23,7 @@ export function LanguageSelector() {
       >
         {options.map((language) => (
           <option key={language.code} value={language.code}>
-            {language.label}
+            {language.native_label === language.label ? language.label : `${language.native_label} / ${language.label}`}
           </option>
         ))}
       </select>

@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../../components/I18nProvider";
 
@@ -124,9 +126,9 @@ export default function TelephonyIntegrationsPage() {
 }`;
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
+    <AdminOnly><div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <p><Link href="/settings/workspace">← {t("nav.settings")}</Link></p>
+        <SettingsNav />
         <h2>{t("telephony.title")}</h2>
         <p className="message">{t("telephony.help")}</p>
         {message && <p className="message">{message}</p>}
@@ -207,6 +209,6 @@ export default function TelephonyIntegrationsPage() {
           {events.length === 0 && <p>No ingestion events yet.</p>}
         </div>
       </section>
-    </div>
+    </div></AdminOnly>
   );
 }

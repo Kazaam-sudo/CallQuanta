@@ -1,9 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import Link from "next/link";
+import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const emptySettings = { audio_days: "", transcripts_days: "", qa_reviews_days: "", ingestion_events_days: "" };
 
 function toForm(settings: any) {
@@ -23,7 +24,7 @@ export default function RetentionPage() {
 
   async function load() {
     setError("");
-    const response = await fetch(`${API_BASE_URL}/settings/retention`);
+    const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention`);
     if (!response.ok) {
       setError("Retention settings are available to admins only.");
       return;
@@ -38,7 +39,7 @@ export default function RetentionPage() {
   async function save(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    const response = await fetch(`${API_BASE_URL}/settings/retention`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toPayload(form)) });
+    const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toPayload(form)) });
     const data = await response.json();
     if (!response.ok) return setError(data.detail || "Failed to save retention settings");
     setPreview(data.preview);
@@ -48,7 +49,7 @@ export default function RetentionPage() {
   async function runCleanup() {
     setMessage("");
     setError("");
-    const response = await fetch(`${API_BASE_URL}/settings/retention/run-cleanup?confirm=${confirm}`, { method: "POST" });
+    const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention/run-cleanup?confirm=${confirm}`, { method: "POST" });
     const data = await response.json().catch(() => null);
     if (!response.ok) return setError(data?.detail || "Cleanup failed");
     setMessage(`Cleanup complete. Audio files: ${data.deleted?.audio?.count || 0}, transcripts: ${data.deleted?.transcripts?.count || 0}, QA reviews: ${data.deleted?.qa_reviews?.count || 0}, ingestion events: ${data.deleted?.ingestion_events?.count || 0}.`);
@@ -64,8 +65,8 @@ export default function RetentionPage() {
   ];
 
   return (
-    <main className="grid" style={{ gap: 16 }}>
-      <div className="actions"><Link href="/settings">Settings</Link><Link href="/settings/system">System Status</Link></div>
+    <AdminOnly><main className="grid" style={{ gap: 16 }}>
+      <SettingsNav />
       <section className="card">
         <h2>Retention</h2>
         <p style={{ color: "var(--text-muted)" }}>Leave a field empty to keep data forever. Cleanup is manual in v0.19.0 and requires confirmation.</p>
@@ -87,6 +88,6 @@ export default function RetentionPage() {
         <label style={{ display: "block", marginTop: 16 }}><input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} /> I understand cleanup deletes configured old data.</label>
         <button className="button button-secondary" onClick={runCleanup} disabled={!confirm} style={{ marginTop: 12 }}>Run cleanup now</button>
       </section>
-    </main>
+    </main></AdminOnly>
   );
 }

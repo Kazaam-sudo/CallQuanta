@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 export default function SystemStatusPage() {
   const [data, setData] = useState<any>(null);
@@ -11,7 +12,7 @@ export default function SystemStatusPage() {
 
   async function load() {
     setError("");
-    const response = await fetch(`${API_BASE_URL}/system/status`);
+    const response = await fetchWithCredentials(`${API_BASE_URL}/system/status`);
     if (!response.ok) {
       setError("System status is available to admins only.");
       return;
@@ -22,8 +23,8 @@ export default function SystemStatusPage() {
   useEffect(() => { load(); }, []);
 
   return (
-    <main className="grid" style={{ gap: 16 }}>
-      <div className="actions"><Link href="/settings">Settings</Link><Link href="/settings/retention">Retention</Link></div>
+    <AdminOnly><main className="grid" style={{ gap: 16 }}>
+      <SettingsNav />
       <section className="card">
         <div className="actions" style={{ justifyContent: "space-between" }}><h2>System Status</h2><button className="button button-secondary" onClick={load}>Refresh</button></div>
         {error && <p className="message message-error">{error}</p>}
@@ -44,6 +45,6 @@ export default function SystemStatusPage() {
         </section>
         <section className="card"><h3>Upload limits</h3><p>Per file: {data.upload_limits?.max_upload_mb} MB • Bulk: {data.upload_limits?.max_bulk_upload_mb} MB</p></section>
       </>}
-    </main>
+    </main></AdminOnly>
   );
 }

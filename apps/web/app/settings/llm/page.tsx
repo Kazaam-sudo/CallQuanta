@@ -1,5 +1,6 @@
 "use client";
-import Link from "next/link";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -73,8 +74,8 @@ export default function Page() {
     } finally { setIsTesting(false); }
   };
 
-  return <main className="grid" style={{ gap: 16 }}>
-    <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link><Link href="/settings/integrations">Telephony</Link></div>
+  return <AdminOnly><main className="grid" style={{ gap: 16 }}>
+    <SettingsNav />
     <section className="card">
       <h2>LLM Provider Settings</h2>
       {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>Editing provider: {editingProvider.name}</p>}
@@ -96,5 +97,5 @@ export default function Page() {
       {message && <p className={`message ${message.kind === "success" ? "message-success" : "message-error"}`}>{message.text}</p>}
     </section>
     <section className="card"><h3>Saved providers</h3><div className="grid" style={{ gap: 10 }}>{providers.map((p) => <article key={p.id} className="segment"><div className="actions" style={{ justifyContent: "space-between" }}><strong>{p.name}</strong><div className="actions">{p.is_active && <span className="badge badge-transcribed">Active</span>}{p.api_key_configured && <span className="badge badge-uploaded">API key configured</span>}</div></div><p style={{ marginBottom: 6 }}>{p.preset} • {p.model}</p><p style={{ marginTop: 0, color: "#4b5563" }}>{p.base_url}</p><div className="actions"><button className="button button-secondary" onClick={() => {setForm({ ...p, api_key: "" }); setTimeout(()=>formRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),0);}}>Edit</button><button className="button button-secondary" onClick={() => fetch(`${API_BASE_URL}/settings/llm/providers/${p.id}/activate`, { method: "POST" }).then(load)}>Activate</button><button className="button button-secondary" onClick={() => testProvider(p)} disabled={isTesting}>{isTesting ? "Testing..." : "Test"}</button></div></article>)}</div></section>
-  </main>;
+  </main></AdminOnly>;
 }
