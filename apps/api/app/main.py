@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
+from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.19.0")
+app = FastAPI(title="CallQuanta API", version="0.20.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -288,6 +288,36 @@ class BatchDeletePayload(BaseModel):
     delete_files: bool = True
 
 
+VALID_ROLES = {"admin", "manager", "supervisor", "agent", "viewer"}
+VALID_VISIBILITY_SCOPES = {"all", "team", "own"}
+ROLE_DEFAULT_SCOPE = {"admin": "all", "manager": "team", "supervisor": "team", "agent": "own", "viewer": "team"}
+
+
+class UserAccessCreatePayload(BaseModel):
+    email: str
+    password: str | None = None
+    display_name: str | None = None
+    role: str = "viewer"
+    team: str | None = None
+    agent_name: str | None = None
+    visibility_scope: str | None = None
+    is_active: bool = True
+
+
+class UserAccessPatchPayload(BaseModel):
+    email: str | None = None
+    display_name: str | None = None
+    role: str | None = None
+    team: str | None = None
+    agent_name: str | None = None
+    visibility_scope: str | None = None
+    is_active: bool | None = None
+
+
+class ResetPasswordPayload(BaseModel):
+    temporary_password: str | None = None
+
+
 def get_db() -> Session:
     db = SessionLocal()
     try:
@@ -308,7 +338,7 @@ class RetentionSettingsPayload(BaseModel):
     ingestion_events_days: int | None = None
 
 
-AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/auth/login"}
+AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/auth/login", "/auth/logout"}
 AUTH_EXEMPT_PREFIXES = ("/integrations/telephony/webhook/",)
 
 
@@ -357,17 +387,6 @@ def _decode_session_token(token: str | None) -> int | None:
     return user_id
 
 
-def _serialize_user(user: User) -> dict:
-    return {
-        "id": user.id,
-        "email": user.email,
-        "role": user.role,
-        "is_active": user.is_active,
-        "created_at": user.created_at.isoformat() if user.created_at else None,
-        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
-    }
-
-
 def _get_user_from_request(request: Request, db: Session) -> User | None:
     user_id = _decode_session_token(request.cookies.get(SESSION_COOKIE_NAME))
     if not user_id:
@@ -394,6 +413,99 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return user
+
+
+def _user_scope(user: User) -> str:
+    scope = (getattr(user, "visibility_scope", None) or ROLE_DEFAULT_SCOPE.get(user.role, "team")).strip().lower()
+    return scope if scope in VALID_VISIBILITY_SCOPES else ROLE_DEFAULT_SCOPE.get(user.role, "team")
+
+
+def _normalize_role(role: str | None) -> str:
+    normalized = (role or "viewer").strip().lower()
+    if normalized not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of: {', '.join(sorted(VALID_ROLES))}")
+    return normalized
+
+
+def _normalize_visibility_scope(scope: str | None, role: str) -> str:
+    normalized = (scope or ROLE_DEFAULT_SCOPE.get(role, "team")).strip().lower()
+    if normalized not in VALID_VISIBILITY_SCOPES:
+        raise HTTPException(status_code=400, detail="visibility_scope must be one of: all, team, own")
+    return normalized
+
+
+def _can_view_call(user: User, call: Call) -> bool:
+    scope = _user_scope(user)
+    if user.role == "admin" or scope == "all":
+        return True
+    if scope == "team":
+        team = _normalize_optional_text(getattr(user, "team", None))
+        return bool(team) and (call.team or "").strip() == team
+    if scope == "own":
+        agent_name = _normalize_optional_text(getattr(user, "agent_name", None))
+        return bool(agent_name) and (call.agent_name or "").strip() == agent_name
+    return False
+
+
+def apply_call_scope(stmt, user: User):
+    scope = _user_scope(user)
+    if user.role == "admin" or scope == "all":
+        return stmt
+    if scope == "team":
+        team = _normalize_optional_text(getattr(user, "team", None))
+        return stmt.where(Call.team == team) if team else stmt.where(Call.id < 0)
+    if scope == "own":
+        agent_name = _normalize_optional_text(getattr(user, "agent_name", None))
+        return stmt.where(Call.agent_name == agent_name) if agent_name else stmt.where(Call.id < 0)
+    return stmt.where(Call.id < 0)
+
+
+def require_can_view_call(call: Call, user: User) -> Call:
+    if not _can_view_call(user, call):
+        raise HTTPException(status_code=403, detail="Call is outside your visibility scope")
+    return call
+
+
+def require_can_modify_call(call: Call, user: User) -> Call:
+    if user.role in {"viewer", "agent"}:
+        raise HTTPException(status_code=403, detail="You do not have permission to modify calls")
+    return require_can_view_call(call, user)
+
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": getattr(user, "display_name", None),
+        "role": user.role,
+        "team": getattr(user, "team", None),
+        "agent_name": getattr(user, "agent_name", None),
+        "visibility_scope": _user_scope(user),
+        "is_active": user.is_active,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+    }
+
+
+def _log_audit_event(db: Session, actor: User | None, action: str, entity_type: str, entity_id: object | None = None, message: str | None = None, metadata: dict | None = None, commit: bool = False) -> None:
+    try:
+        db.add(AuditEvent(
+            actor_user_id=getattr(actor, "id", None),
+            actor_email=getattr(actor, "email", None),
+            action=action,
+            entity_type=entity_type,
+            entity_id=str(entity_id) if entity_id is not None else None,
+            message=message,
+            metadata_json=metadata,
+        ))
+        if commit:
+            db.commit()
+    except Exception:
+        logger.exception("Failed to write audit event %s", action)
+
+
+def _generate_temporary_password() -> str:
+    return secrets.token_urlsafe(12)
 
 
 def _auth_is_exempt(path: str) -> bool:
@@ -423,7 +535,7 @@ def _bootstrap_admin_user(db: Session) -> None:
         else:
             logger.warning("%s Development mode allows you to set them and restart.", message)
         return
-    db.add(User(email=ADMIN_EMAIL, password_hash=_hash_password(ADMIN_PASSWORD), role="admin", is_active=True))
+    db.add(User(email=ADMIN_EMAIL, password_hash=_hash_password(ADMIN_PASSWORD), role="admin", visibility_scope="all", is_active=True))
     db.commit()
     logger.info("Created first admin user from ADMIN_EMAIL: %s", ADMIN_EMAIL)
 
@@ -551,6 +663,8 @@ def login(payload: LoginPayload, response: Response, db: Session = Depends(get_d
     email = _normalize_email(payload.email)
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user or not user.is_active or not _verify_password(payload.password, user.password_hash):
+        _log_audit_event(db, None, "login_failed", "user", email, "Login failed", {"email": email})
+        db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = _create_session_token(user)
     response.set_cookie(
@@ -562,11 +676,16 @@ def login(payload: LoginPayload, response: Response, db: Session = Depends(get_d
         samesite="lax",
         path="/",
     )
+    _log_audit_event(db, user, "login_success", "user", user.id, "Login successful")
+    db.commit()
     return {"user": _serialize_user(user)}
 
 
 @app.post("/auth/logout")
-def logout(response: Response) -> dict:
+def logout(request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    user = _get_user_from_request(request, db)
+    if user:
+        _log_audit_event(db, user, "logout", "user", user.id, "Logout", commit=True)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"ok": True}
 
@@ -585,6 +704,7 @@ def on_startup() -> None:
     migrate_stt_provider_configs_table(engine)
     migrate_telephony_ingestion_tables(engine)
     migrate_production_readiness_tables(engine)
+    migrate_access_control_tables(engine)
     with SessionLocal() as db:
         _bootstrap_admin_user(db)
     if APP_ENV in {"production", "prod"} and REQUIRE_AUTH and not ADMIN_PASSWORD:
@@ -868,6 +988,151 @@ async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMet
     return call
 
 
+def _ensure_not_last_active_admin(db: Session, user: User) -> None:
+    if user.role != "admin" or not user.is_active:
+        return
+    active_admin_count = db.execute(select(func.count(User.id)).where(User.role == "admin", User.is_active == True)).scalar_one()
+    if int(active_admin_count) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot deactivate or demote the last active admin")
+
+
+def _apply_user_payload(target: User, payload: UserAccessCreatePayload | UserAccessPatchPayload) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+    if "email" in updates and updates["email"] is not None:
+        email = _normalize_email(updates["email"])
+        if not email:
+            raise HTTPException(status_code=400, detail="email is required")
+        target.email = email
+    if "role" in updates and updates["role"] is not None:
+        target.role = _normalize_role(updates["role"])
+    if "display_name" in updates:
+        target.display_name = _normalize_optional_text(updates.get("display_name"))
+    if "team" in updates:
+        target.team = _normalize_optional_text(updates.get("team"))
+    if "agent_name" in updates:
+        target.agent_name = _normalize_optional_text(updates.get("agent_name"))
+    if "visibility_scope" in updates or not getattr(target, "visibility_scope", None):
+        target.visibility_scope = _normalize_visibility_scope(updates.get("visibility_scope"), target.role)
+    if "is_active" in updates and updates["is_active"] is not None:
+        target.is_active = bool(updates["is_active"])
+    return updates
+
+
+@app.get("/settings/users")
+def list_users(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    users = db.execute(select(User).order_by(User.email.asc())).scalars().all()
+    teams = db.execute(select(Call.team).where(Call.team.is_not(None), Call.team != "").distinct().order_by(Call.team.asc())).scalars().all()
+    agents = db.execute(select(Call.agent_name).where(Call.agent_name.is_not(None), Call.agent_name != "").distinct().order_by(Call.agent_name.asc())).scalars().all()
+    return {"items": [_serialize_user(item) for item in users], "roles": sorted(VALID_ROLES), "visibility_scopes": sorted(VALID_VISIBILITY_SCOPES), "teams": [t for t in teams if str(t).strip()], "agents": [a for a in agents if str(a).strip()]}
+
+
+@app.post("/settings/users")
+def create_user(payload: UserAccessCreatePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    email = _normalize_email(payload.email)
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    if db.execute(select(User.id).where(User.email == email)).first():
+        raise HTTPException(status_code=409, detail="User with this email already exists")
+    role = _normalize_role(payload.role)
+    temporary_password = payload.password or _generate_temporary_password()
+    target = User(email=email, password_hash=_hash_password(temporary_password), role=role, visibility_scope=_normalize_visibility_scope(payload.visibility_scope, role), is_active=payload.is_active)
+    target.display_name = _normalize_optional_text(payload.display_name)
+    target.team = _normalize_optional_text(payload.team)
+    target.agent_name = _normalize_optional_text(payload.agent_name)
+    db.add(target)
+    db.flush()
+    _log_audit_event(db, user, "user_created", "user", target.id, f"Created user {target.email}", {"role": target.role, "visibility_scope": target.visibility_scope})
+    db.commit()
+    db.refresh(target)
+    return {"user": _serialize_user(target), "temporary_password": temporary_password}
+
+
+@app.patch("/settings/users/{user_id}")
+def patch_user(user_id: int, payload: UserAccessPatchPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == user.id and (payload.role is not None or payload.visibility_scope is not None):
+        raise HTTPException(status_code=400, detail="Users cannot change their own role or visibility scope")
+    if payload.email is not None:
+        new_email = _normalize_email(payload.email)
+        existing_user = db.execute(select(User).where(User.email == new_email, User.id != target.id)).first()
+        if existing_user:
+            raise HTTPException(status_code=409, detail="User with this email already exists")
+    if (payload.role is not None and _normalize_role(payload.role) != "admin") or payload.is_active is False:
+        _ensure_not_last_active_admin(db, target)
+    old_role = target.role
+    updates = _apply_user_payload(target, payload)
+    if old_role != target.role:
+        _log_audit_event(db, user, "role_changed", "user", target.id, f"Changed role for {target.email}", {"old_role": old_role, "new_role": target.role})
+    _log_audit_event(db, user, "user_updated", "user", target.id, f"Updated user {target.email}", {"fields": sorted(updates.keys())})
+    db.commit()
+    db.refresh(target)
+    return {"user": _serialize_user(target)}
+
+
+@app.post("/settings/users/{user_id}/reset-password")
+def reset_user_password(user_id: int, payload: ResetPasswordPayload | None = None, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    temporary_password = (payload.temporary_password if payload else None) or _generate_temporary_password()
+    if len(temporary_password) < 8:
+        raise HTTPException(status_code=400, detail="temporary_password must be at least 8 characters")
+    target.password_hash = _hash_password(temporary_password)
+    _log_audit_event(db, user, "password_reset", "user", target.id, f"Reset password for {target.email}")
+    db.commit()
+    return {"user": _serialize_user(target), "temporary_password": temporary_password}
+
+
+@app.patch("/settings/users/{user_id}/deactivate")
+def deactivate_user(user_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    _ensure_not_last_active_admin(db, target)
+    target.is_active = False
+    _log_audit_event(db, user, "user_deactivated", "user", target.id, f"Deactivated user {target.email}")
+    db.commit()
+    db.refresh(target)
+    return {"user": _serialize_user(target)}
+
+
+@app.patch("/settings/users/{user_id}/activate")
+def activate_user(user_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.is_active = True
+    _log_audit_event(db, user, "user_activated", "user", target.id, f"Activated user {target.email}")
+    db.commit()
+    db.refresh(target)
+    return {"user": _serialize_user(target)}
+
+
+def serialize_audit_event(event: AuditEvent) -> dict:
+    return {"id": event.id, "actor_user_id": event.actor_user_id, "actor_email": event.actor_email, "action": event.action, "entity_type": event.entity_type, "entity_id": event.entity_id, "message": event.message, "metadata_json": event.metadata_json, "created_at": event.created_at.isoformat() if event.created_at else None}
+
+
+@app.get("/settings/audit-log")
+def audit_log(action: str | None = None, actor_email: str | None = None, entity_type: str | None = None, created_from: str | None = None, created_to: str | None = None, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    stmt = select(AuditEvent)
+    if _clean_filter(action):
+        stmt = stmt.where(AuditEvent.action == action.strip())
+    if _clean_filter(actor_email):
+        stmt = stmt.where(AuditEvent.actor_email.ilike(f"%{actor_email.strip()}%"))
+    if _clean_filter(entity_type):
+        stmt = stmt.where(AuditEvent.entity_type == entity_type.strip())
+    from_dt = _parse_created_bound(created_from)
+    to_dt = _parse_created_bound(created_to, end_of_day=True)
+    if from_dt:
+        stmt = stmt.where(AuditEvent.created_at >= from_dt)
+    if to_dt:
+        stmt = stmt.where(AuditEvent.created_at <= to_dt)
+    events = db.execute(stmt.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(limit)).scalars().all()
+    return {"items": [serialize_audit_event(event) for event in events]}
+
+
 @app.post("/calls/upload")
 async def upload_call(
     file: UploadFile = File(...),
@@ -892,7 +1157,7 @@ async def upload_call(
 
 
 @app.get("/settings/upload-limits")
-def upload_limits() -> dict:
+def upload_limits(user: User = Depends(get_current_user)) -> dict:
     return {
         "max_upload_bytes_per_file": MAX_UPLOAD_BYTES_PER_FILE,
         "max_bulk_upload_bytes": MAX_BULK_UPLOAD_BYTES,
@@ -903,7 +1168,7 @@ def upload_limits() -> dict:
 
 
 @app.get("/settings/telephony/integrations")
-def list_telephony_integrations(db: Session = Depends(get_db)) -> dict:
+def list_telephony_integrations(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     integrations = db.execute(select(TelephonyIntegration).order_by(TelephonyIntegration.id.asc())).scalars().all()
     events = db.execute(select(IngestionEvent).order_by(IngestionEvent.created_at.desc(), IngestionEvent.id.desc()).limit(50)).scalars().all()
     return {
@@ -943,6 +1208,7 @@ def upsert_telephony_integration(payload: TelephonyIntegrationPayload, db: Sessi
     integration.default_campaign = _normalize_optional_text(payload.default_campaign)
     integration.default_direction = default_direction
     integration.default_language = default_language
+    _log_audit_event(db, user, "telephony_integration_saved", "telephony_integration", integration.id, f"Saved telephony integration {integration.name}", {"token_regenerated": bool(token)})
     db.commit()
     db.refresh(integration)
     return _serialize_telephony_integration(integration, token=token)
@@ -972,7 +1238,7 @@ def toggle_telephony_integration(integration_id: int, db: Session = Depends(get_
 
 
 @app.get("/integrations/telephony/events")
-def list_ingestion_events(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict:
+def list_ingestion_events(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     events = db.execute(select(IngestionEvent).order_by(IngestionEvent.created_at.desc(), IngestionEvent.id.desc()).limit(limit)).scalars().all()
     return {"events": [_serialize_ingestion_event(event) for event in events]}
 
@@ -1112,12 +1378,14 @@ def serialize_call(call: Call) -> dict:
 
 
 @app.patch("/calls/{call_id}/metadata")
-def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+def patch_call_metadata(call_id: int, payload: CallMetadataPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_modify_call(call, user)
 
     _apply_call_metadata(call, payload)
+    _log_audit_event(db, user, "metadata_edited", "call", call.id, "Call metadata edited")
     db.commit()
     db.refresh(call)
     return serialize_call(call)
@@ -1231,8 +1499,9 @@ def _apply_call_filters(
     return stmt
 
 
-def _filtered_calls_statement(**filters):
-    return _apply_call_filters(select(Call), **filters)
+def _filtered_calls_statement(user: User | None = None, **filters):
+    stmt = _apply_call_filters(select(Call), **filters)
+    return apply_call_scope(stmt, user) if user is not None else stmt
 
 
 def _call_filter_query_params(
@@ -1259,8 +1528,8 @@ def _call_filter_query_params(
     }
 
 
-def _get_latest_successful_reviews(db: Session, **filters) -> tuple[dict[int, Call], list[QAReview], dict[int, QAReview]]:
-    calls = db.execute(_filtered_calls_statement(**filters)).scalars().all()
+def _get_latest_successful_reviews(db: Session, user: User | None = None, **filters) -> tuple[dict[int, Call], list[QAReview], dict[int, QAReview]]:
+    calls = db.execute(_filtered_calls_statement(user=user, **filters)).scalars().all()
     calls_by_id = {call.id: call for call in calls}
     if not calls_by_id:
         return calls_by_id, [], {}
@@ -1286,9 +1555,10 @@ def dashboard_metrics(
     direction: str | None = None,
     language: str | None = None,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
     filters = _call_filter_query_params(q, None, agent_name, team, campaign, direction, language, created_from, created_to)
-    calls_by_id, successful_reviews, latest_by_call = _get_latest_successful_reviews(db, **filters)
+    calls_by_id, successful_reviews, latest_by_call = _get_latest_successful_reviews(db, user=user, **filters)
     calls = list(calls_by_id.values())
 
     total_calls = len(calls)
@@ -1427,8 +1697,8 @@ def dashboard_metrics(
 
 
 @app.get("/dashboard/agent-metrics")
-def dashboard_agent_metrics(db: Session = Depends(get_db)) -> dict:
-    metrics = dashboard_metrics(db=db)
+def dashboard_agent_metrics(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    metrics = dashboard_metrics(db=db, user=user)
     return {"agents": metrics["agent_metrics"]}
 
 
@@ -1448,9 +1718,10 @@ def list_calls(
     sort_by: str = "created_at",
     sort_dir: str = "desc",
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
     filters = _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to)
-    filtered = _filtered_calls_statement(**filters)
+    filtered = _filtered_calls_statement(user=user, **filters)
     total = db.execute(select(func.count()).select_from(filtered.subquery())).scalar_one()
     sort_column = CALL_SORT_COLUMNS.get(sort_by, Call.created_at)
     order = sort_column.asc() if sort_dir.lower() == "asc" else sort_column.desc()
@@ -1460,13 +1731,13 @@ def list_calls(
 
 
 @app.get("/calls/filter-options")
-def call_filter_options(db: Session = Depends(get_db)) -> dict:
+def call_filter_options(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     def distinct_values(column):
-        rows = db.execute(select(column).where(column.is_not(None), column != "").distinct().order_by(column.asc())).scalars().all()
+        rows = db.execute(apply_call_scope(select(column).where(column.is_not(None), column != ""), user).distinct().order_by(column.asc())).scalars().all()
         return [row for row in rows if str(row).strip()]
 
     statuses = set(CALL_FILTER_STATUSES)
-    statuses.update(str(row) for row in db.execute(select(Call.status).where(Call.status.is_not(None)).distinct()).scalars().all() if str(row).strip())
+    statuses.update(str(row) for row in db.execute(apply_call_scope(select(Call.status).where(Call.status.is_not(None)), user).distinct()).scalars().all() if str(row).strip())
     language_codes = {normalize_language_code(value) for value in distinct_values(Call.language)}
     language_codes.add("auto")
     language_catalog = {item["code"]: item for item in SUPPORTED_STT_LANGUAGES}
@@ -1534,14 +1805,20 @@ def _parse_call_ids(call_ids: str | None) -> list[int] | None:
     return list(dict.fromkeys(ids))
 
 
-def _filtered_calls_for_export(db: Session, filters: dict, call_ids: str | None = None) -> list[Call]:
+def _filtered_calls_for_export(db: Session, filters: dict, call_ids: str | None = None, user: User | None = None) -> list[Call]:
     """Return export calls; explicit call_ids win over any filter parameters."""
     selected_ids = _parse_call_ids(call_ids)
     if selected_ids is not None:
         if not selected_ids:
             return []
-        return db.execute(select(Call).where(Call.id.in_(selected_ids)).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
-    return db.execute(_filtered_calls_statement(**filters).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
+        scoped_stmt = apply_call_scope(select(Call).where(Call.id.in_(selected_ids)), user) if user is not None else select(Call).where(Call.id.in_(selected_ids))
+        calls = db.execute(scoped_stmt.order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
+        visible_ids = {call.id for call in calls}
+        forbidden_ids = [call_id for call_id in selected_ids if call_id not in visible_ids]
+        if forbidden_ids:
+            raise HTTPException(status_code=403, detail=f"Selected call IDs are outside your visibility scope: {forbidden_ids}")
+        return calls
+    return db.execute(_filtered_calls_statement(user=user, **filters).order_by(Call.created_at.desc(), Call.id.desc())).scalars().all()
 
 
 @app.get("/calls/export")
@@ -1558,8 +1835,10 @@ def export_calls(
     created_to: str | None = None,
     call_ids: str | None = None,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids)
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids, user=user)
+    _log_audit_event(db, user, "export_triggered", "calls", None, "Calls export triggered", {"format": format, "count": len(calls)}, commit=True)
     headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error", "Source provider", "External call ID", "Customer phone", "Agent phone", "Started at", "Ended at", "Duration seconds", "Ingestion status"]
     safe_name = "callquanta-filtered-calls"
     if format == "csv":
@@ -1586,8 +1865,10 @@ def export_filtered_reviews(
     created_to: str | None = None,
     call_ids: str | None = None,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids)
+    calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids, user=user)
+    _log_audit_event(db, user, "export_triggered", "qa_reviews", None, "QA reviews export triggered", {"format": format, "call_count": len(calls)}, commit=True)
     calls_by_id = {call.id: call for call in calls}
     reviews = db.execute(select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys()))).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all() if calls_by_id else []
     headers = ["Review ID", "Call ID", "Filename", "Review created at", "Status", "Score", "Agent", "Team", "Campaign", "Provider", "Model", "Scorecard", "Summary"]
@@ -1620,7 +1901,7 @@ def _queue_length(queue_name: str) -> tuple[int, str | None]:
         return 0, "Redis unavailable; queue lengths are reported as 0."
 
 
-def _status_counts(db: Session) -> dict[str, int]:
+def _status_counts(db: Session, user: User | None = None) -> dict[str, int]:
     statuses = [
         "uploaded",
         "transcription_pending",
@@ -1637,7 +1918,10 @@ def _status_counts(db: Session) -> dict[str, int]:
         "ingestion_failed",
     ]
     counts = {status: 0 for status in statuses}
-    rows = db.execute(select(Call.status, func.count(Call.id)).group_by(Call.status)).all()
+    stmt = select(Call.status, func.count(Call.id))
+    if user is not None:
+        stmt = apply_call_scope(stmt, user)
+    rows = db.execute(stmt.group_by(Call.status)).all()
     for status, count in rows:
         status_key = str(status)
         if status_key in counts:
@@ -1646,15 +1930,15 @@ def _status_counts(db: Session) -> dict[str, int]:
 
 
 @app.get("/calls/processing-summary")
-def calls_processing_summary(db: Session = Depends(get_db)) -> dict:
-    return _status_counts(db)
+def calls_processing_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    return _status_counts(db, user=user)
 
 
 @app.get("/jobs/summary")
-def jobs_summary(db: Session = Depends(get_db)) -> dict:
+def jobs_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     transcription_queue_length, transcription_warning = _queue_length(TRANSCRIPTION_QUEUE)
     qa_queue_length, qa_warning = _queue_length(QA_QUEUE)
-    counts = _status_counts(db)
+    counts = _status_counts(db, user=user)
     warnings = [warning for warning in {transcription_warning, qa_warning} if warning]
     payload = {
         "transcription_queue_length": transcription_queue_length,
@@ -1690,12 +1974,17 @@ def _unique_call_ids(call_ids: list[int]) -> list[int]:
 
 
 @app.post("/calls/batch/transcribe")
-def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     results: list[dict] = []
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        try:
+            require_can_modify_call(call, user)
+        except HTTPException as exc:
+            results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
             continue
         if call.status in {"transcription_pending", "transcribing"}:
             results.append({"call_id": call_id, "status": "skipped", "reason": "Transcription already pending or processing"})
@@ -1720,12 +2009,17 @@ def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get
 
 
 @app.post("/calls/batch/analyze")
-def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     results: list[dict] = []
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        try:
+            require_can_modify_call(call, user)
+        except HTTPException as exc:
+            results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
             continue
         if call.status in {"analysis_pending", "analyzing"}:
             results.append({"call_id": call_id, "status": "skipped", "reason": "Analysis already pending or processing"})
@@ -1752,7 +2046,7 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
 
 
 @app.patch("/calls/batch/metadata")
-def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     updates = payload.model_dump(exclude={"call_ids"}, exclude_unset=True)
     updates = {key: value for key, value in updates.items() if value is not None and (not isinstance(value, str) or value.strip())}
     results: list[dict] = []
@@ -1760,6 +2054,11 @@ def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depen
         call = db.get(Call, call_id)
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        try:
+            require_can_modify_call(call, user)
+        except HTTPException as exc:
+            results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
             continue
         if "agent_name" in updates:
             call.agent_name = _normalize_optional_text(updates["agent_name"])
@@ -1775,6 +2074,7 @@ def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depen
                 raise HTTPException(status_code=400, detail="Unsupported audio language")
             call.language = normalized_language
         results.append({"call_id": call_id, "status": "updated"})
+    _log_audit_event(db, user, "metadata_edited", "call", None, "Batch metadata edited", {"count": len(results)})
     db.commit()
     return {"results": results}
 
@@ -1800,18 +2100,25 @@ def batch_delete_calls(payload: BatchDeletePayload, db: Session = Depends(get_db
         db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
         db.execute(delete(QAReview).where(QAReview.call_id == call_id))
         db.delete(call)
+        _log_audit_event(db, user, "call_deleted", "call", call_id, "Call deleted")
         results.append({"call_id": call_id, "status": "deleted", **({"file_error": file_error} if file_error else {})})
+    _log_audit_event(db, user, "batch_delete", "call", None, "Batch delete completed", {"count": len(results)})
     db.commit()
     return {"results": results}
 
 
 @app.post("/calls/batch/retry-failed")
-def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(get_db)) -> dict:
+def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     results: list[dict] = []
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
         if not call:
             results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        try:
+            require_can_modify_call(call, user)
+        except HTTPException as exc:
+            results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
             continue
         if call.status in {"transcription_failed", "failed"}:
             call.status = "transcription_pending"
@@ -1851,18 +2158,20 @@ def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(g
     return {"results": results}
 
 @app.get("/calls/{call_id}")
-def get_call(call_id: int, db: Session = Depends(get_db)) -> dict:
+def get_call(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
     return serialize_call(call)
 
 
 @app.post("/calls/{call_id}/transcribe")
-def transcribe_call(call_id: int, db: Session = Depends(get_db)) -> dict:
+def transcribe_call(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_modify_call(call, user)
 
     call.status = "transcription_pending"
     call.last_error_type = None
@@ -1880,10 +2189,11 @@ def transcribe_call(call_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/calls/{call_id}/transcript")
-def get_call_transcript(call_id: int, db: Session = Depends(get_db)) -> dict:
+def get_call_transcript(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
 
     segments = db.execute(
         select(TranscriptSegment)
@@ -1908,10 +2218,11 @@ def get_call_transcript(call_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/calls/{call_id}/analyze")
-def analyze_call(call_id: int, db: Session = Depends(get_db)) -> dict:
+def analyze_call(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_modify_call(call, user)
 
     has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
     if not has_segments:
@@ -1933,10 +2244,11 @@ def analyze_call(call_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/calls/{call_id}/qa")
-def get_call_qa(call_id: int, db: Session = Depends(get_db)) -> dict:
+def get_call_qa(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
 
     review = db.execute(
         select(QAReview)
@@ -2038,10 +2350,11 @@ def serialize_review_full(review: QAReview, db: Session) -> dict:
 
 
 @app.get("/calls/{call_id}/qa/reviews")
-def list_call_reviews(call_id: int, db: Session = Depends(get_db)) -> dict:
+def list_call_reviews(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
     reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
     return {"call_id": call_id, "reviews": [serialize_review_compact(r) for r in reviews]}
 
@@ -2063,28 +2376,32 @@ def _review_rows(call: Call, reviews: list[QAReview]) -> list[dict]:
 
 
 @app.get("/calls/{call_id}/qa/reviews/export")
-def export_call_reviews(call_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db)):
+def export_call_reviews(call_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     call = db.get(Call, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
     reviews = db.execute(select(QAReview).where(QAReview.call_id == call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all()
     return _export_reviews(call, reviews, format, f"callquanta-call-{call_id}-qa-history", db)
 
 
 @app.get("/calls/{call_id}/qa/reviews/{review_id}")
-def get_call_review(call_id: int, review_id: int, db: Session = Depends(get_db)) -> dict:
-    review = db.get(QAReview, review_id)
-    if not review or review.call_id != call_id:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return {"call_id": call_id, "review": serialize_review_full(review, db)}
-
-
-@app.get("/calls/{call_id}/qa/reviews/{review_id}/export")
-def export_single_review(call_id: int, review_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db)):
+def get_call_review(call_id: int, review_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
     review = db.get(QAReview, review_id)
     if not call or not review or review.call_id != call_id:
         raise HTTPException(status_code=404, detail="Review not found")
+    require_can_view_call(call, user)
+    return {"call_id": call_id, "review": serialize_review_full(review, db)}
+
+
+@app.get("/calls/{call_id}/qa/reviews/{review_id}/export")
+def export_single_review(call_id: int, review_id: int, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    call = db.get(Call, call_id)
+    review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    require_can_view_call(call, user)
     return _export_reviews(call, [review], format, f"callquanta-call-{call_id}-review-{review_id}", db)
 
 
@@ -2292,6 +2609,7 @@ def get_retention_settings(db: Session = Depends(get_db), user: User = Depends(r
 @app.patch("/settings/retention")
 def patch_retention_settings(payload: RetentionSettingsPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     settings = _upsert_retention_settings(db, payload)
+    _log_audit_event(db, user, "retention_settings_updated", "settings", "retention", "Retention settings updated", commit=True)
     return {"settings": settings, "preview": _retention_plan(db, settings)}
 
 
@@ -2328,6 +2646,7 @@ def run_retention_cleanup(confirm: bool = Query(False), db: Session = Depends(ge
     ingestion_cutoff = _retention_cutoff(settings.get("ingestion_events_days"))
     if ingestion_cutoff:
         db.execute(delete(IngestionEvent).where(IngestionEvent.created_at < ingestion_cutoff))
+    _log_audit_event(db, user, "retention_cleanup_run", "settings", "retention", "Retention cleanup run", plan)
     db.commit()
     return {"ok": True, "deleted": plan}
 
@@ -2423,7 +2742,7 @@ def _stt_provider_test_response(provider_type: str, model: str, base_url: str | 
 
 
 @app.get("/settings/stt/providers")
-def list_stt_providers(db: Session = Depends(get_db)) -> dict:
+def list_stt_providers(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     providers = db.execute(select(SttProviderConfig).order_by(SttProviderConfig.id.asc())).scalars().all()
     return {"presets": STT_PROVIDER_PRESETS, "saved": [serialize_stt_provider_config(item) for item in providers]}
 
@@ -2449,6 +2768,9 @@ def upsert_stt_provider(payload: SttProviderUpsertRequest, db: Session = Depends
         others = db.execute(select(SttProviderConfig).where(SttProviderConfig.id != provider.id)).scalars().all()
         for other in others:
             other.is_active = False
+    _log_audit_event(db, user, "stt_provider_saved", "stt_provider", provider.id, f"Saved STT provider {provider.name}")
+    if provider.is_active:
+        _log_audit_event(db, user, "stt_provider_activated", "stt_provider", provider.id, f"Activated STT provider {provider.name}")
     db.commit()
     db.refresh(provider)
     return serialize_stt_provider_config(provider)
@@ -2462,6 +2784,7 @@ def activate_stt_provider(provider_id: int, db: Session = Depends(get_db), user:
     providers = db.execute(select(SttProviderConfig)).scalars().all()
     for item in providers:
         item.is_active = item.id == provider_id
+    _log_audit_event(db, user, "stt_provider_activated", "stt_provider", provider.id, f"Activated STT provider {provider.name}")
     db.commit()
     db.refresh(provider)
     return serialize_stt_provider_config(provider)
@@ -2490,7 +2813,7 @@ def delete_stt_provider(provider_id: int, db: Session = Depends(get_db), user: U
     return {"ok": True}
 
 @app.get("/settings/stt")
-def get_stt_settings(db: Session = Depends(get_db)) -> dict:
+def get_stt_settings(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     active = _active_stt_provider(db)
     if active:
         return {
@@ -2568,7 +2891,7 @@ def _validate_scorecard(payload: ScorecardPayload) -> None:
 
 
 @app.get("/settings/scorecard")
-def get_scorecard_settings(db: Session = Depends(get_db)) -> dict:
+def get_scorecard_settings(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     scorecard = db.execute(select(ScorecardConfig).order_by(ScorecardConfig.id.desc())).scalars().first()
     if scorecard and isinstance(scorecard.config, dict):
         return scorecard.config
@@ -2608,7 +2931,7 @@ def reset_scorecard_settings(db: Session = Depends(get_db), user: User = Depends
 
 
 @app.get("/settings/llm/providers")
-def list_llm_providers(db: Session = Depends(get_db)) -> dict:
+def list_llm_providers(db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
     providers = db.execute(select(ProviderConfig).order_by(ProviderConfig.id.asc())).scalars().all()
     return {"presets": PROVIDER_PRESETS, "saved": [serialize_provider_config(item) for item in providers]}
 
@@ -2633,6 +2956,9 @@ def upsert_llm_provider(payload: ProviderUpsertRequest, db: Session = Depends(ge
             other_config["is_active"] = False
             other.config = other_config
 
+    _log_audit_event(db, user, "llm_provider_saved", "llm_provider", provider.id, f"Saved LLM provider {provider.name}")
+    if payload.is_active:
+        _log_audit_event(db, user, "llm_provider_activated", "llm_provider", provider.id, f"Activated LLM provider {provider.name}")
     db.commit()
     db.refresh(provider)
     return serialize_provider_config(provider)
@@ -2648,6 +2974,7 @@ def activate_llm_provider(provider_id: int, db: Session = Depends(get_db), user:
         config = item.config or {}
         config["is_active"] = item.id == provider_id
         item.config = config
+    _log_audit_event(db, user, "llm_provider_activated", "llm_provider", provider.id, f"Activated LLM provider {provider.name}")
     db.commit()
     db.refresh(provider)
     return serialize_provider_config(provider)

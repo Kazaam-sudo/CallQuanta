@@ -13,8 +13,25 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(32), default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    team: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    visibility_scope: Mapped[str] = mapped_column(String(16), default="team")
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    entity_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Call(Base):
@@ -288,10 +305,31 @@ def migrate_telephony_ingestion_tables(engine: Engine) -> None:
     Base.metadata.tables["ingestion_events"].create(bind=engine, checkfirst=True)
 
 
+def migrate_access_control_tables(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["audit_events"].create(bind=engine, checkfirst=True)
+    if "users" in existing_tables:
+        existing_columns = {column["name"] for column in inspector.get_columns("users")}
+        add_columns_sql = {
+            "display_name": "ALTER TABLE users ADD COLUMN display_name VARCHAR(255)",
+            "team": "ALTER TABLE users ADD COLUMN team VARCHAR(255)",
+            "agent_name": "ALTER TABLE users ADD COLUMN agent_name VARCHAR(255)",
+            "visibility_scope": "ALTER TABLE users ADD COLUMN visibility_scope VARCHAR(16) DEFAULT 'team'",
+        }
+        with engine.begin() as conn:
+            for column_name, ddl in add_columns_sql.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))
+            conn.execute(text("UPDATE users SET visibility_scope = CASE WHEN role = 'admin' THEN 'all' WHEN role = 'agent' THEN 'own' ELSE COALESCE(visibility_scope, 'team') END WHERE visibility_scope IS NULL"))
+
+
 def migrate_production_readiness_tables(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["audit_events"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["app_settings"].create(bind=engine, checkfirst=True)
     if "calls" in existing_tables:
         existing_columns = {column["name"] for column in inspector.get_columns("calls")}
