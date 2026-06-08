@@ -2,7 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useI18n } from "../../../components/I18nProvider";
-import Link from "next/link";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 import { reportLanguageForCode, WorkspaceSettings } from "../../../lib/i18n";
 
 export default function WorkspaceLanguagePage() {
@@ -25,9 +26,9 @@ export default function WorkspaceLanguagePage() {
   };
 
   return (
-    <main className="grid" style={{ gap: 16 }}>
+    <AdminOnly><main className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link><Link href="/settings/integrations">Telephony</Link></div>
+        <SettingsNav />
         <h2>{t("settings.workspaceLanguage")}</h2>
         <p className="message">{t("settings.explanation")}</p>
         <form className="grid" style={{ gap: 12 }} onSubmit={save}>
@@ -54,6 +55,6 @@ export default function WorkspaceLanguagePage() {
         </form>
         {message && <p className="message message-success">{message}</p>}
       </section>
-    </main>
+    </main></AdminOnly>
   );
 }

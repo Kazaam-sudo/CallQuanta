@@ -1,36 +1,47 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { API_BASE_URL, fetchWithCredentials } from "../lib/api";
 import { useI18n } from "./I18nProvider";
 import { LanguageSelector } from "./LanguageSelector";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 type AuthUser = { email: string; role: "admin" | "viewer" | string };
 
 export function AppHeader() {
   const { t } = useI18n();
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${API_BASE_URL}/auth/me`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (!cancelled) setUser(data?.user || null);
-      })
-      .catch(() => {
-        if (!cancelled) setUser(null);
-      });
-    return () => { cancelled = true; };
+  const loadUser = useCallback(async () => {
+    try {
+      const response = await fetchWithCredentials(`${API_BASE_URL}/auth/me`, { cache: "no-store" });
+      const data = response.ok ? await response.json() : null;
+      setUser(data?.user || null);
+    } catch {
+      setUser(null);
+    } finally {
+      setAuthLoaded(true);
+    }
   }, []);
 
+  useEffect(() => {
+    loadUser();
+  }, [loadUser, pathname]);
+
+  useEffect(() => {
+    const onAuthChange = () => loadUser();
+    window.addEventListener("callquanta-auth-changed", onAuthChange);
+    return () => window.removeEventListener("callquanta-auth-changed", onAuthChange);
+  }, [loadUser]);
+
   async function logout() {
-    await fetch(`${API_BASE_URL}/auth/logout`, { method: "POST" }).catch(() => null);
+    await fetchWithCredentials(`${API_BASE_URL}/auth/logout`, { method: "POST" }).catch(() => null);
     setUser(null);
+    window.dispatchEvent(new Event("callquanta-auth-changed"));
     router.push("/login");
     router.refresh();
   }
@@ -38,28 +49,28 @@ export function AppHeader() {
   return (
     <header className="app-header">
       <div className="header-inner">
-        <div>
+        <Link href="/dashboard" className="brand-link" aria-label="CallQuanta dashboard">
           <h1 className="brand-title">CallQuanta</h1>
           <p className="brand-subtitle">
             Open-source AI QA for contact centers
           </p>
-        </div>
+        </Link>
         <div className="header-actions">
           <nav className="top-nav" aria-label="Main navigation">
             <Link href="/dashboard">{t("nav.dashboard")}</Link>
             <Link href="/calls">{t("nav.calls")}</Link>
-            <Link href="/settings/llm">{t("nav.settings")}</Link>
+            {user?.role === "admin" ? <Link href="/settings">{t("nav.settings")}</Link> : null}
           </nav>
           <LanguageSelector />
           {user ? (
-            <div className="user-chip" title={user.email}>
+            <div className="user-chip" title={`${user.email} · ${user.role}`}>
               <span>{user.email}</span>
               <span className="badge badge-uploaded">{user.role}</span>
-              <button className="button button-secondary" onClick={logout}>Logout</button>
+              <button className="button button-secondary" onClick={logout}>{t("auth.logout")}</button>
             </div>
-          ) : (
-            <Link href="/login" className="button button-secondary">Login</Link>
-          )}
+          ) : authLoaded ? (
+            <Link href="/login" className="button button-secondary">{t("auth.login")}</Link>
+          ) : null}
         </div>
       </div>
     </header>

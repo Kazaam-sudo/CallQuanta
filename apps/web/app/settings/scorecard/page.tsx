@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import { SettingsNav } from "../../../components/SettingsNav";
+import { AdminOnly } from "../../../components/AdminOnly";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -139,8 +140,8 @@ export default function ScorecardPage() {
   };
 
   return (
-    <main className="grid" style={{ gap: 16 }}>
-      <div className="actions"><Link href="/settings/llm">LLM Providers</Link><Link href="/settings/scorecard">Scorecard</Link><Link href="/settings/workspace">Workspace Language</Link><Link href="/settings/stt">STT</Link><Link href="/settings/integrations">Telephony</Link></div>
+    <AdminOnly><main className="grid" style={{ gap: 16 }}>
+      <SettingsNav />
       <section className="card">
         <h2>Scorecard Settings</h2>
 
@@ -271,6 +272,6 @@ export default function ScorecardPage() {
         )}
         {successFlash && <p className="message">{successFlash}</p>}
       </section>
-    </main>
+    </main></AdminOnly>
   );
 }
