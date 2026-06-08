@@ -9,8 +9,10 @@ const settingsLinks = [
   { href: "/settings/scorecard", key: "settings.scorecard" },
   { href: "/settings/workspace", key: "settings.workspaceLanguage" },
   { href: "/settings/integrations", key: "settings.telephonyIntegrations" },
+  { href: "/settings/users", key: "settings.usersAccess" },
   { href: "/settings/system-status", key: "settings.systemStatus" },
   { href: "/settings/retention", key: "settings.retention" },
+  { href: "/settings/audit-log", key: "settings.auditLog" },
 ];
 
 export function SettingsNav() {

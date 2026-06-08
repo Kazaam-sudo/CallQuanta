@@ -220,6 +220,18 @@ const en: Dict = {
   "dashboard.open": "Open",
   "dashboard.filteredBy": "Filtered by",
   "dashboard.noFilters": "No dashboard filters applied",
+  "settings.description": "Manage access, providers, scorecards, telephony, system status and data retention.",
+  "settings.usersAccess": "Users & Access",
+  "settings.auditLog": "Audit Log",
+  "settings.card.llm": "Configure LLM endpoints. Saved API keys are never shown after save.",
+  "settings.card.stt": "Configure transcription providers. Saved API keys display only as configured.",
+  "settings.card.scorecard": "Edit QA criteria and reset to the default scorecard.",
+  "settings.card.workspace": "Manage interface, workspace and QA report languages.",
+  "settings.card.telephony": "Manage webhook integrations and recording import tokens.",
+  "settings.card.users": "Manage users, roles, teams and data visibility.",
+  "settings.card.systemStatus": "Inspect API, database, Redis, queues, workers and storage health.",
+  "settings.card.retention": "Preview and run manual cleanup for old audio, transcripts, QA reviews and ingestion events.",
+  "settings.card.auditLog": "History of important user actions and system changes.",
 
 };
 
@@ -414,6 +426,18 @@ const ru: Dict = {
   "dashboard.open": "Открыть",
   "dashboard.filteredBy": "Отфильтровано по",
   "dashboard.noFilters": "Фильтры панели не применены",
+  "settings.description": "Управление доступами, провайдерами, оценочными картами, телефонией, состоянием системы и хранением данных.",
+  "settings.usersAccess": "Пользователи и доступы",
+  "settings.auditLog": "Журнал аудита",
+  "settings.card.llm": "Управление LLM endpoint'ами. Сохранённые API-ключи не показываются после сохранения.",
+  "settings.card.stt": "Управление провайдерами транскрипции. Сохранённые API-ключи отображаются только как настроенные.",
+  "settings.card.scorecard": "Редактирование критериев QA и возврат к оценочной карте по умолчанию.",
+  "settings.card.workspace": "Управление языком интерфейса, рабочего пространства и QA-отчётов.",
+  "settings.card.telephony": "Управление webhook-интеграциями и токенами импорта записей.",
+  "settings.card.users": "Управление пользователями, ролями, командами и видимостью данных.",
+  "settings.card.systemStatus": "Проверка API, базы данных, Redis, очередей, workers и хранилища.",
+  "settings.card.retention": "Предпросмотр и ручная очистка старых аудио, транскриптов, QA-проверок и событий импорта.",
+  "settings.card.auditLog": "История важных действий пользователей и системных изменений.",
 
 };
 
@@ -609,6 +633,18 @@ const uz: Dict = {
   "dashboard.open": "Ochish",
   "dashboard.filteredBy": "Filtrlangan",
   "dashboard.noFilters": "Panel filtrlari qo‘llanmagan",
+  "settings.description": "Kirish huquqlari, provayderlar, baholash kartalari, telefoniya, tizim holati va ma'lumotlarni saqlashni boshqarish.",
+  "settings.usersAccess": "Foydalanuvchilar va kirish",
+  "settings.auditLog": "Audit jurnali",
+  "settings.card.llm": "LLM endpointlarini sozlang. Saqlangan API kalitlari qayta ko‘rsatilmaydi.",
+  "settings.card.stt": "Transkripsiya provayderlarini boshqaring. Saqlangan API kalitlari faqat sozlangan deb ko‘rsatiladi.",
+  "settings.card.scorecard": "QA mezonlarini tahrirlang va standart baholash kartasiga qaytaring.",
+  "settings.card.workspace": "Interfeys, ish maydoni va QA hisobotlari tillarini boshqaring.",
+  "settings.card.telephony": "Webhook integratsiyalari va yozuv import tokenlarini boshqaring.",
+  "settings.card.users": "Foydalanuvchilar, rollar, jamoalar va ma'lumot ko‘rinishini boshqaring.",
+  "settings.card.systemStatus": "API, baza, Redis, navbatlar, workerlar va saqlash holatini tekshiring.",
+  "settings.card.retention": "Eski audio, transkript, QA tekshiruvlari va import hodisalarini qo‘lda tozalashni ko‘ring va bajaring.",
+  "settings.card.auditLog": "Muhim foydalanuvchi amallari va tizim o‘zgarishlari tarixi.",
 
 };
 

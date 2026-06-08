@@ -7,7 +7,7 @@ import { API_BASE_URL, fetchWithCredentials } from "../lib/api";
 import { useI18n } from "./I18nProvider";
 import { LanguageSelector } from "./LanguageSelector";
 
-type AuthUser = { email: string; role: "admin" | "viewer" | string };
+type AuthUser = { email: string; role: "admin" | "manager" | "supervisor" | "agent" | "viewer" | string };
 
 export function AppHeader() {
   const { t } = useI18n();
@@ -46,6 +46,8 @@ export function AppHeader() {
     router.refresh();
   }
 
+  const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "";
+
   return (
     <header className="app-header">
       <div className="header-inner">
@@ -65,7 +67,7 @@ export function AppHeader() {
           {user ? (
             <div className="user-chip" title={`${user.email} · ${user.role}`}>
               <span>{user.email}</span>
-              <span className="badge badge-uploaded">{user.role}</span>
+              <span className="badge badge-uploaded">{roleLabel}</span>
               <button className="button button-secondary" onClick={logout}>{t("auth.logout")}</button>
             </div>
           ) : authLoaded ? (
