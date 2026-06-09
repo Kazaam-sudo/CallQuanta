@@ -28,7 +28,7 @@ from werkzeug.utils import secure_filename
 from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.20.0")
+app = FastAPI(title="CallQuanta API", version="0.20.1")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -302,6 +302,7 @@ class UserAccessCreatePayload(BaseModel):
     agent_name: str | None = None
     visibility_scope: str | None = None
     is_active: bool = True
+    must_change_password: bool = False
 
 
 class UserAccessPatchPayload(BaseModel):
@@ -312,10 +313,16 @@ class UserAccessPatchPayload(BaseModel):
     agent_name: str | None = None
     visibility_scope: str | None = None
     is_active: bool | None = None
+    must_change_password: bool | None = None
 
 
 class ResetPasswordPayload(BaseModel):
     temporary_password: str | None = None
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: str
+    new_password: str
 
 
 def get_db() -> Session:
@@ -348,6 +355,24 @@ def _utcnow() -> datetime:
 
 def _normalize_email(email: str | None) -> str:
     return (email or "").strip().lower()
+
+
+def _validate_email(email: str | None) -> str:
+    normalized = _normalize_email(email)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="email is required")
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
+        raise HTTPException(status_code=400, detail="email must be a valid email address")
+    return normalized
+
+
+def _validate_password_policy(password: str | None, field_name: str = "password") -> str:
+    value = password or ""
+    if len(value) < 8:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be at least 8 characters")
+    if not re.search(r"[A-Za-zА-Яа-я]", value) or not re.search(r"\d", value):
+        raise HTTPException(status_code=400, detail=f"{field_name} must contain letters and numbers")
+    return value
 
 
 def _hash_password(password: str) -> str:
@@ -416,6 +441,8 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 
 
 def _user_scope(user: User) -> str:
+    if user.role == "admin":
+        return "all"
     scope = (getattr(user, "visibility_scope", None) or ROLE_DEFAULT_SCOPE.get(user.role, "team")).strip().lower()
     return scope if scope in VALID_VISIBILITY_SCOPES else ROLE_DEFAULT_SCOPE.get(user.role, "team")
 
@@ -428,6 +455,8 @@ def _normalize_role(role: str | None) -> str:
 
 
 def _normalize_visibility_scope(scope: str | None, role: str) -> str:
+    if role == "admin":
+        return "all"
     normalized = (scope or ROLE_DEFAULT_SCOPE.get(role, "team")).strip().lower()
     if normalized not in VALID_VISIBILITY_SCOPES:
         raise HTTPException(status_code=400, detail="visibility_scope must be one of: all, team, own")
@@ -482,6 +511,7 @@ def _serialize_user(user: User) -> dict:
         "agent_name": getattr(user, "agent_name", None),
         "visibility_scope": _user_scope(user),
         "is_active": user.is_active,
+        "must_change_password": bool(getattr(user, "must_change_password", False)),
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "updated_at": user.updated_at.isoformat() if user.updated_at else None,
     }
@@ -505,7 +535,8 @@ def _log_audit_event(db: Session, actor: User | None, action: str, entity_type: 
 
 
 def _generate_temporary_password() -> str:
-    return secrets.token_urlsafe(12)
+    alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return f"Cq{secrets.randbelow(90) + 10}" + "".join(secrets.choice(alphabet) for _ in range(10))
 
 
 def _auth_is_exempt(path: str) -> bool:
@@ -520,6 +551,8 @@ async def require_auth_middleware(request: Request, call_next):
         user = _get_user_from_request(request, db)
         if not user:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        if getattr(user, "must_change_password", False) and request.url.path not in {"/auth/change-password", "/auth/logout", "/auth/me"}:
+            return JSONResponse({"detail": "Password change required", "must_change_password": True}, status_code=403)
         request.state.user = _serialize_user(user)
     return await call_next(request)
 
@@ -535,7 +568,7 @@ def _bootstrap_admin_user(db: Session) -> None:
         else:
             logger.warning("%s Development mode allows you to set them and restart.", message)
         return
-    db.add(User(email=ADMIN_EMAIL, password_hash=_hash_password(ADMIN_PASSWORD), role="admin", visibility_scope="all", is_active=True))
+    db.add(User(email=ADMIN_EMAIL, password_hash=_hash_password(ADMIN_PASSWORD), role="admin", visibility_scope="all", is_active=True, must_change_password=False))
     db.commit()
     logger.info("Created first admin user from ADMIN_EMAIL: %s", ADMIN_EMAIL)
 
@@ -678,7 +711,7 @@ def login(payload: LoginPayload, response: Response, db: Session = Depends(get_d
     )
     _log_audit_event(db, user, "login_success", "user", user.id, "Login successful")
     db.commit()
-    return {"user": _serialize_user(user)}
+    return {"user": _serialize_user(user), "must_change_password": bool(getattr(user, "must_change_password", False))}
 
 
 @app.post("/auth/logout")
@@ -692,7 +725,24 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)) 
 
 @app.get("/auth/me")
 def auth_me(user: User = Depends(get_current_user)) -> dict:
-    return {"user": _serialize_user(user), "auth_required": REQUIRE_AUTH}
+    return {"user": _serialize_user(user), "auth_required": REQUIRE_AUTH, "must_change_password": bool(getattr(user, "must_change_password", False))}
+
+
+@app.post("/auth/change-password")
+def change_password(payload: ChangePasswordPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    if not _verify_password(payload.current_password, user.password_hash):
+        _log_audit_event(db, user, "password_change_failed", "user", user.id, "Password change failed")
+        db.commit()
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    new_password = _validate_password_policy(payload.new_password, "new_password")
+    if _verify_password(new_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="New password must be different from the current password")
+    user.password_hash = _hash_password(new_password)
+    user.must_change_password = False
+    _log_audit_event(db, user, "password_changed", "user", user.id, "Password changed")
+    db.commit()
+    db.refresh(user)
+    return {"user": _serialize_user(user)}
 
 @app.on_event("startup")
 def on_startup() -> None:
@@ -707,6 +757,8 @@ def on_startup() -> None:
     migrate_access_control_tables(engine)
     with SessionLocal() as db:
         _bootstrap_admin_user(db)
+        db.execute(text("UPDATE users SET visibility_scope = 'all' WHERE role = 'admin' AND (visibility_scope IS NULL OR visibility_scope = '' OR visibility_scope = 'team')"))
+        db.commit()
     if APP_ENV in {"production", "prod"} and REQUIRE_AUTH and not ADMIN_PASSWORD:
         logger.warning("ADMIN_PASSWORD is missing in production mode; set it before exposing CallQuanta.")
     logger.info("CallQuanta API started")
@@ -999,10 +1051,7 @@ def _ensure_not_last_active_admin(db: Session, user: User) -> None:
 def _apply_user_payload(target: User, payload: UserAccessCreatePayload | UserAccessPatchPayload) -> dict:
     updates = payload.model_dump(exclude_unset=True)
     if "email" in updates and updates["email"] is not None:
-        email = _normalize_email(updates["email"])
-        if not email:
-            raise HTTPException(status_code=400, detail="email is required")
-        target.email = email
+        target.email = _validate_email(updates["email"])
     if "role" in updates and updates["role"] is not None:
         target.role = _normalize_role(updates["role"])
     if "display_name" in updates:
@@ -1015,6 +1064,8 @@ def _apply_user_payload(target: User, payload: UserAccessCreatePayload | UserAcc
         target.visibility_scope = _normalize_visibility_scope(updates.get("visibility_scope"), target.role)
     if "is_active" in updates and updates["is_active"] is not None:
         target.is_active = bool(updates["is_active"])
+    if "must_change_password" in updates and updates["must_change_password"] is not None:
+        target.must_change_password = bool(updates["must_change_password"])
     return updates
 
 
@@ -1028,14 +1079,13 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_admin
 
 @app.post("/settings/users")
 def create_user(payload: UserAccessCreatePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
-    email = _normalize_email(payload.email)
-    if not email:
-        raise HTTPException(status_code=400, detail="email is required")
+    email = _validate_email(payload.email)
     if db.execute(select(User.id).where(User.email == email)).first():
         raise HTTPException(status_code=409, detail="User with this email already exists")
     role = _normalize_role(payload.role)
-    temporary_password = payload.password or _generate_temporary_password()
-    target = User(email=email, password_hash=_hash_password(temporary_password), role=role, visibility_scope=_normalize_visibility_scope(payload.visibility_scope, role), is_active=payload.is_active)
+    password_was_generated = not bool(payload.password)
+    temporary_password = _generate_temporary_password() if password_was_generated else _validate_password_policy(payload.password)
+    target = User(email=email, password_hash=_hash_password(temporary_password), role=role, visibility_scope=_normalize_visibility_scope(payload.visibility_scope, role), is_active=payload.is_active, must_change_password=bool(payload.must_change_password or password_was_generated))
     target.display_name = _normalize_optional_text(payload.display_name)
     target.team = _normalize_optional_text(payload.team)
     target.agent_name = _normalize_optional_text(payload.agent_name)
@@ -1044,7 +1094,10 @@ def create_user(payload: UserAccessCreatePayload, db: Session = Depends(get_db),
     _log_audit_event(db, user, "user_created", "user", target.id, f"Created user {target.email}", {"role": target.role, "visibility_scope": target.visibility_scope})
     db.commit()
     db.refresh(target)
-    return {"user": _serialize_user(target), "temporary_password": temporary_password}
+    response = {"user": _serialize_user(target)}
+    if password_was_generated:
+        response["temporary_password"] = temporary_password
+    return response
 
 
 @app.patch("/settings/users/{user_id}")
@@ -1055,7 +1108,7 @@ def patch_user(user_id: int, payload: UserAccessPatchPayload, db: Session = Depe
     if target.id == user.id and (payload.role is not None or payload.visibility_scope is not None):
         raise HTTPException(status_code=400, detail="Users cannot change their own role or visibility scope")
     if payload.email is not None:
-        new_email = _normalize_email(payload.email)
+        new_email = _validate_email(payload.email)
         existing_user = db.execute(select(User).where(User.email == new_email, User.id != target.id)).first()
         if existing_user:
             raise HTTPException(status_code=409, detail="User with this email already exists")
@@ -1077,9 +1130,9 @@ def reset_user_password(user_id: int, payload: ResetPasswordPayload | None = Non
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     temporary_password = (payload.temporary_password if payload else None) or _generate_temporary_password()
-    if len(temporary_password) < 8:
-        raise HTTPException(status_code=400, detail="temporary_password must be at least 8 characters")
+    temporary_password = _validate_password_policy(temporary_password, "temporary_password")
     target.password_hash = _hash_password(temporary_password)
+    target.must_change_password = True
     _log_audit_event(db, user, "password_reset", "user", target.id, f"Reset password for {target.email}")
     db.commit()
     return {"user": _serialize_user(target), "temporary_password": temporary_password}

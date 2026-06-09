@@ -17,6 +17,7 @@ class User(Base):
     team: Mapped[str | None] = mapped_column(String(255), nullable=True)
     agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     visibility_scope: Mapped[str] = mapped_column(String(16), default="team")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -317,12 +318,15 @@ def migrate_access_control_tables(engine: Engine) -> None:
             "team": "ALTER TABLE users ADD COLUMN team VARCHAR(255)",
             "agent_name": "ALTER TABLE users ADD COLUMN agent_name VARCHAR(255)",
             "visibility_scope": "ALTER TABLE users ADD COLUMN visibility_scope VARCHAR(16) DEFAULT 'team'",
+            "must_change_password": "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE",
         }
         with engine.begin() as conn:
             for column_name, ddl in add_columns_sql.items():
                 if column_name not in existing_columns:
                     conn.execute(text(ddl))
             conn.execute(text("UPDATE users SET visibility_scope = CASE WHEN role = 'admin' THEN 'all' WHEN role = 'agent' THEN 'own' ELSE COALESCE(visibility_scope, 'team') END WHERE visibility_scope IS NULL"))
+            conn.execute(text("UPDATE users SET visibility_scope = 'all' WHERE role = 'admin' AND (visibility_scope IS NULL OR visibility_scope = '' OR visibility_scope = 'team')"))
+            conn.execute(text("UPDATE users SET must_change_password = FALSE WHERE must_change_password IS NULL"))
 
 
 def migrate_production_readiness_tables(engine: Engine) -> None:
