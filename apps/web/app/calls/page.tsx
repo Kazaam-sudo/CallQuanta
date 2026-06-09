@@ -663,7 +663,6 @@ export default function CallsPage() {
     <div className="grid page-stack">
       <section className="card hero-card">
         <div>
-          <p className="eyebrow">CallQuanta v0.17.2</p>
           <h1>{t("calls.calls")}</h1>
           <p>{t("calls.processingHelp")}</p>
         </div>
@@ -679,7 +678,6 @@ export default function CallsPage() {
       <section className="card">
         <div className="section-header">
           <div>
-            <p className="eyebrow">{t("calls.jobSummary")}</p>
             <h2>{t("calls.processing")}</h2>
           </div>
           {jobSummary?.warning ? (
@@ -712,7 +710,6 @@ export default function CallsPage() {
       <section className="card upload-card">
         <div className="section-header">
           <div>
-            <p className="eyebrow">{t("calls.upload")}</p>
             <h2>{t("calls.uploadFiles")}</h2>
             <small>{t("calls.bulkMetadataHelp")}</small>
           </div>

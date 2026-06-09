@@ -919,3 +919,71 @@ a.disabled {
   background: #fee2e2;
   color: #991b1b;
 }
+
+.user-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.checkbox-card {
+  min-height: 72px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.checkbox-card input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.form-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 72px;
+}
+.field-error {
+  color: var(--error-text);
+}
+.temporary-password-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.temporary-password-panel code {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #bbf7d0;
+  font-size: 1rem;
+}
+.temporary-password-panel p {
+  margin: 6px 0 0;
+}
+.users-table {
+  min-width: 1180px;
+}
+.password-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.password-field-row input {
+  flex: 1;
+}
+.password-field-row .button {
+  margin-top: 4px;
+  white-space: nowrap;
+}

@@ -7,7 +7,7 @@ import { API_BASE_URL, fetchWithCredentials } from "../lib/api";
 import { useI18n } from "./I18nProvider";
 import { LanguageSelector } from "./LanguageSelector";
 
-type AuthUser = { email: string; role: "admin" | "manager" | "supervisor" | "agent" | "viewer" | string };
+type AuthUser = { email: string; role: "admin" | "manager" | "supervisor" | "agent" | "viewer" | string; must_change_password?: boolean };
 
 export function AppHeader() {
   const { t } = useI18n();
@@ -21,12 +21,15 @@ export function AppHeader() {
       const response = await fetchWithCredentials(`${API_BASE_URL}/auth/me`, { cache: "no-store" });
       const data = response.ok ? await response.json() : null;
       setUser(data?.user || null);
+      if (data?.user?.must_change_password && !["/change-password", "/login"].includes(pathname || "")) {
+        router.push("/change-password");
+      }
     } catch {
       setUser(null);
     } finally {
       setAuthLoaded(true);
     }
-  }, []);
+  }, [pathname, router]);
 
   useEffect(() => {
     loadUser();
