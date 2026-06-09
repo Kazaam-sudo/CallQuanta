@@ -58,9 +58,15 @@ type QACriterion = {
   comment: string;
   evidence: string;
   severity: string;
+  human_score?: number | string | null;
+  human_comment?: string | null;
+  human_severity?: string | null;
+  human_agrees?: boolean | null;
 };
-type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; criteria: QACriterion[]; findings: QAFinding[] };
-type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean };
+type CoachingAction = { id:number; title:string; description?:string|null; status:string; due_date?:string|null; agent_name?:string|null };
+type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; review_status?: string; human_total_score?: number | null; human_summary?: string | null; human_notes?: string | null; human_reviewer_email?: string | null; human_reviewed_at?: string | null; ai_human_score_delta?: number | null; calibration_flag?: boolean; calibration_notes?: string | null; criteria: QACriterion[]; findings: QAFinding[]; coaching_actions?: CoachingAction[] };
+type AuthUser = { id:number; email:string; role:string };
+type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean; review_status?:string; human_total_score?:number|null; calibration_flag?:boolean };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -84,6 +90,12 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
   const [sttSettings, setSttSettings] = useState<{ mode: string; model: string; provider?: { name?: string; provider_type?: string; model?: string } | null } | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [humanForm, setHumanForm] = useState({ review_status: "approved", human_total_score: "", human_summary: "", human_notes: "", calibration_flag: false, calibration_notes: "" });
+  const [criterionReviews, setCriterionReviews] = useState<Record<string, { human_score: string; human_comment: string; human_agrees: string; human_severity: string }>>({});
+  const [coachingForm, setCoachingForm] = useState({ title: "", description: "", due_date: "" });
+  const [savingHumanReview, setSavingHumanReview] = useState(false);
+  const [savingCoaching, setSavingCoaching] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,6 +127,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); }
       if (historyResponse.ok) { const hist = await historyResponse.json(); setHistory(hist.reviews || []); }
       fetch(`${API_BASE_URL}/settings/stt`).then((res) => res.ok ? res.json() : null).then((data) => { if (data) setSttSettings(data); }).catch(() => {});
+      fetch(`${API_BASE_URL}/auth/me`).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setUser(data.user); }).catch(() => {});
     } catch {
       setError("Failed to load call.");
     } finally {
@@ -125,6 +138,28 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!review) return;
+    setHumanForm({
+      review_status: review.review_status && review.review_status !== "ai_generated" ? review.review_status : "approved",
+      human_total_score: review.human_total_score == null ? "" : String(review.human_total_score),
+      human_summary: review.human_summary || "",
+      human_notes: review.human_notes || "",
+      calibration_flag: Boolean(review.calibration_flag),
+      calibration_notes: review.calibration_notes || "",
+    });
+    const criteria: Record<string, { human_score: string; human_comment: string; human_agrees: string; human_severity: string }> = {};
+    review.criteria?.forEach((criterion, index) => {
+      criteria[String(criterion.id || index)] = {
+        human_score: criterion.human_score == null ? "" : String(criterion.human_score),
+        human_comment: criterion.human_comment || "",
+        human_agrees: criterion.human_agrees == null ? "" : String(criterion.human_agrees),
+        human_severity: criterion.human_severity || "",
+      };
+    });
+    setCriterionReviews(criteria);
+  }, [review]);
 
   useEffect(() => {
     if (!["transcription_pending", "transcribing", "analysis_pending", "analyzing"].includes(call?.status || "")) return;
@@ -229,6 +264,76 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       setMetadataSaveSuccess(false);
     } finally {
       setMetadataSaving(false);
+    }
+  };
+
+  const canHumanReview = user ? ["admin", "manager", "supervisor"].includes(user.role) : false;
+  const reviewStatusLabel = (status?: string) => (status || "ai_generated").replaceAll("_", " ");
+
+  const saveHumanReview = async () => {
+    if (!review || savingHumanReview) return;
+    setSavingHumanReview(true);
+    setError(null);
+    try {
+      const criteria = review.criteria?.map((criterion, index) => {
+        const key = String(criterion.id || index);
+        const item = criterionReviews[key] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" };
+        return {
+          criterion_id: criterion.id,
+          criterion_index: index,
+          human_score: item.human_score === "" ? null : Number(item.human_score),
+          human_comment: item.human_comment,
+          human_agrees: item.human_agrees === "" ? null : item.human_agrees === "true",
+          human_severity: item.human_severity,
+        };
+      });
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/human-review`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...humanForm,
+          human_total_score: humanForm.human_total_score === "" ? null : Number(humanForm.human_total_score),
+          criteria,
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      setReview(data.review);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save human review.");
+    } finally {
+      setSavingHumanReview(false);
+    }
+  };
+
+  const addCoachingAction = async () => {
+    if (!review || !coachingForm.title.trim()) return;
+    setSavingCoaching(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/coaching-actions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: coachingForm.title, description: coachingForm.description, due_date: coachingForm.due_date ? new Date(coachingForm.due_date).toISOString() : null }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      setCoachingForm({ title: "", description: "", due_date: "" });
+      const latest = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}`).then((res) => res.json());
+      setReview(latest.review);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add coaching action.");
+    } finally {
+      setSavingCoaching(false);
+    }
+  };
+
+  const updateCoachingStatus = async (actionId: number, status: string) => {
+    if (!review) return;
+    const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/coaching-actions/${actionId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+    if (response.ok) {
+      const latest = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}`).then((res) => res.json());
+      setReview(latest.review);
     }
   };
 
@@ -399,6 +504,60 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
               </p>
             )}
             <div><strong>Summary:</strong> {review.summary}</div>
+            <section className="segment" style={{ borderColor: review.calibration_flag ? "#7c3aed" : undefined }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <strong>{t("qa.humanReview")}</strong>
+                <span className={`badge ${review.review_status === "disputed" || review.review_status === "needs_rework" ? "badge-warning" : ""}`}>{reviewStatusLabel(review.review_status)}</span>
+                {review.calibration_flag ? <span className="badge badge-uploaded">{t("qa.calibrationSample")}</span> : null}
+              </div>
+              <div className="meta-grid" style={{ marginTop: 10 }}>
+                <div className="meta-item"><small>{t("qa.aiScore")}</small>{review.score ?? "-"}</div>
+                <div className="meta-item"><small>{t("qa.humanScore")}</small>{review.human_total_score ?? "-"}</div>
+                <div className="meta-item"><small>{t("qa.aiHumanDelta")}</small>{review.ai_human_score_delta ?? "-"}</div>
+                <div className="meta-item"><small>{t("qa.humanReviewer")}</small>{review.human_reviewer_email || "-"}</div>
+              </div>
+              {review.human_summary ? <p><strong>{t("qa.managerComment")}:</strong> {review.human_summary}</p> : null}
+              {review.human_notes ? <p><strong>{t("qa.coachingNotes")}:</strong> {review.human_notes}</p> : null}
+              {canHumanReview ? (
+                <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+                  <label>{t("qa.reviewStatus")}<select value={humanForm.review_status} onChange={(e) => setHumanForm((f) => ({ ...f, review_status: e.target.value }))}>
+                    <option value="approved">{t("qa.approved")}</option>
+                    <option value="human_reviewed">{t("qa.humanReviewed")}</option>
+                    <option value="disputed">{t("qa.disputed")}</option>
+                    <option value="needs_rework">{t("qa.needsRework")}</option>
+                  </select></label>
+                  <label>{t("qa.humanScore")}<input type="number" step="0.01" value={humanForm.human_total_score} onChange={(e) => setHumanForm((f) => ({ ...f, human_total_score: e.target.value }))} /></label>
+                  <label>{t("qa.managerComment")}<textarea value={humanForm.human_summary} onChange={(e) => setHumanForm((f) => ({ ...f, human_summary: e.target.value }))} /></label>
+                  <label>{t("qa.coachingNotes")}<textarea value={humanForm.human_notes} onChange={(e) => setHumanForm((f) => ({ ...f, human_notes: e.target.value }))} /></label>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={humanForm.calibration_flag} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_flag: e.target.checked }))} /> {t("qa.calibrationSample")}</label>
+                  <label>{t("qa.calibrationNotes")}<textarea value={humanForm.calibration_notes} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_notes: e.target.value }))} /></label>
+                  <button className="button" onClick={saveHumanReview} disabled={savingHumanReview}>{savingHumanReview ? "Saving..." : t("qa.saveHumanReview")}</button>
+                </div>
+              ) : <p className="message">{t("qa.viewOnlyHumanReview")}</p>}
+            </section>
+            <section className="segment">
+              <strong>{t("qa.coachingActions")}</strong>
+              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+                {(review.coaching_actions || []).length === 0 ? <p className="message">{t("qa.noCoachingActions")}</p> : (review.coaching_actions || []).map((action) => (
+                  <article key={action.id} className="segment" style={{ marginBottom: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <div><strong>{action.title}</strong><br /><small>{action.description || ""}</small></div>
+                      <span className="badge">{action.status}</span>
+                    </div>
+                    <div className="actions" style={{ marginTop: 8 }}>
+                      {canHumanReview || user?.role === "agent" ? <button className="button button-secondary" onClick={() => updateCoachingStatus(action.id, "done")}>{t("qa.markDone")}</button> : null}
+                      {canHumanReview ? <button className="button button-secondary" onClick={() => updateCoachingStatus(action.id, "dismissed")}>{t("qa.dismiss")}</button> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {canHumanReview ? <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+                <label>{t("qa.actionTitle")}<input value={coachingForm.title} onChange={(e) => setCoachingForm((f) => ({ ...f, title: e.target.value }))} /></label>
+                <label>{t("qa.description")}<textarea value={coachingForm.description} onChange={(e) => setCoachingForm((f) => ({ ...f, description: e.target.value }))} /></label>
+                <label>{t("qa.dueDate")}<input type="date" value={coachingForm.due_date} onChange={(e) => setCoachingForm((f) => ({ ...f, due_date: e.target.value }))} /></label>
+                <button className="button" onClick={addCoachingAction} disabled={savingCoaching || !coachingForm.title.trim()}>{savingCoaching ? "Saving..." : t("qa.addAction")}</button>
+              </div> : null}
+            </section>
             <div>
               <strong>Criteria breakdown:</strong>
               <div className="grid" style={{ gap: 8, marginTop: 8 }}>
@@ -429,6 +588,17 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
                       )}
                       <div><strong>Comment:</strong> {criterion.comment}</div>
                       <div><strong>Evidence:</strong> {criterion.evidence}</div>
+                      {(criterion.human_score != null || criterion.human_comment || criterion.human_agrees != null) && <div className="message" style={{ marginTop: 8 }}><strong>{t("qa.humanReview")}:</strong> {criterion.human_agrees === true ? t("qa.agrees") : criterion.human_agrees === false ? t("qa.disagrees") : ""} {criterion.human_score != null ? ` · ${t("qa.humanScore")}: ${criterion.human_score}` : ""} {criterion.human_comment ? ` · ${criterion.human_comment}` : ""}</div>}
+                      {canHumanReview ? <details style={{ marginTop: 8 }}>
+                        <summary>{t("qa.reviewCriterion")}</summary>
+                        <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+                          <label>{t("qa.agreement")}<select value={criterionReviews[String(criterion.id || index)]?.human_agrees || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_agrees: e.target.value } }))}>
+                            <option value="">-</option><option value="true">{t("qa.agrees")}</option><option value="false">{t("qa.disagrees")}</option>
+                          </select></label>
+                          <label>{t("qa.humanScore")}<input type="number" step="0.01" value={criterionReviews[String(criterion.id || index)]?.human_score || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_score: e.target.value } }))} /></label>
+                          <label>{t("qa.humanComment")}<textarea value={criterionReviews[String(criterion.id || index)]?.human_comment || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_comment: e.target.value } }))} /></label>
+                        </div>
+                      </details> : null}
                     </article>
                   )})}
               </div>

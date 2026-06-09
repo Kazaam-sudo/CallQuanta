@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
+from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.20.1")
+app = FastAPI(title="CallQuanta API", version="0.21.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -343,6 +343,41 @@ class RetentionSettingsPayload(BaseModel):
     transcripts_days: int | None = None
     qa_reviews_days: int | None = None
     ingestion_events_days: int | None = None
+
+
+class CriterionHumanReviewPayload(BaseModel):
+    criterion_id: str | None = None
+    criterion_index: int | None = None
+    human_score: float | None = None
+    human_comment: str | None = None
+    human_severity: str | None = None
+    human_agrees: bool | None = None
+
+
+class HumanReviewPayload(BaseModel):
+    review_status: str = "human_reviewed"
+    human_total_score: float | None = None
+    human_summary: str | None = None
+    human_notes: str | None = None
+    calibration_flag: bool | None = None
+    calibration_notes: str | None = None
+    criteria: list[CriterionHumanReviewPayload] | None = None
+
+
+class CoachingActionPayload(BaseModel):
+    title: str
+    description: str | None = None
+    assigned_to_user_id: int | None = None
+    due_date: datetime | None = None
+
+
+class CoachingActionPatchPayload(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    assigned_to_user_id: int | None = None
+    due_date: datetime | None = None
+    status: str | None = None
+
 
 
 AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/auth/login", "/auth/logout"}
@@ -750,6 +785,7 @@ def on_startup() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     migrate_qa_reviews_table(engine)
+    migrate_qa_coaching_actions_table(engine)
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
     migrate_telephony_ingestion_tables(engine)
@@ -1645,6 +1681,11 @@ def dashboard_metrics(
             "scorecard_name": review.scorecard_name,
             "report_language": review.report_language,
             "summary": review.summary,
+        "human_summary": review.human_summary,
+        "human_notes": review.human_notes,
+        "human_reviewer_user_id": review.human_reviewer_user_id,
+        "calibration_notes": review.calibration_notes,
+        "coaching_actions": [_serialize_coaching_action(action) for action in db.execute(select(QACoachingAction).where(QACoachingAction.review_id == review.id).order_by(QACoachingAction.created_at.desc(), QACoachingAction.id.desc())).scalars().all()],
         })
 
     lowest_reviews = sorted(latest_by_call.values(), key=lambda r: (float(r.score), r.created_at, r.id))[:5]
@@ -1697,6 +1738,33 @@ def dashboard_metrics(
         })
     criteria_problem_summary.sort(key=lambda x: (x["average_percent"], -x["critical_count"], -x["warning_count"]))
 
+    reviewed = [r for r in latest_by_call.values() if (r.review_status or "ai_generated") != "ai_generated"]
+    approved = [r for r in latest_by_call.values() if r.review_status == "approved"]
+    disputed = [r for r in latest_by_call.values() if r.review_status == "disputed"]
+    needs_rework = [r for r in latest_by_call.values() if r.review_status == "needs_rework"]
+    human_scores = [float(r.human_total_score) for r in latest_by_call.values() if r.human_total_score is not None]
+    deltas = [abs(float(r.ai_human_score_delta)) for r in latest_by_call.values() if r.ai_human_score_delta is not None]
+    disagreement_rollup: dict[str, dict] = {}
+    for r in latest_by_call.values():
+        for criterion in (r.criteria_breakdown or []):
+            if criterion.get("human_agrees") is False:
+                title = str(criterion.get("title") or "Untitled criterion").strip() or "Untitled criterion"
+                item = disagreement_rollup.setdefault(title, {"criterion_title": title, "disagreements": 0})
+                item["disagreements"] += 1
+    top_disagreements = sorted(disagreement_rollup.values(), key=lambda item: item["disagreements"], reverse=True)[:10]
+    calibration = {
+        "ai_reviews_count": len(latest_by_call),
+        "human_reviewed_count": len(reviewed),
+        "approved_count": len(approved),
+        "disputed_count": len(disputed),
+        "reviews_needing_rework": len(needs_rework),
+        "average_ai_score": average_score,
+        "average_human_score": round(sum(human_scores) / len(human_scores), 2) if human_scores else None,
+        "average_ai_human_delta": round(sum(deltas) / len(deltas), 2) if deltas else None,
+        "calibration_samples_count": sum(1 for r in latest_by_call.values() if r.calibration_flag),
+        "top_criteria_disagreement": top_disagreements,
+    }
+
     def build_group(group_field: str):
         groups: dict[str, dict] = {}
         for c in calls:
@@ -1743,6 +1811,7 @@ def dashboard_metrics(
         "latest_reviews": latest_reviews_payload,
         "lowest_score_reviews": lowest_payload,
         "criteria_problem_summary": criteria_problem_summary,
+        "qa_calibration": calibration,
         "agent_metrics": build_group("agent_name"),
         "team_metrics": build_group("team"),
         "campaign_metrics": build_group("campaign"),
@@ -1904,6 +1973,68 @@ def export_calls(
     return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
 
 
+
+@app.get("/qa-reviews")
+def list_qa_reviews(
+    q: str | None = None,
+    status: str | None = None,
+    agent_name: str | None = None,
+    team: str | None = None,
+    campaign: str | None = None,
+    direction: str | None = None,
+    language: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    review_status: str | None = None,
+    calibration_flag: bool | None = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
+    min_delta: float | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    filters = _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to)
+    calls = db.execute(_filtered_calls_statement(user=user, **filters)).scalars().all()
+    calls_by_id = {call.id: call for call in calls}
+    if not calls_by_id:
+        return {"items": [], "total": 0, "limit": limit, "offset": offset}
+    stmt = select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys())))
+    if review_status:
+        if review_status == "ai_generated":
+            stmt = stmt.where(or_(QAReview.review_status == "ai_generated", QAReview.review_status.is_(None)))
+        else:
+            stmt = stmt.where(QAReview.review_status == review_status)
+    if calibration_flag is not None:
+        if calibration_flag is False:
+            stmt = stmt.where(or_(QAReview.calibration_flag.is_(False), QAReview.calibration_flag.is_(None)))
+        else:
+            stmt = stmt.where(QAReview.calibration_flag.is_(True))
+    if min_score is not None:
+        stmt = stmt.where(QAReview.score >= min_score)
+    if max_score is not None:
+        stmt = stmt.where(QAReview.score <= max_score)
+    if min_delta is not None:
+        stmt = stmt.where(func.abs(QAReview.ai_human_score_delta) >= min_delta)
+    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    reviews = db.execute(stmt.order_by(QAReview.created_at.desc(), QAReview.id.desc()).limit(limit).offset(offset)).scalars().all()
+    items = []
+    for review in reviews:
+        call = calls_by_id.get(review.call_id)
+        coaching_count, open_count = _coaching_counts(db, review.id)
+        items.append({
+            **serialize_review_compact(review),
+            "call_id": review.call_id,
+            "filename": call.filename if call else None,
+            "agent_name": call.agent_name if call else None,
+            "team": call.team if call else None,
+            "campaign": call.campaign if call else None,
+            "coaching_actions_count": coaching_count,
+            "open_coaching_actions_count": open_count,
+        })
+    return {"items": items, "total": int(total), "limit": limit, "offset": offset}
+
 @app.get("/qa-reviews/export")
 def export_filtered_reviews(
     format: str = Query("csv", pattern="^(xlsx|csv)$"),
@@ -1924,8 +2055,12 @@ def export_filtered_reviews(
     _log_audit_event(db, user, "export_triggered", "qa_reviews", None, "QA reviews export triggered", {"format": format, "call_count": len(calls)}, commit=True)
     calls_by_id = {call.id: call for call in calls}
     reviews = db.execute(select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys()))).order_by(QAReview.created_at.desc(), QAReview.id.desc())).scalars().all() if calls_by_id else []
-    headers = ["Review ID", "Call ID", "Filename", "Review created at", "Status", "Score", "Agent", "Team", "Campaign", "Provider", "Model", "Scorecard", "Summary"]
-    rows = [[r.id, r.call_id, calls_by_id[r.call_id].filename, r.created_at.isoformat() if r.created_at else "", r.status, r.score if r.score is not None else "", calls_by_id[r.call_id].agent_name or "", calls_by_id[r.call_id].team or "", calls_by_id[r.call_id].campaign or "", r.provider_name or "", r.model or "", r.scorecard_name or "", r.summary or ""] for r in reviews]
+    headers = ["Review ID", "Call ID", "Filename", "Review created at", "Analysis status", "Review status", "AI score", "Human score", "AI-human delta", "Human reviewer", "Human reviewed at", "Agent", "Team", "Campaign", "Provider", "Model", "Scorecard", "AI summary", "Human summary", "Human notes", "Coaching actions", "Open coaching actions", "Calibration sample"]
+    rows = []
+    for r in reviews:
+        coaching_count, open_count = _coaching_counts(db, r.id)
+        call = calls_by_id[r.call_id]
+        rows.append([r.id, r.call_id, call.filename, r.created_at.isoformat() if r.created_at else "", r.status, r.review_status or "ai_generated", r.score if r.score is not None else "", r.human_total_score if r.human_total_score is not None else "", r.ai_human_score_delta if r.ai_human_score_delta is not None else "", r.human_reviewer_email or "", r.human_reviewed_at.isoformat() if r.human_reviewed_at else "", call.agent_name or "", call.team or "", call.campaign or "", r.provider_name or "", r.model or "", r.scorecard_name or "", r.summary or "", r.human_summary or "", r.human_notes or "", coaching_count, open_count, bool(r.calibration_flag)])
     safe_name = "callquanta-filtered-qa-reviews"
     if format == "csv":
         buf = StringIO(); buf.write("\ufeff")
@@ -2314,6 +2449,66 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db), user: User = Depend
     return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db)}
 
 
+
+VALID_REVIEW_STATUSES = {"ai_generated", "human_reviewed", "approved", "disputed", "needs_rework"}
+VALID_COACHING_STATUSES = {"open", "in_progress", "done", "dismissed", "acknowledged"}
+
+
+def _normalize_review_status(status: str | None) -> str:
+    normalized = (status or "human_reviewed").strip().lower()
+    if normalized not in VALID_REVIEW_STATUSES or normalized == "ai_generated":
+        raise HTTPException(status_code=400, detail="review_status must be human_reviewed, approved, disputed, or needs_rework")
+    return normalized
+
+
+def _serialize_coaching_action(action: QACoachingAction) -> dict:
+    return {
+        "id": action.id,
+        "review_id": action.review_id,
+        "call_id": action.call_id,
+        "agent_name": action.agent_name,
+        "assigned_to_user_id": action.assigned_to_user_id,
+        "created_by_user_id": action.created_by_user_id,
+        "title": action.title,
+        "description": action.description,
+        "status": action.status,
+        "due_date": action.due_date.isoformat() if action.due_date else None,
+        "created_at": action.created_at.isoformat() if action.created_at else None,
+        "updated_at": action.updated_at.isoformat() if action.updated_at else None,
+    }
+
+
+def _coaching_counts(db: Session, review_id: int) -> tuple[int, int]:
+    actions = db.execute(select(QACoachingAction).where(QACoachingAction.review_id == review_id)).scalars().all()
+    return len(actions), sum(1 for action in actions if action.status in {"open", "in_progress"})
+
+
+def _apply_criterion_human_reviews(review: QAReview, criterion_payloads: list[CriterionHumanReviewPayload] | None) -> None:
+    if not criterion_payloads:
+        return
+    criteria = [dict(item) for item in (review.criteria_breakdown or [])]
+    for payload in criterion_payloads:
+        target_index = payload.criterion_index
+        if target_index is None and payload.criterion_id:
+            for index, criterion in enumerate(criteria):
+                if str(criterion.get("id") or "") == str(payload.criterion_id):
+                    target_index = index
+                    break
+        if target_index is None or target_index < 0 or target_index >= len(criteria):
+            continue
+        criterion = dict(criteria[target_index])
+        if payload.human_score is not None:
+            criterion["human_score"] = payload.human_score
+        if payload.human_comment is not None:
+            criterion["human_comment"] = _normalize_optional_text(payload.human_comment)
+        if payload.human_severity is not None:
+            criterion["human_severity"] = _normalize_optional_text(payload.human_severity)
+        if payload.human_agrees is not None:
+            criterion["human_agrees"] = bool(payload.human_agrees)
+        criteria[target_index] = criterion
+    review.criteria_breakdown = criteria
+
+
 def serialize_review_compact(review: QAReview) -> dict:
     has_metadata = any([review.provider_name, review.model, review.scorecard_name, review.report_language])
     has_details = bool(review.criteria_breakdown) or bool(review.findings)
@@ -2329,6 +2524,12 @@ def serialize_review_compact(review: QAReview) -> dict:
         "report_language": review.report_language,
         "analysis_mode": review.analysis_mode,
         "legacy_review": legacy_review,
+        "review_status": review.review_status or "ai_generated",
+        "human_reviewer_email": review.human_reviewer_email,
+        "human_reviewed_at": review.human_reviewed_at.isoformat() if review.human_reviewed_at else None,
+        "human_total_score": review.human_total_score,
+        "ai_human_score_delta": review.ai_human_score_delta,
+        "calibration_flag": bool(review.calibration_flag),
     }
 
 
@@ -2390,6 +2591,11 @@ def serialize_review_full(review: QAReview, db: Session) -> dict:
     return {
         **serialize_review_compact(review),
         "summary": review.summary,
+        "human_summary": review.human_summary,
+        "human_notes": review.human_notes,
+        "human_reviewer_user_id": review.human_reviewer_user_id,
+        "calibration_notes": review.calibration_notes,
+        "coaching_actions": [_serialize_coaching_action(action) for action in db.execute(select(QACoachingAction).where(QACoachingAction.review_id == review.id).order_by(QACoachingAction.created_at.desc(), QACoachingAction.id.desc())).scalars().all()],
         "provider_preset": review.provider_preset or metadata_fallback.get("preset"),
         "provider_name": review.provider_name or metadata_fallback.get("provider"),
         "model": review.model or metadata_fallback.get("model"),
@@ -2400,6 +2606,106 @@ def serialize_review_full(review: QAReview, db: Session) -> dict:
         "findings": findings,
         "error_message": review.error_message,
     }
+
+
+
+@app.patch("/calls/{call_id}/qa/reviews/{review_id}/human-review")
+def save_human_review(call_id: int, review_id: int, payload: HumanReviewPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id)
+    review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    require_can_modify_call(call, user)
+    old_status = review.review_status or "ai_generated"
+    old_score = review.human_total_score
+    new_status = _normalize_review_status(payload.review_status)
+    review.review_status = new_status
+    review.human_reviewer_user_id = user.id
+    review.human_reviewer_email = user.email
+    review.human_reviewed_at = _utcnow()
+    review.human_total_score = payload.human_total_score
+    review.human_summary = _normalize_optional_text(payload.human_summary)
+    review.human_notes = _normalize_optional_text(payload.human_notes)
+    if review.score is not None and review.human_total_score is not None:
+        review.ai_human_score_delta = round(float(review.human_total_score) - float(review.score), 2)
+    else:
+        review.ai_human_score_delta = None
+    if payload.calibration_flag is not None:
+        review.calibration_flag = bool(payload.calibration_flag)
+    if payload.calibration_notes is not None:
+        review.calibration_notes = _normalize_optional_text(payload.calibration_notes)
+    _apply_criterion_human_reviews(review, payload.criteria)
+    _log_audit_event(db, user, "human_review_saved", "qa_review", review.id, "Human QA review saved", {"old_status": old_status, "new_status": new_status})
+    if new_status == "approved" and old_status != "approved":
+        _log_audit_event(db, user, "review_approved", "qa_review", review.id, "QA review approved")
+    if new_status == "disputed" and old_status != "disputed":
+        _log_audit_event(db, user, "review_disputed", "qa_review", review.id, "QA review disputed")
+    if old_score != review.human_total_score:
+        _log_audit_event(db, user, "score_overridden", "qa_review", review.id, "QA score overridden", {"ai_score": review.score, "human_score": review.human_total_score})
+    if payload.calibration_flag is not None:
+        _log_audit_event(db, user, "calibration_flag_changed", "qa_review", review.id, "Calibration flag changed", {"calibration_flag": review.calibration_flag})
+    db.commit()
+    db.refresh(review)
+    return {"call_id": call_id, "review": serialize_review_full(review, db)}
+
+
+@app.post("/calls/{call_id}/qa/reviews/{review_id}/coaching-actions")
+def create_coaching_action(call_id: int, review_id: int, payload: CoachingActionPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id)
+    review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Review not found")
+    require_can_modify_call(call, user)
+    title = _normalize_optional_text(payload.title)
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    action = QACoachingAction(review_id=review.id, call_id=call.id, agent_name=call.agent_name, created_by_user_id=user.id, assigned_to_user_id=payload.assigned_to_user_id, title=title, description=_normalize_optional_text(payload.description), status="open", due_date=payload.due_date)
+    db.add(action)
+    db.flush()
+    _log_audit_event(db, user, "coaching_action_created", "qa_coaching_action", action.id, "Coaching action created", {"review_id": review.id, "call_id": call.id})
+    db.commit()
+    db.refresh(action)
+    return {"action": _serialize_coaching_action(action)}
+
+
+@app.patch("/calls/{call_id}/qa/reviews/{review_id}/coaching-actions/{action_id}")
+def patch_coaching_action(call_id: int, review_id: int, action_id: int, payload: CoachingActionPatchPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id)
+    review = db.get(QAReview, review_id)
+    action = db.get(QACoachingAction, action_id)
+    if not call or not review or not action or review.call_id != call_id or action.review_id != review_id or action.call_id != call_id:
+        raise HTTPException(status_code=404, detail="Coaching action not found")
+    if user.role == "agent":
+        require_can_view_call(call, user)
+        if payload.status not in {"acknowledged", "done"}:
+            raise HTTPException(status_code=403, detail="Agents can only acknowledge or complete their own coaching actions")
+    else:
+        require_can_modify_call(call, user)
+    old_status = action.status
+    if payload.title is not None:
+        title = _normalize_optional_text(payload.title)
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        action.title = title
+    if payload.description is not None:
+        action.description = _normalize_optional_text(payload.description)
+    if payload.assigned_to_user_id is not None:
+        action.assigned_to_user_id = payload.assigned_to_user_id
+    if payload.due_date is not None:
+        action.due_date = payload.due_date
+    if payload.status is not None:
+        status = payload.status.strip().lower()
+        if status not in VALID_COACHING_STATUSES:
+            raise HTTPException(status_code=400, detail="invalid coaching status")
+        action.status = status
+    action.updated_at = _utcnow()
+    if old_status != action.status and action.status in {"done", "dismissed"}:
+        _log_audit_event(db, user, "coaching_action_completed", "qa_coaching_action", action.id, "Coaching action closed", {"old_status": old_status, "new_status": action.status})
+    else:
+        _log_audit_event(db, user, "coaching_action_updated", "qa_coaching_action", action.id, "Coaching action updated", {"old_status": old_status, "new_status": action.status})
+    db.commit()
+    db.refresh(action)
+    return {"action": _serialize_coaching_action(action)}
 
 
 @app.get("/calls/{call_id}/qa/reviews")
@@ -2468,10 +2774,10 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
         buf = StringIO()
         buf.write("\ufeff")
         headers = [
-            "Review ID", "Call ID", "Filename", "Created at", "Score",
+            "Review ID", "Call ID", "Filename", "Created at", "Review status", "AI score", "Human score", "AI-human delta",
             "Provider", "Model", "Scorecard", "Report language",
-            "Criterion #", "Criterion title", "Criterion score",
-            "Criterion max points", "Comment", "Evidence",
+            "Criterion #", "Criterion title", "Criterion AI score", "Criterion human score", "Human agrees",
+            "Criterion max points", "Comment", "Evidence", "Human comment",
         ]
         writer = csv.writer(buf)
         writer.writerow(headers)
@@ -2484,7 +2790,10 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
                 call.id,
                 call.filename,
                 r.created_at.isoformat() if r.created_at else "",
+                r.review_status or "ai_generated",
                 r.score if r.score is not None else "",
+                r.human_total_score if r.human_total_score is not None else "",
+                r.ai_human_score_delta if r.ai_human_score_delta is not None else "",
                 r.provider_name or "",
                 r.model or "",
                 r.scorecard_name or "",
@@ -2492,9 +2801,12 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
                 c.get("index", ""),
                 c.get("title", ""),
                 c.get("score", ""),
+                c.get("human_score", ""),
+                c.get("human_agrees", ""),
                 c.get("max_points", ""),
                 c.get("comment", ""),
                 c.get("evidence", ""),
+                c.get("human_comment", ""),
             ]
             writer.writerow(vals)
 
@@ -2504,14 +2816,14 @@ def _export_reviews(call: Call, reviews: list[QAReview], format: str, filename_r
             headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'},
         )
     wb=Workbook(); ws=wb.active; ws.title="Summary"
-    ws.append(["Review ID","Call ID","Filename","Created at","Status","Score","Provider","Model","Scorecard","Report language","Summary"])
+    ws.append(["Review ID","Call ID","Filename","Created at","Status","Review status","AI score","Human score","AI-human delta","Human reviewer","Human reviewed at","Provider","Model","Scorecard","Report language","AI summary","Human summary","Human notes","Calibration sample","Calibration notes"])
     for r in reviews:
-        ws.append([r.id,call.id,call.filename,r.created_at.isoformat() if r.created_at else "",r.status,r.score,r.provider_name,r.model,r.scorecard_name,r.report_language,r.summary])
-    wc=wb.create_sheet("Criteria breakdown"); wc.append(["Review ID","Criterion #","Criterion title","Severity / level","Score","Max points","Comment","Evidence"])
+        ws.append([r.id,call.id,call.filename,r.created_at.isoformat() if r.created_at else "",r.status,r.review_status or "ai_generated",r.score,r.human_total_score,r.ai_human_score_delta,r.human_reviewer_email,r.human_reviewed_at.isoformat() if r.human_reviewed_at else "",r.provider_name,r.model,r.scorecard_name,r.report_language,r.summary,r.human_summary,r.human_notes,bool(r.calibration_flag),r.calibration_notes])
+    wc=wb.create_sheet("Criteria breakdown"); wc.append(["Review ID","Criterion #","Criterion title","Severity / level","AI score","Human score","Human agrees","Human severity","Max points","Comment","Evidence","Human comment"])
     wf=wb.create_sheet("Findings"); wf.append(["Review ID","Severity / level","Finding text"])
     for r in reviews:
         for i,c in enumerate(r.criteria_breakdown or [], start=1):
-            wc.append([r.id,i,c.get("title"),c.get("severity"),c.get("score"),c.get("max_points"),c.get("comment"),c.get("evidence")])
+            wc.append([r.id,i,c.get("title"),c.get("severity"),c.get("score"),c.get("human_score"),c.get("human_agrees"),c.get("human_severity"),c.get("max_points"),c.get("comment"),c.get("evidence"),c.get("human_comment")])
         for f in r.findings or []:
             wf.append([r.id,f.get("severity"),f.get("evidence")])
     out=BytesIO(); wb.save(out); out.seek(0)

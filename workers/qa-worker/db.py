@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -48,6 +48,8 @@ class QAReview(Base):
     normalized_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     scorecard_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ai_generated", server_default="ai_generated")
+    calibration_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
 
 
 class ProviderConfig(Base):

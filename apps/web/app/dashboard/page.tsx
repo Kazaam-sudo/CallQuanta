@@ -33,6 +33,7 @@ type DashboardMetrics = {
   latest_reviews: any[];
   lowest_score_reviews: any[];
   criteria_problem_summary: any[];
+  qa_calibration?: { ai_reviews_count:number; human_reviewed_count:number; approved_count:number; disputed_count:number; reviews_needing_rework:number; average_ai_score:number|null; average_human_score:number|null; average_ai_human_delta:number|null; calibration_samples_count:number; top_criteria_disagreement:any[] };
   agent_metrics: MetricRow[];
   team_metrics: MetricRow[];
   campaign_metrics: MetricRow[];
@@ -258,6 +259,25 @@ export default function Page() {
             <div>{label}</div>
           </article>
         ))}
+      </section>
+      <section className="card">
+        <div className="section-header">
+          <h2>{t("qa.calibration")}</h2>
+          <Link href="/qa-reviews">{t("qa.reviewQueue")}</Link>
+        </div>
+        <section className="kpi-grid">
+          {[
+            [t("qa.aiReviews"), data.qa_calibration?.ai_reviews_count ?? 0],
+            [t("qa.humanReviewed"), data.qa_calibration?.human_reviewed_count ?? 0],
+            [t("qa.approved"), data.qa_calibration?.approved_count ?? 0],
+            [t("qa.disputed"), data.qa_calibration?.disputed_count ?? 0],
+            [t("qa.needsRework"), data.qa_calibration?.reviews_needing_rework ?? 0],
+            [t("qa.averageHumanScore"), fmt(data.qa_calibration?.average_human_score)],
+            [t("qa.averageDelta"), fmt(data.qa_calibration?.average_ai_human_delta)],
+            [t("qa.calibrationSamples"), data.qa_calibration?.calibration_samples_count ?? 0],
+          ].map(([label, value]) => <article key={String(label)} className="kpi-card"><strong>{value}</strong><div>{label}</div></article>)}
+        </section>
+        {(data.qa_calibration?.top_criteria_disagreement || []).length ? <div className="table-wrap" style={{ marginTop: 12 }}><table className="data-table"><thead><tr><th>{t("qa.topCriteriaDisagreement")}</th><th>Count</th></tr></thead><tbody>{data.qa_calibration?.top_criteria_disagreement.map((row:any) => <tr key={row.criterion_title}><td>{row.criterion_title}</td><td>{row.disagreements}</td></tr>)}</tbody></table></div> : <p className="empty-state">{t("qa.noDisagreements")}</p>}
       </section>
       <section className="card">
         <div className="section-header">
