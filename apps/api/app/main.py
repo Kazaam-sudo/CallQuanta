@@ -2002,7 +2002,10 @@ def list_qa_reviews(
         return {"items": [], "total": 0, "limit": limit, "offset": offset}
     stmt = select(QAReview).where(QAReview.call_id.in_(list(calls_by_id.keys())))
     if review_status:
-        stmt = stmt.where(QAReview.review_status == review_status)
+        if review_status == "ai_generated":
+            stmt = stmt.where(or_(QAReview.review_status == "ai_generated", QAReview.review_status.is_(None)))
+        else:
+            stmt = stmt.where(QAReview.review_status == review_status)
     if calibration_flag is not None:
         stmt = stmt.where(QAReview.calibration_flag == calibration_flag)
     if min_score is not None:

@@ -14,7 +14,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("qa_reviews", sa.Column("review_status", sa.String(length=32), nullable=False, server_default="ai_generated"))
+    op.add_column("qa_reviews", sa.Column("review_status", sa.String(length=32), nullable=True, server_default="ai_generated"))
+    op.execute("UPDATE qa_reviews SET review_status = 'ai_generated' WHERE review_status IS NULL")
+    op.alter_column("qa_reviews", "review_status", existing_type=sa.String(length=32), nullable=False, server_default="ai_generated")
     op.add_column("qa_reviews", sa.Column("human_reviewer_user_id", sa.Integer(), nullable=True))
     op.add_column("qa_reviews", sa.Column("human_reviewer_email", sa.String(length=255), nullable=True))
     op.add_column("qa_reviews", sa.Column("human_reviewed_at", sa.DateTime(timezone=True), nullable=True))

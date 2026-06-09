@@ -603,6 +603,7 @@ def process_qa_job(call_id: int) -> None:
             qa_review = QAReview(
                 call_id=call_id,
                 status="success",
+                review_status="ai_generated",
                 analysis_mode=QA_MODE if QA_MODE == "placeholder" else "openai_compatible",
                 provider_name=provider_snapshot.get("name"),
                 provider_preset=provider_snapshot.get("preset"),
@@ -626,7 +627,7 @@ def process_qa_job(call_id: int) -> None:
         except Exception as exc:
             db.rollback()
             clean_error = safe_error(exc)
-            failed = QAReview(call_id=call_id, status="failed", analysis_mode=QA_MODE, error_message=clean_error[:500])
+            failed = QAReview(call_id=call_id, status="failed", review_status="ai_generated", analysis_mode=QA_MODE, error_message=clean_error[:500])
             db.add(failed)
             call = db.get(Call, call_id)
             if call:

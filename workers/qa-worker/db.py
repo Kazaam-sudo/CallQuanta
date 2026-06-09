@@ -48,6 +48,7 @@ class QAReview(Base):
     normalized_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     scorecard_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ai_generated", server_default="ai_generated")
 
 
 class ProviderConfig(Base):

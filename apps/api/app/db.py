@@ -137,7 +137,7 @@ class QAReview(Base):
     normalized_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     scorecard_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    review_status: Mapped[str] = mapped_column(String(32), default="ai_generated")
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ai_generated", server_default="ai_generated")
     human_reviewer_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     human_reviewer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     human_reviewed_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -248,6 +248,9 @@ def migrate_qa_reviews_table(engine: Engine) -> None:
         conn.execute(text("UPDATE qa_reviews SET status = 'success' WHERE status IS NULL"))
         conn.execute(text("UPDATE qa_reviews SET review_status = 'ai_generated' WHERE review_status IS NULL"))
         conn.execute(text("UPDATE qa_reviews SET calibration_flag = FALSE WHERE calibration_flag IS NULL"))
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN review_status SET DEFAULT 'ai_generated'"))
+            conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN review_status SET NOT NULL"))
 
 
 
