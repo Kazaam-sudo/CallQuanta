@@ -28,6 +28,7 @@ class QAReviewDefaultTests(unittest.TestCase):
             db.commit()
             db.refresh(review)
             self.assertEqual(review.review_status, "ai_generated")
+            self.assertFalse(review.calibration_flag)
         finally:
             db.close()
 
@@ -45,10 +46,11 @@ class QAReviewDefaultTests(unittest.TestCase):
             db.commit()
             db.refresh(review)
             self.assertEqual(review.review_status, "ai_generated")
+            self.assertFalse(review.calibration_flag)
         finally:
             db.close()
 
-    def test_migrate_qa_reviews_table_backfills_null_review_status(self):
+    def test_migrate_qa_reviews_table_backfills_null_review_status_and_calibration_flag(self):
         engine = create_engine("sqlite:///:memory:")
         with engine.begin() as conn:
             conn.execute(text(

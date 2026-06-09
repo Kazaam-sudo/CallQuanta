@@ -2007,7 +2007,10 @@ def list_qa_reviews(
         else:
             stmt = stmt.where(QAReview.review_status == review_status)
     if calibration_flag is not None:
-        stmt = stmt.where(QAReview.calibration_flag == calibration_flag)
+        if calibration_flag is False:
+            stmt = stmt.where(or_(QAReview.calibration_flag.is_(False), QAReview.calibration_flag.is_(None)))
+        else:
+            stmt = stmt.where(QAReview.calibration_flag.is_(True))
     if min_score is not None:
         stmt = stmt.where(QAReview.score >= min_score)
     if max_score is not None:

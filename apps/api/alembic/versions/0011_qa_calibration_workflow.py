@@ -24,7 +24,9 @@ def upgrade() -> None:
     op.add_column("qa_reviews", sa.Column("human_summary", sa.Text(), nullable=True))
     op.add_column("qa_reviews", sa.Column("human_notes", sa.Text(), nullable=True))
     op.add_column("qa_reviews", sa.Column("ai_human_score_delta", sa.Float(), nullable=True))
-    op.add_column("qa_reviews", sa.Column("calibration_flag", sa.Boolean(), nullable=False, server_default=sa.false()))
+    op.add_column("qa_reviews", sa.Column("calibration_flag", sa.Boolean(), nullable=True, server_default=sa.false()))
+    op.execute("UPDATE qa_reviews SET calibration_flag = false WHERE calibration_flag IS NULL")
+    op.alter_column("qa_reviews", "calibration_flag", existing_type=sa.Boolean(), nullable=False, server_default=sa.false())
     op.add_column("qa_reviews", sa.Column("calibration_notes", sa.Text(), nullable=True))
     op.create_table(
         "qa_coaching_actions",

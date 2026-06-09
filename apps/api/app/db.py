@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Engine, Float, ForeignKey, Integer, String, Text, func, inspect, text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Engine, Float, ForeignKey, Integer, String, Text, false, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -145,7 +145,7 @@ class QAReview(Base):
     human_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_human_score_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
-    calibration_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    calibration_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     calibration_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -251,6 +251,8 @@ def migrate_qa_reviews_table(engine: Engine) -> None:
         if conn.dialect.name == "postgresql":
             conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN review_status SET DEFAULT 'ai_generated'"))
             conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN review_status SET NOT NULL"))
+            conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN calibration_flag SET DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE qa_reviews ALTER COLUMN calibration_flag SET NOT NULL"))
 
 
 
