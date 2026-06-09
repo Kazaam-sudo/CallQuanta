@@ -137,6 +137,32 @@ class QAReview(Base):
     normalized_review_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     scorecard_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(32), default="ai_generated")
+    human_reviewer_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    human_reviewer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    human_reviewed_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    human_total_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    human_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_human_score_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calibration_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    calibration_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class QACoachingAction(Base):
+    __tablename__ = "qa_coaching_actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("qa_reviews.id"))
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"))
+    agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_to_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    due_date: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class ProviderConfig(Base):
@@ -202,6 +228,16 @@ def migrate_qa_reviews_table(engine: Engine) -> None:
         "normalized_review_json": "ALTER TABLE qa_reviews ADD COLUMN normalized_review_json JSON",
         "error_message": "ALTER TABLE qa_reviews ADD COLUMN error_message TEXT",
         "scorecard_snapshot": "ALTER TABLE qa_reviews ADD COLUMN scorecard_snapshot JSON",
+        "review_status": "ALTER TABLE qa_reviews ADD COLUMN review_status VARCHAR(32) DEFAULT 'ai_generated'",
+        "human_reviewer_user_id": "ALTER TABLE qa_reviews ADD COLUMN human_reviewer_user_id INTEGER",
+        "human_reviewer_email": "ALTER TABLE qa_reviews ADD COLUMN human_reviewer_email VARCHAR(255)",
+        "human_reviewed_at": "ALTER TABLE qa_reviews ADD COLUMN human_reviewed_at TIMESTAMPTZ",
+        "human_total_score": "ALTER TABLE qa_reviews ADD COLUMN human_total_score DOUBLE PRECISION",
+        "human_summary": "ALTER TABLE qa_reviews ADD COLUMN human_summary TEXT",
+        "human_notes": "ALTER TABLE qa_reviews ADD COLUMN human_notes TEXT",
+        "ai_human_score_delta": "ALTER TABLE qa_reviews ADD COLUMN ai_human_score_delta DOUBLE PRECISION",
+        "calibration_flag": "ALTER TABLE qa_reviews ADD COLUMN calibration_flag BOOLEAN DEFAULT FALSE",
+        "calibration_notes": "ALTER TABLE qa_reviews ADD COLUMN calibration_notes TEXT",
     }
 
     with engine.begin() as conn:
@@ -209,9 +245,45 @@ def migrate_qa_reviews_table(engine: Engine) -> None:
             if column_name not in existing_columns:
                 conn.execute(text(ddl))
 
-        if "status" in add_columns_sql:
-            conn.execute(text("UPDATE qa_reviews SET status = 'success' WHERE status IS NULL"))
+        conn.execute(text("UPDATE qa_reviews SET status = 'success' WHERE status IS NULL"))
+        conn.execute(text("UPDATE qa_reviews SET review_status = 'ai_generated' WHERE review_status IS NULL"))
+        conn.execute(text("UPDATE qa_reviews SET calibration_flag = FALSE WHERE calibration_flag IS NULL"))
 
+
+
+def migrate_qa_coaching_actions_table(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "qa_coaching_actions" in inspector.get_table_names():
+        existing_columns = {column["name"] for column in inspector.get_columns("qa_coaching_actions")}
+        add_columns_sql = {
+            "assigned_to_user_id": "ALTER TABLE qa_coaching_actions ADD COLUMN assigned_to_user_id INTEGER",
+            "created_by_user_id": "ALTER TABLE qa_coaching_actions ADD COLUMN created_by_user_id INTEGER",
+            "due_date": "ALTER TABLE qa_coaching_actions ADD COLUMN due_date TIMESTAMPTZ",
+            "updated_at": "ALTER TABLE qa_coaching_actions ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW()",
+        }
+        with engine.begin() as conn:
+            for column_name, ddl in add_columns_sql.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))
+        return
+    ddl = """
+        CREATE TABLE qa_coaching_actions (
+            id SERIAL PRIMARY KEY,
+            review_id INTEGER NOT NULL REFERENCES qa_reviews(id),
+            call_id INTEGER NOT NULL REFERENCES calls(id),
+            agent_name VARCHAR(255),
+            assigned_to_user_id INTEGER,
+            created_by_user_id INTEGER,
+            title VARCHAR(255) NOT NULL,
+            description TEXT,
+            status VARCHAR(32) DEFAULT 'open',
+            due_date TIMESTAMPTZ,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """
+    with engine.begin() as conn:
+        conn.execute(text(ddl))
 
 def migrate_calls_table(engine: Engine) -> None:
     """Backfill/upgrade calls table with metadata columns for operator-level reporting."""

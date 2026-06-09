@@ -64,6 +64,7 @@ export function AppHeader() {
           <nav className="top-nav" aria-label="Main navigation">
             <Link href="/dashboard">{t("nav.dashboard")}</Link>
             <Link href="/calls">{t("nav.calls")}</Link>
+            <Link href="/qa-reviews">{t("qa.reviewQueue")}</Link>
             {user?.role === "admin" ? <Link href="/settings">{t("nav.settings")}</Link> : null}
           </nav>
           <LanguageSelector />
