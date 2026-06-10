@@ -5,6 +5,7 @@ import { AdminOnly } from "../../../components/AdminOnly";
 import { SettingsNav } from "../../../components/SettingsNav";
 import { useI18n } from "../../../components/I18nProvider";
 import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
+import { HelpTooltip } from "../../../components/ui";
 
 type UserRow = {
   id: number;
@@ -192,14 +193,14 @@ export default function UsersAccessPage() {
         <label>{t("users.role")}<select value={form.role} onChange={e => { const role = e.target.value; setForm({ ...form, role, visibility_scope: role === "admin" ? "all" : form.visibility_scope }); }}>{roles.map(r => <option key={r}>{r}</option>)}</select></label>
         <label>{t("users.team")}<input value={form.team} onChange={e => setForm({ ...form, team: e.target.value })} /></label>
         <label>{t("users.agentName")}<input value={form.agent_name} onChange={e => setForm({ ...form, agent_name: e.target.value })} /></label>
-        <label>{t("users.visibilityScope")}<select value={form.visibility_scope} onChange={e => setForm({ ...form, visibility_scope: e.target.value })}>{scopes.map(s => <option key={s}>{s}</option>)}</select></label>
+        <label>{t("users.visibilityScope")} <HelpTooltip text={t("help.visibilityScope")} /><select value={form.visibility_scope} onChange={e => setForm({ ...form, visibility_scope: e.target.value })}>{scopes.map(s => <option key={s}>{s}</option>)}</select></label>
         <label className="checkbox-card"><span>{t("users.active")}</span><input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} /></label>
         <label className="checkbox-card"><span>{t("users.requirePasswordChange")}</span><input type="checkbox" checked={form.must_change_password} onChange={e => setForm({ ...form, must_change_password: e.target.checked })} /></label>
         <div className="form-actions"><button className="button" type="submit" disabled={!canSave}>{t("users.save")}</button><button className="button button-secondary" type="button" onClick={clearForm}>{t("users.clear")}</button></div>
       </form>
     </section>
     <section className="card"><h3>{t("users.users")}</h3><div className="table-wrap"><table className="users-table"><thead><tr><th>{t("users.email")}</th><th>{t("users.name")}</th><th>{t("users.role")}</th><th>{t("users.scope")}</th><th>{t("users.team")}</th><th>{t("users.agentName")}</th><th>{t("users.mustChangePassword")}</th><th>{t("users.status")}</th><th>{t("users.actions")}</th></tr></thead><tbody>
-      {sortedUsers.map(u => <tr key={u.id}><td>{u.email}</td><td>{u.display_name || "—"}</td><td><span className="badge badge-uploaded">{u.role}</span></td><td><span className="badge badge-transcribed">{u.visibility_scope}</span></td><td>{u.team || "—"}</td><td>{u.agent_name || "—"}</td><td>{u.must_change_password ? <span className="badge badge-analysis_pending">{t("users.mustChangePassword")}</span> : "—"}</td><td><span className={`badge ${u.is_active ? "badge-transcribed" : "badge-failed"}`}>{u.is_active ? t("users.activeStatus") : t("users.inactiveStatus")}</span></td><td className="actions"><button className="button button-secondary button-small" onClick={() => edit(u)}>{t("users.editAction")}</button><button className="button button-secondary button-small" onClick={() => resetPassword(u)}>{t("users.resetPassword")}</button><button className="button button-secondary button-small" onClick={() => setActive(u, !u.is_active)}>{u.is_active ? t("users.deactivate") : t("users.activate")}</button></td></tr>)}
+      {sortedUsers.map(u => <tr key={u.id}><td>{u.email}</td><td>{u.display_name || "—"}</td><td><span className="badge badge-uploaded">{u.role}</span></td><td><span className="badge badge-transcribed">{u.visibility_scope === "all" ? "All" : u.visibility_scope}</span></td><td>{u.team || "—"}</td><td>{u.agent_name || "—"}</td><td>{u.must_change_password ? <span className="badge badge-analysis_pending">{t("users.mustChangePassword")}</span> : "—"}</td><td><span className={`badge ${u.is_active ? "badge-transcribed" : "badge-failed"}`}>{u.is_active ? t("users.activeStatus") : t("users.inactiveStatus")}</span></td><td className="actions"><button className="button button-secondary button-small" onClick={() => edit(u)}>{t("users.editAction")}</button><button className="button button-secondary button-small" onClick={() => resetPassword(u)}>{t("users.resetPassword")}</button><button className="button button-secondary button-small" onClick={() => setActive(u, !u.is_active)}>{u.is_active ? t("users.deactivate") : t("users.activate")}</button></td></tr>)}
     </tbody></table></div></section>
   </main></AdminOnly>;
 }

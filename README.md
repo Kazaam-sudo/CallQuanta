@@ -1,211 +1,143 @@
 # CallQuanta
 
-CallQuanta is an open-source, self-hosted AI quality assurance platform for contact centers. It transcribes calls, analyzes conversations, scores agents against customizable QA scorecards, detects script/compliance issues, and sends actionable coaching insights to managers.
+CallQuanta is an early-beta contact center quality assurance platform. It helps teams turn call recordings into transcripts, AI-assisted QA reviews, human calibration notes, coaching actions, dashboard metrics, and exports.
 
-## License
+## Product status
 
-AGPL-3.0.
+CallQuanta is currently an MVP / early beta. The core workflows are implemented and manually tested, but teams should validate access rules, retention settings, provider configuration, and deployment hardening before using it with production call recordings.
 
-## MVP Flow (v0.3.0)
+## Main workflow
 
-Upload call → queue transcription job → STT worker transcribes (placeholder or faster-whisper) → analyze → score → show evidence → notify.
-
-## Product Positioning
-
-- Open-source and self-hosted first.
-- Modular provider-based architecture.
-- Supports local open-source LLMs through OpenAI-compatible endpoints.
-- Supports multiple STT providers (v0.1 includes faster-whisper stub).
-- TTS interface placeholder included for future coaching experiences.
-- Static i18n files (`en`, `ru`) for interface localization.
-
-## Repository Structure
-
-- `apps/api` - FastAPI backend.
-- `apps/web` - Next.js frontend.
-- `workers/stt-worker` - STT queue consumer.
-- `workers/qa-worker` - QA analysis queue consumer.
-- `packages/provider-sdk` - Provider interfaces and stubs.
-- `packages/scorecards` - Scorecard templates.
-- `packages/prompts` - Prompt templates.
-- `docs` - Architecture and operations docs.
-- `examples` - Example assets for local testing.
-
-
-## STT Modes (v0.4.0)
-
-CallQuanta supports two STT worker modes controlled by `STT_MODE`:
-
-- `placeholder` (default): writes deterministic placeholder transcript segments. Recommended for CI and lightweight local usage.
-- `faster_whisper`: runs real local speech-to-text with faster-whisper against the uploaded audio file path stored on the call (`call.stored_path`).
-
-Example `.env` settings:
-
-```env
-STT_MODE=placeholder
-FASTER_WHISPER_MODEL=base
-FASTER_WHISPER_DEVICE=cpu
-FASTER_WHISPER_COMPUTE_TYPE=int8
+```text
+Upload / Telephony import → STT → Transcript → QA analysis → Human review → Coaching → Dashboard → Export
 ```
 
-To enable real STT locally, set:
+1. Upload one call or bulk upload many recordings.
+2. Optionally import recordings through the generic telephony webhook.
+3. Transcribe audio with the configured STT provider.
+4. Review transcript segments and call metadata.
+5. Run AI QA analysis with the configured LLM provider and scorecard.
+6. Add human review, calibration flags, and manager notes.
+7. Create coaching actions when a call needs follow-up.
+8. Monitor results in the dashboard.
+9. Export calls, QA reviews, and review history.
 
-```env
-STT_MODE=faster_whisper
+## Key features
+
+- Manual call upload and bulk upload.
+- Generic telephony webhook ingestion for recording imports.
+- Configurable STT providers and STT language handling.
+- Configurable LLM providers for QA analysis.
+- Editable scorecards for QA criteria.
+- QA review history with per-review exports.
+- Human review and calibration workflow.
+- Coaching actions connected to QA reviews.
+- Manager dashboard with scores, latest reviews, lowest scores, calibration metrics, and performance breakdowns.
+- CSV/XLSX exports for filtered calls and QA reviews.
+- Users & Access with admin, manager, supervisor, agent, and viewer roles.
+- Scoped access by all calls, team calls, or own calls.
+- Audit log for important user and system changes.
+- System status for API, database, Redis, queues, workers, and storage.
+- Retention settings for cleanup of old audio, transcripts, reviews, and ingestion events.
+
+## Architecture overview
+
+CallQuanta is organized as a small multi-service application:
+
+- **Web app**: Next.js UI in `apps/web`.
+- **API**: FastAPI service in `apps/api`.
+- **PostgreSQL**: primary relational database.
+- **Redis**: lightweight queue/state dependency for background work.
+- **STT worker**: transcribes uploaded or imported recordings.
+- **QA worker**: runs LLM QA analysis against transcripts and scorecards.
+- **Recording worker**: downloads recordings referenced by telephony ingestion events.
+- **Uploads storage**: local mounted storage for uploaded and imported audio files.
+
+## Local development
+
+### Start the stack
+
+```bash
+docker compose up --build
 ```
 
-Note: the first transcription in `faster_whisper` mode may take longer because the model may need to be downloaded and initialized.
+The web app is exposed by Docker Compose, and the API, database, Redis, and workers run as sibling services.
 
-## Local Development (v0.1.1 baseline)
+### Admin environment variables
 
-1. Copy env file:
-   ```bash
-   cp .env.example .env
-   ```
-2. Build and start the full local stack:
-   ```bash
-   docker compose up --build
-   ```
-3. Verify endpoints:
-   - API health: `http://localhost:8000/health`
-   - Web UI: `http://localhost:3000`
+Set initial admin credentials and security values in your environment or `.env` file before first startup. See `.env.example` for the current names and defaults. Important values include:
 
-Services started by Compose:
-- `postgres`
-- `redis`
-- `ollama`
-- `api`
-- `web`
-- `stt-worker` (placeholder mode by default; optional faster-whisper mode)
-- `qa-worker` (placeholder loop)
+- initial admin email/password
+- session secret
+- database URL
+- Redis URL
+- upload directory/storage settings
+- optional STT and LLM provider keys
 
-### Troubleshooting
+### Login credentials
 
-- **`env file .env not found`**: run `cp .env.example .env` from repository root.
-- **Web build fails on first run**: re-run `docker compose up --build` to refresh node modules/build cache.
-- **Port already in use**: update `API_PORT` / `WEB_PORT` in `.env` and restart compose.
-- **API unavailable at startup**: wait for `CallQuanta API started` in logs, then retry `/health`.
-- **Ollama image pull is slow**: first boot may take longer because the container image is large.
-- **`No module named '...'` in `stt-worker` (faster-whisper mode)**: rebuild the worker image so updated Python dependencies are installed: `docker compose build stt-worker && docker compose up -d stt-worker`.
-- **`No such file or directory: /app/uploads/...` in `stt-worker` (faster-whisper mode)**: ensure `stt-worker` mounts the `api_uploads` volume at `/app/uploads` (read-only) so worker paths match `call.stored_path`.
+Use the configured initial admin account to log in. After creating additional users, temporary/generated passwords are shown once and users can be required to change them at first login.
 
+### Common commands
 
-## Manual testing in Codespaces
+```bash
+# Validate Python syntax
+python -m compileall apps/api workers packages
 
-1. Create a GitHub Codespace for this repository.
-2. Copy env file:
-   ```bash
-   cp .env.example .env
-   ```
-3. Build and start the full stack:
-   ```bash
-   docker compose up --build
-   ```
-4. Open the forwarded port `3000` in the browser.
-5. In the web UI, upload a file and click **Transcribe** on the call details page.
+# Build the web app
+cd apps/web && npm run build
 
-## Architecture Overview
+# Validate Compose configuration
+docker compose config
 
-- API manages calls, metadata, provider configs, and orchestration endpoints.
-- STT worker handles transcription jobs via provider abstraction.
-- QA worker handles analysis and scoring using LLM provider abstraction.
-- PostgreSQL stores call records, transcript segments, reviews, and findings.
-- Redis acts as queue + cache backbone.
-- Ollama is the default local LLM runtime, consumed through OpenAI-compatible API.
+# Run the full local stack
+docker compose up --build
+```
+
+## Production notes
+
+- Authentication is required for product use.
+- Configure a strong session secret; never use development defaults in production.
+- Configure STT/LLM API keys through settings or environment-supported provider configuration.
+- API keys are sensitive and should be rotated when exposed.
+- Use durable upload storage for call recordings.
+- Back up PostgreSQL and any required uploaded recordings.
+- Put the app behind HTTPS and a reverse proxy/load balancer.
+- Review retention settings before importing sensitive recordings.
+- Confirm worker processes are running for transcription, QA analysis, and recording downloads.
+
+## Security notes
+
+- Call recordings, transcripts, QA reviews, and coaching notes are sensitive data.
+- Saved provider API keys are never displayed after save.
+- Webhook tokens should be regenerated immediately if exposed.
+- Role/scoped access exists, but teams should test access boundaries before production use.
+- Limit administrator access to trusted users.
+- Use HTTPS for browser access and webhook traffic.
+
+## Current limitations
+
+- SMTP invitation and password reset emails are not implemented yet.
+- Telephony ingestion currently provides a generic webhook; provider-specific telephony adapters are future work.
+- STT quality depends on provider, model, language, recording quality, and diarization capability.
+- QA quality depends on LLM provider/model behavior and scorecard quality.
+- The product is still MVP / early beta and should be validated carefully before production use.
 
 ## Roadmap
 
-- v0.1: Skeleton + provider abstractions + end-to-end stubs.
-- v0.2: Real queue execution and DB-backed CRUD.
-- v0.3: Scorecard editor + evidence viewer + notifications.
-- v0.4: Integrations and richer analytics.
+- Provider-specific telephony adapters.
+- SMTP invitations and password reset emails.
+- Improved scorecard templates.
+- Better transcript speaker diarization.
+- Stronger analytics and trend reporting.
+- Deployment hardening and production operations guides.
 
+## Documentation
 
-## v0.4.0 Notes
-
-- `POST /calls/{id}/transcribe` marks the call as `transcription_pending` and enqueues a Redis transcription job.
-- `workers/stt-worker` now supports `STT_MODE=placeholder` (default) and `STT_MODE=faster_whisper` for real local STT.
-- In faster-whisper mode, the worker lazily loads the model once per process and reuses it for later jobs.
-- On worker errors, the call status is updated to `failed`.
-- `GET /calls/{id}/transcript` returns transcript segments ordered by start time.
-
-
-## v0.6.0 QA analysis flow (scorecard-driven)
-
-- Added Redis-backed QA analysis pipeline: `POST /calls/{id}/analyze` enqueues a job and `qa-worker` persists QA review data.
-- Added `GET /calls/{id}/qa` endpoint to fetch the latest QA review (score, summary, findings).
-- Added web Analyze flow in call details with pending/failed states and QA review rendering.
-- Added default scorecard file: `packages/scorecards/default_sales_qa.yaml`.
-- QA analysis now evaluates calls against explicit criteria (greeting, discovery, relevance, objection handling, compliance, closing, and tone) and returns structured JSON.
-- Local open-source LLM mode (`openai_compatible` with Ollama or similar) now receives both the transcript and scorecard criteria in the prompt, improving specificity and consistency.
-
-## v0.6.2 QA robustness improvements
-
-- Scorecard criteria are now normalized against `packages/scorecards/default_sales_qa.yaml` as the source of truth (criterion id/title/max points), even when local models return partial or malformed criterion rows.
-- Total QA score is now computed from normalized criteria (`sum(score) / sum(max_points) * 100`) and stored as the review score, rather than blindly trusting the model-provided total.
-- CallQuanta now attempts JSON recovery when a local model returns markdown-wrapped output, and it generates a fallback scorecard review when parsing fails.
-- QA analysis now prefers resilient fallback reviews over `analysis_failed` for model-output issues; infrastructure failures (LLM unavailable, timeouts, DB issues, missing transcript) still fail analysis.
-- The QA UI now shows stronger criterion evidence and warnings when a review was partially recovered from imperfect model output.
-
-## v0.6.3 weak local model compatibility improvements
-
-- CallQuanta now maps model-provided criterion `index` values (1-based) to scorecard criteria order for deterministic local-model compatibility.
-- The app owns criterion `id`, `title`, and `max_points` from `packages/scorecards/default_sales_qa.yaml`; models only provide per-criterion scoring/comment/evidence/severity.
-- `qa-worker` accepts both legacy `criteria[]` format and new `criteria_scores[]` format for backward compatibility.
-- If a model returns summary/findings but no usable per-criterion scores, CallQuanta keeps analysis successful, fills fallback criterion rows, and records a warning: "Model did not return usable per-criterion scores."
-- QA score continues to be computed from normalized criteria; model total score is not trusted for persisted scoring.
-
-### QA modes
-
-- `QA_MODE=placeholder` (default): deterministic CI-safe criteria-based review output using the default sales scorecard.
-- `QA_MODE=openai_compatible`: sends transcript plus a numbered scorecard list to a chat-completions compatible LLM endpoint and expects strict JSON:
-  - `summary`
-  - `criteria_scores[]` (`index`, `score`, `comment`, `evidence`, `severity`)
-  - `findings[]` (`severity`, `evidence`)
-  - Legacy `criteria[]` responses are still accepted.
-
-Example OpenAI-compatible configuration (Ollama):
-
-1. Pull a local model in the Ollama container:
-   `docker compose exec ollama ollama pull <model>`
-2. Configure QA worker environment:
-
-```env
-QA_MODE=openai_compatible
-LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=http://ollama:11434/v1
-LLM_MODEL=<model>
-LLM_API_KEY=
-LLM_TIMEOUT_SECONDS=180
-OLLAMA_KEEP_ALIVE=-1
-```
-
-Local Ollama CPU inference can be slow, especially with larger scorecard prompts. If QA analysis fails with timeout errors, increase `LLM_TIMEOUT_SECONDS` (default `180`).
-
-Model guidance:
-- Use `qwen2.5:0.5b` only for fast smoke tests on constrained machines/Codespaces.
-- Use `qwen2.5:1.5b` as the minimum local QA test model.
-- Use `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.1:8b` (or stronger) for meaningfully useful QA output on stronger hardware.
-
-Warm-up recommendation:
-1. Pull your model: `docker compose exec ollama ollama pull <model>`
-2. Run a quick generation before analysis so weights are loaded: `docker compose exec ollama ollama run <model> "ready"`
-3. Optionally set `OLLAMA_KEEP_ALIVE=-1` to keep the model loaded during repeated test runs.
-
-CI uses `QA_MODE=placeholder` for deterministic and fast smoke tests.
-
-
-## LLM Provider Settings (v0.7.0)
-
-- Default is **local Ollama** for privacy-first operation.
-- You can configure hosted providers (OpenAI, Groq, OpenRouter, Gemini, Cloudflare Workers AI, Together, Anthropic-compatible, or custom OpenAI-compatible) in **Settings → LLM**.
-- API keys are stored in local DB config for MVP/dev only; use environment variables or a secret manager for production deployments.
-- Provider test sends a minimal `/chat/completions` request and reports success/failure with latency.
-- QA worker uses active DB provider config first; if none is active, it falls back to env vars (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_TIMEOUT_SECONDS`).
-- Privacy warning: Hosted providers may process transcripts outside your server. Use Ollama for sensitive data.
-
-Recommended starting models:
-- OpenAI: `gpt-5.5` (or lower-cost model of your choice)
-- Groq: `qwen/qwen3-32b`
-- Ollama: `qwen2.5:1.5b` for smoke tests; use 7b/8b+ for better QA quality
-- OpenRouter/Gemini/Cloudflare/Together: use preset defaults, then tune as needed
+- [Product walkthrough](docs/product-walkthrough.md)
+- [Codebase review](docs/codebase-review.md)
+- [Architecture](docs/architecture.md)
+- [Telephony ingestion](docs/telephony-ingestion.md)
+- [Providers](docs/providers.md)
+- [Scorecards](docs/scorecards.md)
+- [Production deployment](docs/deploy-production.md)

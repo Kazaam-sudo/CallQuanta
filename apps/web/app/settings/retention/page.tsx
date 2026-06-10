@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useState } from "react";
 import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
 import { SettingsNav } from "../../../components/SettingsNav";
 import { AdminOnly } from "../../../components/AdminOnly";
+import { useI18n } from "../../../components/I18nProvider";
+import { HelpTooltip } from "../../../components/ui";
 
 const emptySettings = { audio_days: "", transcripts_days: "", qa_reviews_days: "", ingestion_events_days: "" };
 
@@ -16,6 +18,7 @@ function toPayload(form: any) {
 }
 
 export default function RetentionPage() {
+  const { t } = useI18n();
   const [form, setForm] = useState<any>(emptySettings);
   const [preview, setPreview] = useState<any>(null);
   const [message, setMessage] = useState("");
@@ -68,8 +71,8 @@ export default function RetentionPage() {
     <AdminOnly><main className="grid" style={{ gap: 16 }}>
       <SettingsNav />
       <section className="card">
-        <h2>Retention</h2>
-        <p style={{ color: "var(--text-muted)" }}>Leave a field empty to keep data forever. Cleanup is manual in v0.19.0 and requires confirmation.</p>
+        <h2>{t("settings.retention")} <HelpTooltip text={t("help.retention")} /></h2>
+        <p style={{ color: "var(--text-muted)" }}>{t("settings.retentionHelp")}</p>
         <form className="grid grid-2" onSubmit={save}>
           {fields.map(([key, label]) => <label key={key}>{label}<input type="number" min={1} placeholder="Forever" value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} /></label>)}
           <div className="actions"><button className="button" type="submit">Save and preview</button></div>
@@ -78,7 +81,7 @@ export default function RetentionPage() {
         {error && <p className="message message-error">{error}</p>}
       </section>
       <section className="card">
-        <h3>Dry-run preview</h3>
+        <h3>{t("settings.retentionPreview")}</h3>
         <div className="grid grid-2">
           <div className="segment"><strong>Audio</strong><p>{preview?.audio?.count || 0} files / {Math.round((preview?.audio?.bytes || 0) / 1024 / 1024)} MB</p></div>
           <div className="segment"><strong>Transcripts</strong><p>{preview?.transcripts?.count || 0} segments</p></div>
