@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../../components/I18nProvider";
 import { SttLanguageSelect } from "../../../components/SttLanguageSelect";
+import { Badge, Button, Card, EmptyState, Field, HelpTooltip, PageHeader, SectionHeader, StatusBadge, Tabs } from "../../../components/ui";
 import { normalizeSttLanguageCode, sttLanguageLabel } from "../../../lib/i18n";
 
 type Call = {
@@ -63,7 +64,7 @@ type QACriterion = {
   human_severity?: string | null;
   human_agrees?: boolean | null;
 };
-type CoachingAction = { id:number; title:string; description?:string|null; status:string; due_date?:string|null; agent_name?:string|null };
+type CoachingAction = { id:number; title:string; description?:string|null; status:string; due_date?:string|null; agent_name?:string|null; created_by_email?:string|null };
 type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; review_status?: string; human_total_score?: number | null; human_summary?: string | null; human_notes?: string | null; human_reviewer_email?: string | null; human_reviewed_at?: string | null; ai_human_score_delta?: number | null; calibration_flag?: boolean; calibration_notes?: string | null; criteria: QACriterion[]; findings: QAFinding[]; coaching_actions?: CoachingAction[] };
 type AuthUser = { id:number; email:string; role:string };
 type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean; review_status?:string; human_total_score?:number|null; calibration_flag?:boolean };
@@ -96,6 +97,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [coachingForm, setCoachingForm] = useState({ title: "", description: "", due_date: "" });
   const [savingHumanReview, setSavingHumanReview] = useState(false);
   const [savingCoaching, setSavingCoaching] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -408,279 +410,156 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     [review],
   );
 
+  const tabs = [
+    { id: "overview", label: t("call.tab.overview") },
+    { id: "transcript", label: t("call.tab.transcript"), help: t("help.sttProvider") },
+    { id: "qa", label: t("call.tab.qa"), help: t("help.aiReview") },
+    { id: "human", label: t("call.tab.human"), help: t("help.humanReview") },
+    { id: "coaching", label: t("call.tab.coaching"), help: t("help.coachingActions") },
+    { id: "history", label: t("call.tab.history") },
+  ];
+
+  const metaValue = (value?: string | number | null) => value == null || value === "" ? "-" : value;
+  const reviewMeta = (value?: string | null, key?: string) => review?.legacy_review ? (value || (key && providerMeta[key]) ? t("call.recoveredMetadata") : t("call.notCaptured")) : (value || t("call.notCaptured"));
+
   return (
-    <div className="grid" style={{ gap: 16 }}>
-      <p style={{ margin: 0 }}><Link href="/calls">← Back to Calls</Link></p>
+    <div className="grid page-stack">
+      <p style={{ margin: 0 }}><Link href="/calls">← {t("call.backToCalls")}</Link></p>
 
-      <section className="card">
-        <div className="actions" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0 }}>Call #{call?.id ?? params.id}</h2>
-          {call?.status && <span className={`badge badge-${call.status}`}>{call.status.replaceAll("_", " ")}</span>}
-        </div>
+      <PageHeader
+        title={<span className="call-summary-row"><span>Call #{call?.id ?? params.id}</span>{call?.status ? <StatusBadge status={call.status} /> : null}</span>}
+        description={call?.filename || t("call.detailsDescription")}
+        actions={<>
+          <Button variant="secondary" onClick={load}>{t("call.refresh")}</Button>
+          <Button onClick={transcribe} disabled={!call || loading || transcribing}>{transcribing ? t("call.transcribing") : t("call.transcribe")}</Button>
+          <Button onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>{analysisPendingState ? t("call.analyzing") : canAnalyzeAgain ? t("call.analyzeAgain") : t("call.analyze")}</Button>
+        </>}
+      />
 
-        <div className="actions" style={{ marginTop: 14 }}>
-          <button className="button button-secondary" onClick={load}>{t("call.refresh")}</button>
-          <button className="button" onClick={transcribe} disabled={!call || loading || transcribing}>
-            {transcribing ? "Transcribing..." : t("call.transcribe")}
-          </button>
-          <button className="button" onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>
-            {analysisPendingState ? "Analyzing..." : canAnalyzeAgain ? t("call.analyzeAgain") : t("call.analyze")}
-          </button>
-        </div>
-
-        {pendingState && <p className="message">Transcription is in progress. Auto-refreshing every 2 seconds.</p>}
-        {analysisPendingState && <p className="message">QA analysis is in progress. Auto-refreshing every 2 seconds.</p>}
-        {call?.last_error_message && (
-          <p className="message message-error">
-            <strong>{t("calls.lastError")}:</strong> {call.last_error_message}
-            {latestFailureHint ? ` Latest hint: ${latestFailureHint}` : ""}
-          </p>
-        )}
+      <Card>
+        <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+        {pendingState && <p className="message">{t("call.transcriptionProgress")}</p>}
+        {analysisPendingState && <p className="message">{t("call.analysisProgress")}</p>}
+        {call?.last_error_message && <p className="message message-error"><strong>{t("calls.lastError")}:</strong> {call.last_error_message}{latestFailureHint ? ` ${t("call.latestHint")}: ${latestFailureHint}` : ""}</p>}
         {call?.ingestion_error && <p className="message message-error"><strong>{t("telephony.ingestionStatus")}:</strong> {call.ingestion_error}</p>}
         {error && <p className="message message-error">{error}</p>}
-        {loading && <p>Loading...</p>}
+        {loading && <p>{t("call.loading")}</p>}
+      </Card>
 
-        {call && (
-          <div className="meta-grid" style={{ marginTop: 10 }}>
-            <div className="meta-item"><small>Filename</small>{call.filename}</div>
-            <div className="meta-item"><small>Created</small>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</div>
+      {activeTab === "overview" && <div className="tab-panel">
+        <Card>
+          <SectionHeader title={t("call.overview")} description={t("call.overviewHelp")} />
+          {call ? <div className="meta-grid">
+            <div className="meta-item"><small>{t("calls.filename")}</small>{call.filename}</div>
+            <div className="meta-item"><small>{t("calls.created")}</small>{call.created_at ? new Date(call.created_at).toLocaleString() : "-"}</div>
             <div className="meta-item"><small>{t("calls.fileSize")}</small>{call.file_size_bytes != null ? `${call.file_size_bytes.toLocaleString()} bytes` : "-"}</div>
-            <div className="meta-item"><small>Content type</small>{call.content_type || "-"}</div>
+            <div className="meta-item"><small>{t("call.contentType")}</small>{metaValue(call.content_type)}</div>
             <div className="meta-item"><small>{t("calls.lastProcessed")}</small>{call.last_processed_at ? new Date(call.last_processed_at).toLocaleString() : "-"}</div>
             <div className="meta-item"><small>{t("telephony.sourceProvider")}</small>{call.source_provider || call.source || "-"}</div>
-            <div className="meta-item"><small>{t("telephony.externalCallId")}</small>{call.external_call_id || "-"}</div>
-            <div className="meta-item"><small>{t("telephony.ingestionStatus")}</small>{call.ingestion_status ? t(`status.${call.ingestion_status}`) : "-"}</div>
-            <div className="meta-item"><small>Imported</small>{call.imported_at ? new Date(call.imported_at).toLocaleString() : "-"}</div>
-            <div className="meta-item"><small>Customer phone</small>{call.customer_phone || "-"}</div>
-            <div className="meta-item"><small>Agent phone</small>{call.agent_phone || "-"}</div>
-            <div className="meta-item"><small>Started</small>{call.started_at ? new Date(call.started_at).toLocaleString() : "-"}</div>
-            <div className="meta-item"><small>Ended</small>{call.ended_at ? new Date(call.ended_at).toLocaleString() : "-"}</div>
-            <div className="meta-item"><small>Duration</small>{call.duration_seconds != null ? `${call.duration_seconds}s` : "-"}</div>
+            <div className="meta-item"><small>{t("telephony.externalCallId")}</small>{metaValue(call.external_call_id)}</div>
+            <div className="meta-item"><small>{t("telephony.ingestionStatus")} <HelpTooltip text={t("help.ingestionEvents")} /></small>{call.ingestion_status ? t(`status.${call.ingestion_status}`) : "-"}</div>
+            <div className="meta-item"><small>{t("call.imported")}</small>{call.imported_at ? new Date(call.imported_at).toLocaleString() : "-"}</div>
+            <div className="meta-item"><small>{t("call.customerPhone")}</small>{metaValue(call.customer_phone)}</div>
+            <div className="meta-item"><small>{t("call.agentPhone")}</small>{metaValue(call.agent_phone)}</div>
+            <div className="meta-item"><small>{t("call.duration")}</small>{call.duration_seconds != null ? `${call.duration_seconds}s` : "-"}</div>
+          </div> : <EmptyState title={t("call.loading")} />}
+        </Card>
+        <Card>
+          <SectionHeader title={t("call.metadata")} description={t("call.metadataHelp")} />
+          <div className="grid-2">
+            <Field label={t("call.agentName")}><input value={metadata.agent_name} onChange={(e) => setMetadata((m) => ({ ...m, agent_name: e.target.value }))} /></Field>
+            <Field label={t("call.team")}><input value={metadata.team} onChange={(e) => setMetadata((m) => ({ ...m, team: e.target.value }))} /></Field>
+            <Field label={t("call.campaign")}><input value={metadata.campaign} onChange={(e) => setMetadata((m) => ({ ...m, campaign: e.target.value }))} /></Field>
+            <Field label={t("call.direction")}><select value={metadata.direction} onChange={(e) => setMetadata((m) => ({ ...m, direction: e.target.value }))}><option value="unknown">{t("call.directionUnknown")}</option><option value="inbound">{t("call.directionInbound")}</option><option value="outbound">{t("call.directionOutbound")}</option></select></Field>
+            <Field label={t("call.audioLanguage")} help={t("help.audioLanguage")}><SttLanguageSelect value={metadata.language} languages={sttLanguages} t={t} onChange={(value) => setMetadata((m) => ({ ...m, language: value }))} /></Field>
           </div>
-        )}
-      </section>
-      <section className="card">
-        <h3 style={{ marginTop: 0 }}>{t("call.metadata")}</h3>
-        <div className="grid" style={{ gap: 10 }}>
-          <label>{t("call.agentName")}<input value={metadata.agent_name} onChange={(e) => setMetadata((m) => ({ ...m, agent_name: e.target.value }))} /></label>
-          <label>{t("call.team")}<input value={metadata.team} onChange={(e) => setMetadata((m) => ({ ...m, team: e.target.value }))} /></label>
-          <label>{t("call.campaign")}<input value={metadata.campaign} onChange={(e) => setMetadata((m) => ({ ...m, campaign: e.target.value }))} /></label>
-          <label>{t("call.direction")}
-            <select value={metadata.direction} onChange={(e) => setMetadata((m) => ({ ...m, direction: e.target.value }))}>
-              <option value="unknown">unknown</option>
-              <option value="inbound">inbound</option>
-              <option value="outbound">outbound</option>
-            </select>
-          </label>
-          <label>{t("call.audioLanguage")}<SttLanguageSelect value={metadata.language} languages={sttLanguages} t={t} onChange={(value) => setMetadata((m) => ({ ...m, language: value }))} /></label>
+          <div className="actions" style={{ marginTop: 14 }}><Button onClick={saveMetadata} disabled={metadataSaving}>{metadataSaving ? t("call.saving") : metadataSaveSuccess ? t("call.metadataSaved") : t("call.saveMetadata")}</Button></div>
+          {metadataMessage && <p className="message message-success">{metadataMessage}</p>}
+          {metadataError && <p className="message message-error">{metadataError}</p>}
+        </Card>
+      </div>}
+
+      {activeTab === "transcript" && <Card>
+        <SectionHeader title={t("call.transcriptSegments")} description={t("call.transcriptHelp")} />
+        {call && <div className="meta-grid" style={{ marginBottom: 14 }}>
+          <div className="meta-item"><small>{t("call.audioLanguage")} <HelpTooltip text={t("help.audioLanguage")} /></small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
+          <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{call.stt_language_used || normalizeSttLanguageCode(call.language) || "auto"}</div>
+          <div className="meta-item"><small>{t("settings.sttProvider")} <HelpTooltip text={t("help.sttProvider")} /></small>{call.stt_provider_name || sttSettings?.provider?.name || sttSettings?.mode || "-"}</div>
+          <div className="meta-item"><small>{t("settings.currentSttModel")}</small>{call.stt_model || sttSettings?.model || "-"}</div>
+          <div className="meta-item"><small>{t("call.detectedLanguage")}</small>{call.detected_language || "-"}</div>
+        </div>}
+        {normalizeSttLanguageCode(call?.language) === "uz" && (call?.stt_provider_type || sttSettings?.provider?.provider_type || sttSettings?.mode) === "faster_whisper_local" && (call?.stt_model || sttSettings?.model || "").toLowerCase() === "tiny" && <p className="message message-warning">{t("settings.uzbekTinyWarning")}</p>}
+        {segments.length === 0 ? <EmptyState title={t("call.noTranscript")} description={t("call.noTranscriptHelp")} /> : <div className="grid">{segments.map((segment) => <article key={segment.id} className="segment"><small>{msToSeconds(segment.start_ms)} - {msToSeconds(segment.end_ms)} • {segment.speaker}</small><p>{segment.text}</p></article>)}</div>}
+      </Card>}
+
+      {activeTab === "qa" && <Card id="qa-review-section">
+        <SectionHeader title={t("call.qaReview")} description={t("call.qaHelp")} help={t("help.aiReview")} />
+        {!review ? <EmptyState title={t("call.noQaReview")} description={t("call.noQaReviewHelp")} /> : <div className="grid">
+          <div className="review-hero">
+            <div className="review-score"><small>{t("qa.aiScore")}</small><strong>{review.score}</strong><StatusBadge status={review.status} /></div>
+            <div>
+              <p className="message" style={{ marginTop: 0 }}><strong>{viewingLatest ? t("call.viewingLatest") : t("call.viewingPrevious")} #{review.id}</strong> · {new Date(review.created_at || "").toLocaleString()}{review.legacy_review ? ` · ${t("call.legacyReview")}` : ""}</p>
+              {recoveredReview && <p className="message message-warning">{t("call.recoveredReviewWarning")}</p>}
+              <p><strong>{t("call.summary")}:</strong> {review.summary}</p>
+            </div>
+          </div>
+          <div className="meta-grid">
+            <div className="meta-item"><small>{t("call.analysisMode")}</small>{reviewMeta(review.analysis_mode, "analysis mode")}</div>
+            <div className="meta-item"><small>{t("call.provider")}</small>{reviewMeta(review.provider_name, "provider")}</div>
+            <div className="meta-item"><small>{t("call.model")}</small>{reviewMeta(review.model, "model")}</div>
+            <div className="meta-item"><small>{t("call.scorecard")} <HelpTooltip text={t("help.scorecard")} /></small>{reviewMeta(review.scorecard_name, "scorecard")}</div>
+            <div className="meta-item"><small>{t("call.reportLanguage")} <HelpTooltip text={t("help.reportLanguage")} /></small>{reviewMeta(review.report_language, "report language")}</div>
+          </div>
           <div>
-            <button className="button" onClick={saveMetadata} disabled={metadataSaving}>
-              {metadataSaving ? "Saving..." : metadataSaveSuccess ? t("call.metadataSaved") : t("call.saveMetadata")}
-            </button>
-            {metadataMessage && <p className="message" style={{ marginTop: 8 }}>{metadataMessage}</p>}
-            {metadataError && <p className="message message-error" style={{ marginTop: 8 }}>{metadataError}</p>}
+            <SectionHeader title={t("call.findings")} />
+            {review.findings.length === 0 ? <EmptyState title={t("call.noFindings")} /> : <div className="grid" style={{ gap: 8 }}>{review.findings.map((finding, i) => <article key={finding.id || i} className="segment"><Badge tone={finding.severity === "critical" ? "danger" : finding.severity === "warning" ? "warning" : "info"}>{finding.severity}</Badge><p>{finding.evidence}</p></article>)}</div>}
           </div>
-        </div>
-      </section>
+          <details>
+            <summary><strong>{t("call.criteriaBreakdown")}</strong></summary>
+            <div className="criteria-grid" style={{ marginTop: 12 }}>{review.criteria?.map((criterion, index) => <article key={criterion.id || index} className="segment">
+              <div className="task-header"><strong>{criterion.title}</strong><span><Badge tone={criterion.severity === "critical" ? "danger" : criterion.severity === "warning" ? "warning" : "default"}>{criterion.severity || t("call.normal")}</Badge> <Badge>{criterion.score}/{criterion.max_points}</Badge></span></div>
+              <details style={{ marginTop: 8 }}><summary>{t("call.evidenceAndComment")}</summary><p><strong>{t("call.comment")}:</strong> {criterion.comment || "-"}</p><p><strong>{t("call.evidence")}:</strong> {criterion.evidence || "-"}</p></details>
+              {(criterion.human_score != null || criterion.human_comment || criterion.human_agrees != null) && <p className="message"><strong>{t("qa.humanReview")}:</strong> {criterion.human_agrees === true ? t("qa.agrees") : criterion.human_agrees === false ? t("qa.disagrees") : ""} {criterion.human_score != null ? ` · ${t("qa.humanScore")}: ${criterion.human_score}` : ""} {criterion.human_comment ? ` · ${criterion.human_comment}` : ""}</p>}
+              {canHumanReview ? <details style={{ marginTop: 8 }}><summary>{t("qa.reviewCriterion")}</summary><div className="grid" style={{ gap: 8, marginTop: 8 }}><Field label={t("qa.agreement")}><select value={criterionReviews[String(criterion.id || index)]?.human_agrees || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_agrees: e.target.value } }))}><option value="">-</option><option value="true">{t("qa.agrees")}</option><option value="false">{t("qa.disagrees")}</option></select></Field><Field label={t("qa.humanScore")}><input type="number" step="0.01" value={criterionReviews[String(criterion.id || index)]?.human_score || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_score: e.target.value } }))} /></Field><Field label={t("qa.humanComment")}><textarea value={criterionReviews[String(criterion.id || index)]?.human_comment || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_comment: e.target.value } }))} /></Field></div></details> : null}
+            </article>)}</div>
+          </details>
+        </div>}
+      </Card>}
 
-      <section className="card" id="qa-review-section">
-        <h3 style={{ marginTop: 0 }}>{t("call.qaReview")}</h3>
-        {!review ? <p>QA review is not available yet. Run analysis after transcription completes.</p> : (
-          <div className="grid" style={{ gap: 10 }}>
-            <p className="message" style={{ marginTop: 0 }}>
-              <strong>{viewingLatest ? "Viewing latest review" : "Viewing previous review"} #{review.id}</strong> · {new Date(review.created_at || "").toLocaleString()}
-              {review.legacy_review ? " · Legacy review — created before v0.10.0 history metadata was fully captured." : ""}
-            </p>
-            <div><strong>Score:</strong> <span className="badge">{review.score}</span></div>
-            <div><strong>Analysis mode:</strong> {review.legacy_review ? (review.analysis_mode || providerMeta["analysis mode"] ? "Recovered metadata" : "Not captured") : (review.analysis_mode || "Not captured")}</div>
-            <div><strong>Provider:</strong> {review.legacy_review ? (review.provider_name || providerMeta["provider"] ? "Recovered metadata" : "Not captured") : (review.provider_name || "Not captured")}</div>
-            <div><strong>Preset:</strong> {review.legacy_review ? (review.provider_preset || providerMeta["preset"] ? "Recovered metadata" : "Not captured") : (review.provider_preset || "Not captured")}</div>
-            <div><strong>Model:</strong> {review.legacy_review ? (review.model || providerMeta["model"] ? "Recovered metadata" : "Not captured") : (review.model || "Not captured")}</div>
-            <div><strong>Scorecard:</strong> {review.legacy_review ? (review.scorecard_name || providerMeta["scorecard"] ? "Recovered metadata" : "Not captured") : (review.scorecard_name || "Not captured")}</div>
-            <div><strong>Report language:</strong> {review.legacy_review ? (review.report_language || providerMeta["report language"] ? "Recovered metadata" : "Not captured") : (review.report_language || "Not captured")}</div>
-            {recoveredReview && (
-              <p className="message message-warning">
-                This review was partially recovered from an imperfect LLM response.
-              </p>
-            )}
-            <div><strong>Summary:</strong> {review.summary}</div>
-            <section className="segment" style={{ borderColor: review.calibration_flag ? "#7c3aed" : undefined }}>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <strong>{t("qa.humanReview")}</strong>
-                <span className={`badge ${review.review_status === "disputed" || review.review_status === "needs_rework" ? "badge-warning" : ""}`}>{reviewStatusLabel(review.review_status)}</span>
-                {review.calibration_flag ? <span className="badge badge-uploaded">{t("qa.calibrationSample")}</span> : null}
-              </div>
-              <div className="meta-grid" style={{ marginTop: 10 }}>
-                <div className="meta-item"><small>{t("qa.aiScore")}</small>{review.score ?? "-"}</div>
-                <div className="meta-item"><small>{t("qa.humanScore")}</small>{review.human_total_score ?? "-"}</div>
-                <div className="meta-item"><small>{t("qa.aiHumanDelta")}</small>{review.ai_human_score_delta ?? "-"}</div>
-                <div className="meta-item"><small>{t("qa.humanReviewer")}</small>{review.human_reviewer_email || "-"}</div>
-              </div>
-              {review.human_summary ? <p><strong>{t("qa.managerComment")}:</strong> {review.human_summary}</p> : null}
-              {review.human_notes ? <p><strong>{t("qa.coachingNotes")}:</strong> {review.human_notes}</p> : null}
-              {canHumanReview ? (
-                <div className="grid" style={{ gap: 10, marginTop: 12 }}>
-                  <label>{t("qa.reviewStatus")}<select value={humanForm.review_status} onChange={(e) => setHumanForm((f) => ({ ...f, review_status: e.target.value }))}>
-                    <option value="approved">{t("qa.approved")}</option>
-                    <option value="human_reviewed">{t("qa.humanReviewed")}</option>
-                    <option value="disputed">{t("qa.disputed")}</option>
-                    <option value="needs_rework">{t("qa.needsRework")}</option>
-                  </select></label>
-                  <label>{t("qa.humanScore")}<input type="number" step="0.01" value={humanForm.human_total_score} onChange={(e) => setHumanForm((f) => ({ ...f, human_total_score: e.target.value }))} /></label>
-                  <label>{t("qa.managerComment")}<textarea value={humanForm.human_summary} onChange={(e) => setHumanForm((f) => ({ ...f, human_summary: e.target.value }))} /></label>
-                  <label>{t("qa.coachingNotes")}<textarea value={humanForm.human_notes} onChange={(e) => setHumanForm((f) => ({ ...f, human_notes: e.target.value }))} /></label>
-                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={humanForm.calibration_flag} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_flag: e.target.checked }))} /> {t("qa.calibrationSample")}</label>
-                  <label>{t("qa.calibrationNotes")}<textarea value={humanForm.calibration_notes} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_notes: e.target.value }))} /></label>
-                  <button className="button" onClick={saveHumanReview} disabled={savingHumanReview}>{savingHumanReview ? "Saving..." : t("qa.saveHumanReview")}</button>
-                </div>
-              ) : <p className="message">{t("qa.viewOnlyHumanReview")}</p>}
-            </section>
-            <section className="segment">
-              <strong>{t("qa.coachingActions")}</strong>
-              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
-                {(review.coaching_actions || []).length === 0 ? <p className="message">{t("qa.noCoachingActions")}</p> : (review.coaching_actions || []).map((action) => (
-                  <article key={action.id} className="segment" style={{ marginBottom: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <div><strong>{action.title}</strong><br /><small>{action.description || ""}</small></div>
-                      <span className="badge">{action.status}</span>
-                    </div>
-                    <div className="actions" style={{ marginTop: 8 }}>
-                      {canHumanReview || user?.role === "agent" ? <button className="button button-secondary" onClick={() => updateCoachingStatus(action.id, "done")}>{t("qa.markDone")}</button> : null}
-                      {canHumanReview ? <button className="button button-secondary" onClick={() => updateCoachingStatus(action.id, "dismissed")}>{t("qa.dismiss")}</button> : null}
-                    </div>
-                  </article>
-                ))}
-              </div>
-              {canHumanReview ? <div className="grid" style={{ gap: 10, marginTop: 12 }}>
-                <label>{t("qa.actionTitle")}<input value={coachingForm.title} onChange={(e) => setCoachingForm((f) => ({ ...f, title: e.target.value }))} /></label>
-                <label>{t("qa.description")}<textarea value={coachingForm.description} onChange={(e) => setCoachingForm((f) => ({ ...f, description: e.target.value }))} /></label>
-                <label>{t("qa.dueDate")}<input type="date" value={coachingForm.due_date} onChange={(e) => setCoachingForm((f) => ({ ...f, due_date: e.target.value }))} /></label>
-                <button className="button" onClick={addCoachingAction} disabled={savingCoaching || !coachingForm.title.trim()}>{savingCoaching ? "Saving..." : t("qa.addAction")}</button>
-              </div> : null}
-            </section>
-            <div>
-              <strong>Criteria breakdown:</strong>
-              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
-                {review.criteria?.filter((criterion) => Number(criterion.max_points) > 0).length === 0 ? (
-                  <p className="message">No criteria breakdown captured for this review.</p>
-                ) : review.criteria
-                  ?.filter((criterion) => Number(criterion.max_points) > 0)
-                  .map((criterion, index) => {
-                    const fallbackGenerated =
-                      criterion.comment === "No valid model assessment was returned for this criterion." ||
-                      criterion.evidence === "No clear evidence found in transcript.";
-                    return (
-                    <article
-                      key={criterion.id}
-                      className="segment"
-                      style={{ marginBottom: 0, borderColor: fallbackGenerated ? "#f59e0b" : undefined }}
-                    >
-                      <div>
-                        <span className="badge">#{index + 1}</span>{" "}
-                        <span className={`badge badge-${criterion.severity}`}>{criterion.severity}</span>{" "}
-                        <strong>{criterion.title}</strong>
-                      </div>
-                      <div><strong>Score:</strong> <strong>{criterion.score}</strong> / <strong>{criterion.max_points}</strong></div>
-                      {fallbackGenerated && (
-                        <div className="message" style={{ marginTop: 8, marginBottom: 8, background: "#fffbeb", color: "#92400e" }}>
-                          Fallback-generated criterion details (model output was incomplete for this criterion).
-                        </div>
-                      )}
-                      <div><strong>Comment:</strong> {criterion.comment}</div>
-                      <div><strong>Evidence:</strong> {criterion.evidence}</div>
-                      {(criterion.human_score != null || criterion.human_comment || criterion.human_agrees != null) && <div className="message" style={{ marginTop: 8 }}><strong>{t("qa.humanReview")}:</strong> {criterion.human_agrees === true ? t("qa.agrees") : criterion.human_agrees === false ? t("qa.disagrees") : ""} {criterion.human_score != null ? ` · ${t("qa.humanScore")}: ${criterion.human_score}` : ""} {criterion.human_comment ? ` · ${criterion.human_comment}` : ""}</div>}
-                      {canHumanReview ? <details style={{ marginTop: 8 }}>
-                        <summary>{t("qa.reviewCriterion")}</summary>
-                        <div className="grid" style={{ gap: 8, marginTop: 8 }}>
-                          <label>{t("qa.agreement")}<select value={criterionReviews[String(criterion.id || index)]?.human_agrees || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_agrees: e.target.value } }))}>
-                            <option value="">-</option><option value="true">{t("qa.agrees")}</option><option value="false">{t("qa.disagrees")}</option>
-                          </select></label>
-                          <label>{t("qa.humanScore")}<input type="number" step="0.01" value={criterionReviews[String(criterion.id || index)]?.human_score || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_score: e.target.value } }))} /></label>
-                          <label>{t("qa.humanComment")}<textarea value={criterionReviews[String(criterion.id || index)]?.human_comment || ""} onChange={(e) => setCriterionReviews((items) => ({ ...items, [String(criterion.id || index)]: { ...(items[String(criterion.id || index)] || { human_score: "", human_comment: "", human_agrees: "", human_severity: "" }), human_comment: e.target.value } }))} /></label>
-                        </div>
-                      </details> : null}
-                    </article>
-                  )})}
-              </div>
-            </div>
-            <div>
-              <strong>Findings:</strong>
-              <ul>
-                {review.findings.map((finding) => (
-                  <li key={finding.id}>
-                    <span className={`badge badge-${finding.severity}`}>{finding.severity}</span>{" "}
-                    <strong>{finding.severity === "critical" || finding.severity === "warning" ? "Attention:" : ""}</strong>{" "}
-                    {finding.evidence}
-                  </li>
-                ))}
-              </ul>
-            </div>
+      {activeTab === "human" && <Card>
+        <SectionHeader title={t("qa.humanReview")} description={t("call.humanHelp")} help={t("help.humanReview")} />
+        {!review ? <EmptyState title={t("call.noQaReview")} /> : <div className="grid">
+          <div className="meta-grid">
+            <div className="meta-item"><small>{t("qa.reviewStatus")} <HelpTooltip text={t("help.reviewStatus")} /></small><StatusBadge status={review.review_status || "ai_generated"} /></div>
+            <div className="meta-item"><small>{t("qa.aiScore")}</small>{review.score ?? "-"}</div>
+            <div className="meta-item"><small>{t("qa.humanScore")}</small>{review.human_total_score ?? "-"}</div>
+            <div className="meta-item"><small>{t("qa.aiHumanDelta")} <HelpTooltip text={t("help.aiHumanDelta")} /></small>{review.ai_human_score_delta ?? "-"}</div>
+            <div className="meta-item"><small>{t("qa.humanReviewer")}</small>{review.human_reviewer_email || "-"}</div>
+            <div className="meta-item"><small>{t("qa.calibrationSample")} <HelpTooltip text={t("help.calibrationCall")} /></small>{review.calibration_flag ? t("common.yes") : t("common.no")}</div>
           </div>
-        )}
-      </section>
+          {canHumanReview ? <div className="grid">
+            <div className="grid-2"><Field label={t("qa.reviewStatus")} help={t("help.reviewStatus")}><select value={humanForm.review_status} onChange={(e) => setHumanForm((f) => ({ ...f, review_status: e.target.value }))}><option value="approved">{t("qa.approved")}</option><option value="disputed">{t("qa.disputed")}</option><option value="needs_rework">{t("qa.needsRework")}</option></select></Field><Field label={t("qa.humanScore")}><input type="number" step="0.01" value={humanForm.human_total_score} onChange={(e) => setHumanForm((f) => ({ ...f, human_total_score: e.target.value }))} /></Field></div>
+            <Field label={t("qa.managerComment")}><textarea value={humanForm.human_summary} onChange={(e) => setHumanForm((f) => ({ ...f, human_summary: e.target.value }))} /></Field>
+            <Field label={t("qa.coachingNotes")}><textarea value={humanForm.human_notes} onChange={(e) => setHumanForm((f) => ({ ...f, human_notes: e.target.value }))} /></Field>
+            <label><input type="checkbox" style={{ width: "auto", marginRight: 8 }} checked={humanForm.calibration_flag} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_flag: e.target.checked }))} />{t("qa.calibrationSample")} <HelpTooltip text={t("help.calibrationCall")} /></label>
+            {humanForm.calibration_flag ? <Field label={t("qa.calibrationNotes")}><textarea value={humanForm.calibration_notes} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_notes: e.target.value }))} /></Field> : null}
+            <div><Button onClick={saveHumanReview} disabled={savingHumanReview}>{savingHumanReview ? t("call.saving") : t("qa.saveHumanReview")}</Button></div>
+          </div> : <p className="message">{t("qa.viewOnlyHumanReview")}</p>}
+        </div>}
+      </Card>}
 
-      <section className="card">
-        <h3 style={{ marginTop: 0 }}>{t("call.analysisHistory")}</h3>
-        <div className="actions" style={{ marginBottom: 10 }}>
-          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","xlsx")}>{t("call.exportHistoryXlsx")}</a>
-          <a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","csv")}>{t("call.exportHistoryCsv")}</a>
-          {viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>{t("call.exportReviewXlsx")}</a><a className="button button-secondary" href={exportUrl("single","csv")}>{t("call.exportReviewCsv")}</a></>}
-        </div>
-        {viewingReviewId && <small>Review export uses selected review #{viewingReviewId}.</small>}
-        {history.length === 0 && <p className="message">No reviews to export.</p>}
-        <div className="grid" style={{ gap: 8 }}>
-          {history.map((item, idx) => {
-            const isLatest = idx === 0;
-            const isSelected = viewingReviewId === item.id;
-            return <article key={item.id} className="segment" style={isSelected ? { borderColor: "#2563eb", boxShadow: "0 0 0 1px #2563eb" } : isLatest ? { borderColor: "#16a34a", boxShadow: "0 0 0 1px #16a34a" } : undefined}>
-              <div style={{display:"flex",justifyContent:"space-between", gap: 12}}>
-                <div>
-                  <strong>{new Date(item.created_at || "").toLocaleString()}</strong> · {item.status} · score {item.score ?? "-"} · {(item.model || (item.legacy_review ? "legacy" : "unknown"))} · {(item.scorecard_name || (item.legacy_review ? "legacy" : "unknown"))} · {(item.report_language || (item.legacy_review ? "legacy" : "unknown"))}
-                  <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {isLatest ? <span className="badge">Latest</span> : null}
-                    {isSelected ? <span className="badge">Selected</span> : null}
-                    {item.legacy_review ? <span className="badge badge-warning">Legacy</span> : null}
-                  </div>
-                </div>
-                <button className="button button-secondary" disabled={viewLoadingReviewId === item.id || isSelected} onClick={() => viewReview(item.id)}>
-                  {viewLoadingReviewId === item.id ? "Loading..." : isSelected ? (isLatest ? "Viewing latest" : "Viewing previous") : (isLatest ? "View latest" : "View previous")}
-                </button>
-              </div>
-            </article>;
-          })}
-        </div>
-      </section>
+      {activeTab === "coaching" && <Card>
+        <SectionHeader title={t("qa.coachingActions")} description={t("call.coachingHelp")} help={t("help.coachingActions")} />
+        {!review ? <EmptyState title={t("call.noQaReview")} /> : <div className="grid">
+          {(review.coaching_actions || []).length === 0 ? <EmptyState title={t("qa.noCoachingActions")} description={t("qa.noCoachingActionsHelp")} /> : <div className="grid">{(review.coaching_actions || []).map((action) => <article key={action.id} className="segment task-card"><div className="task-header"><strong>{action.title}</strong><StatusBadge status={action.status} /></div><small>{t("qa.dueDate")}: {action.due_date ? new Date(action.due_date).toLocaleDateString() : "-"} · {t("call.createdBy")}: {action.created_by_email || action.agent_name || "-"}</small>{action.description ? <p>{action.description}</p> : null}<div className="actions"><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "done")}>{t("qa.markDone")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "dismissed")}>{t("qa.dismiss")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "open")}>{t("qa.reopen")}</Button></div></article>)}</div>}
+          {canHumanReview ? <div className="segment"><SectionHeader title={t("qa.addAction")} /><div className="grid"><Field label={t("qa.actionTitle")}><input value={coachingForm.title} onChange={(e) => setCoachingForm((f) => ({ ...f, title: e.target.value }))} /></Field><Field label={t("qa.description")}><textarea value={coachingForm.description} onChange={(e) => setCoachingForm((f) => ({ ...f, description: e.target.value }))} /></Field><Field label={t("qa.dueDate")}><input type="date" value={coachingForm.due_date} onChange={(e) => setCoachingForm((f) => ({ ...f, due_date: e.target.value }))} /></Field><div><Button onClick={addCoachingAction} disabled={savingCoaching || !coachingForm.title.trim()}>{savingCoaching ? t("call.saving") : t("qa.addAction")}</Button></div></div></div> : null}
+        </div>}
+      </Card>}
 
-      <section className="card">
-        <h3 style={{ marginTop: 0 }}>{t("call.transcriptSegments")}</h3>
-
-        {call && (
-          <div className="meta-grid" style={{ marginTop: 10 }}>
-            <div className="meta-item"><small>{t("call.audioLanguage")}</small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
-            <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{call.stt_language_used || normalizeSttLanguageCode(call.language) || "auto"}</div>
-            <div className="meta-item"><small>{t("settings.sttProvider")}</small>{call.stt_provider_name || sttSettings?.provider?.name || sttSettings?.mode || "-"}</div>
-            <div className="meta-item"><small>{t("settings.currentSttModel")}</small>{call.stt_model || sttSettings?.model || "-"}</div>
-            <div className="meta-item"><small>Detected language</small>{call.detected_language || "-"}</div>
-          </div>
-        )}
-        {normalizeSttLanguageCode(call?.language) === "uz" && (call?.stt_provider_type || sttSettings?.provider?.provider_type || sttSettings?.mode) === "faster_whisper_local" && (call?.stt_model || sttSettings?.model || "").toLowerCase() === "tiny" && (
-          <p className="message message-warning">{t("settings.uzbekTinyWarning")}</p>
-        )}
-        {segments.length === 0 ? (
-          <p>No transcript segments yet.</p>
-        ) : (
-          <div className="grid">
-            {segments.map((segment) => (
-              <article key={segment.id} className="segment">
-                <small>
-                  {msToSeconds(segment.start_ms)} - {msToSeconds(segment.end_ms)} • {segment.speaker}
-                </small>
-                <p>{segment.text}</p>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+      {activeTab === "history" && <Card>
+        <SectionHeader title={t("call.analysisHistory")} description={t("call.historyHelp")} actions={<><a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","xlsx")}>{t("call.exportHistoryXlsx")}</a><a className={`button button-secondary${history.length === 0 ? " disabled" : ""}`} aria-disabled={history.length === 0} href={history.length === 0 ? undefined : exportUrl("history","csv")}>{t("call.exportHistoryCsv")}</a>{viewingReviewId && <><a className="button button-secondary" href={exportUrl("single","xlsx")}>{t("call.exportReviewXlsx")}</a><a className="button button-secondary" href={exportUrl("single","csv")}>{t("call.exportReviewCsv")}</a></>}</>} />
+        {viewingReviewId && <small>{t("call.selectedReviewExport")} #{viewingReviewId}.</small>}
+        {history.length === 0 ? <EmptyState title={t("call.noReviewsToExport")} /> : <div className="grid" style={{ gap: 8, marginTop: 12 }}>{history.map((item, idx) => { const isLatest = idx === 0; const isSelected = viewingReviewId === item.id; return <article key={item.id} className="segment" style={isSelected ? { borderColor: "#2563eb", boxShadow: "0 0 0 1px #2563eb" } : isLatest ? { borderColor: "#16a34a", boxShadow: "0 0 0 1px #16a34a" } : undefined}><div style={{display:"flex",justifyContent:"space-between", gap: 12, flexWrap: "wrap"}}><div><strong>{new Date(item.created_at || "").toLocaleString()}</strong> · {item.status} · {t("call.score")} {item.score ?? "-"}<div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>{isLatest ? <Badge>{t("call.latest")}</Badge> : null}{isSelected ? <Badge>{t("call.selected")}</Badge> : null}{item.legacy_review ? <Badge tone="warning">{t("call.legacy")}</Badge> : null}</div></div><Button variant="secondary" disabled={viewLoadingReviewId === item.id || isSelected} onClick={() => viewReview(item.id)}>{viewLoadingReviewId === item.id ? t("call.loading") : isSelected ? (isLatest ? t("call.viewingLatestShort") : t("call.viewingPreviousShort")) : (isLatest ? t("call.viewLatest") : t("call.viewPrevious"))}</Button></div></article>; })}</div>}
+      </Card>}
     </div>
-  );
-}
+  );}
