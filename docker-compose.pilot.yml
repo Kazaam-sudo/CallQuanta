@@ -1,0 +1,38 @@
+services:
+  pilot-gateway:
+    image: caddy:2-alpine
+    depends_on:
+      - web
+      - api
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./deploy/pilot/Caddyfile:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped
+
+  api:
+    environment:
+      APP_ENV: ${APP_ENV:-pilot}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
+      MAX_UPLOAD_BYTES_PER_FILE: ${MAX_UPLOAD_BYTES_PER_FILE:-104857600}
+      MAX_BULK_UPLOAD_BYTES: ${MAX_BULK_UPLOAD_BYTES:-524288000}
+      RETENTION_AUDIO_DAYS: ${RETENTION_AUDIO_DAYS:-7}
+      RETENTION_TRANSCRIPTS_DAYS: ${RETENTION_TRANSCRIPTS_DAYS:-14}
+      RETENTION_QA_REVIEWS_DAYS: ${RETENTION_QA_REVIEWS_DAYS:-30}
+      RETENTION_INGESTION_EVENTS_DAYS: ${RETENTION_INGESTION_EVENTS_DAYS:-14}
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
+        NEXT_PUBLIC_PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+        APP_BANNER_TEXT: ${APP_BANNER_TEXT:-}
+        APP_BANNER_VARIANT: ${APP_BANNER_VARIANT:-info}
+    environment:
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
+      APP_BANNER_TEXT: ${APP_BANNER_TEXT:-}
+      APP_BANNER_VARIANT: ${APP_BANNER_VARIANT:-info}
+      NEXT_PUBLIC_PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}

@@ -28,7 +28,7 @@ from werkzeug.utils import secure_filename
 from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.21.0")
+app = FastAPI(title="CallQuanta API", version="0.24.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
