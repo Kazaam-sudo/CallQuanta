@@ -72,6 +72,7 @@ const scorePercent = (value: number | null | undefined) =>
 
 export default function Page() {
   const [data, setData] = useState<DashboardMetrics | null>(null);
+  const [pilot, setPilot] = useState<any | null>(null);
   const [filters, setFilters] = useState<DashboardFilters>(emptyFilters);
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({
     agents: [],
@@ -91,12 +92,14 @@ export default function Page() {
     return params.toString();
   }, [filters]);
   const load = useCallback(async () => {
-    const [metricsRes, optionsRes] = await Promise.all([
+    const [metricsRes, optionsRes, pilotRes] = await Promise.all([
       fetch(`${API_BASE_URL}/dashboard/metrics?${query}`),
       fetch(`${API_BASE_URL}/calls/filter-options`),
+      fetch(`${API_BASE_URL}/dashboard/pilot-feedback`),
     ]);
     if (metricsRes.ok) setData(await metricsRes.json());
     if (optionsRes.ok) setFilterOptions(await optionsRes.json());
+    if (pilotRes.ok) setPilot(await pilotRes.json());
   }, [query]);
   useEffect(() => {
     load();
@@ -226,6 +229,7 @@ export default function Page() {
           </label>
         </div>
       </section>
+      <section className="card"><div className="section-header"><div><h2>Pilot Feedback</h2><small>Manager feedback loop and pilot readiness</small></div><div className="actions"><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=csv`}>Export CSV</a><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=xlsx`}>Export XLSX</a><Link className="button button-secondary" href="/pilot">Pilot checklist</Link></div></div>{pilot ? <div className="kpi-grid"><article className="kpi-card"><small>Reviews with feedback</small><strong>{pilot.reviews_with_feedback}</strong></article><article className="kpi-card"><small>Useful for coaching</small><strong>{pilot.useful_for_coaching_percent ?? "-"}%</strong></article><article className="kpi-card"><small>STT problems</small><strong>{pilot.reviews_with_stt_problems}</strong></article><article className="kpi-card"><small>QA logic problems</small><strong>{pilot.reviews_with_qa_logic_problems}</strong></article><article className="kpi-card"><small>Avg AI-human delta</small><strong>{pilot.average_ai_human_delta_with_feedback ?? "-"}</strong></article></div> : <p>Loading pilot feedback…</p>}<p><strong>Top issue tags:</strong> {pilot?.top_issue_tags?.map((x:any) => `${x.tag} (${x.count})`).join(", ") || "-"}</p></section>
       {emptyMessage ? (
         <section className="card empty-state">{emptyMessage}</section>
       ) : null}

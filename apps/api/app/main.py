@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAReview, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
+from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
 app = FastAPI(title="CallQuanta API", version="0.21.0")
@@ -377,6 +377,31 @@ class CoachingActionPatchPayload(BaseModel):
     assigned_to_user_id: int | None = None
     due_date: datetime | None = None
     status: str | None = None
+
+
+class QAReviewAssignmentPayload(BaseModel):
+    assigned_to_user_id: int
+    due_date: datetime | None = None
+
+
+class QAReviewAssignmentPatchPayload(BaseModel):
+    status: str | None = None
+    due_date: datetime | None = None
+
+
+class QAFeedbackPayload(BaseModel):
+    transcript_quality: str | None = None
+    qa_analysis_quality: str | None = None
+    score_agreement: str | None = None
+    scorecard_fit: str | None = None
+    ai_missed_something: bool | None = None
+    ai_missed_comment: str | None = None
+    ai_false_positive: bool | None = None
+    ai_false_positive_comment: str | None = None
+    useful_for_coaching: bool | None = None
+    coaching_usefulness_comment: str | None = None
+    overall_feedback: str | None = None
+    issue_tags: list[str] | None = None
 
 
 
@@ -786,6 +811,7 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_qa_reviews_table(engine)
     migrate_qa_coaching_actions_table(engine)
+    migrate_pilot_feedback_tables(engine)
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
     migrate_telephony_ingestion_tables(engine)
@@ -1974,6 +2000,84 @@ def export_calls(
 
 
 
+VALID_ASSIGNMENT_STATUSES = {"assigned", "in_review", "completed", "skipped"}
+VALID_QUALITY_VALUES = {"good", "acceptable", "poor", "unusable"}
+VALID_SCORE_AGREEMENTS = {"agree", "partially_agree", "disagree"}
+VALID_SCORECARD_FITS = {"good", "needs_changes", "wrong_for_this_call_type"}
+VALID_ISSUE_TAGS = {"stt_quality", "wrong_language", "speaker_separation", "qa_logic", "score_too_high", "score_too_low", "missing_evidence", "bad_scorecard_criterion", "ui_confusing", "export_problem", "other"}
+
+
+def _latest_assignments(db: Session, review_ids: list[int]) -> dict[int, QAReviewAssignment]:
+    if not review_ids:
+        return {}
+    rows = db.execute(select(QAReviewAssignment).where(QAReviewAssignment.review_id.in_(review_ids)).order_by(QAReviewAssignment.review_id.asc(), QAReviewAssignment.created_at.desc(), QAReviewAssignment.id.desc())).scalars().all()
+    out = {}
+    for row in rows:
+        out.setdefault(row.review_id, row)
+    return out
+
+
+def _feedback_by_review(db: Session, review_ids: list[int]) -> dict[int, QAFeedback]:
+    if not review_ids:
+        return {}
+    rows = db.execute(select(QAFeedback).where(QAFeedback.review_id.in_(review_ids)).order_by(QAFeedback.updated_at.desc(), QAFeedback.id.desc())).scalars().all()
+    out = {}
+    for row in rows:
+        out.setdefault(row.review_id, row)
+    return out
+
+
+def _serialize_assignment(a: QAReviewAssignment | None, users: dict[int, User] | None = None) -> dict | None:
+    if not a:
+        return None
+    user = (users or {}).get(a.assigned_to_user_id)
+    return {"id": a.id, "review_id": a.review_id, "call_id": a.call_id, "assigned_to_user_id": a.assigned_to_user_id, "assigned_to_email": user.email if user else None, "assigned_by_user_id": a.assigned_by_user_id, "status": a.status, "due_date": a.due_date.isoformat() if a.due_date else None, "created_at": a.created_at.isoformat() if a.created_at else None, "updated_at": a.updated_at.isoformat() if a.updated_at else None}
+
+
+def _feedback_status(f: QAFeedback | None) -> str:
+    if not f:
+        return "no_feedback"
+    tags = f.issue_tags_json or []
+    return "has_issue" if tags else "feedback_added"
+
+
+def _serialize_feedback(f: QAFeedback | None) -> dict | None:
+    if not f:
+        return None
+    return {"id": f.id, "review_id": f.review_id, "call_id": f.call_id, "created_by_user_id": f.created_by_user_id, "created_by_email": f.created_by_email, "transcript_quality": f.transcript_quality, "qa_analysis_quality": f.qa_analysis_quality, "score_agreement": f.score_agreement, "scorecard_fit": f.scorecard_fit, "ai_missed_something": bool(f.ai_missed_something), "ai_missed_comment": f.ai_missed_comment, "ai_false_positive": bool(f.ai_false_positive), "ai_false_positive_comment": f.ai_false_positive_comment, "useful_for_coaching": f.useful_for_coaching, "coaching_usefulness_comment": f.coaching_usefulness_comment, "overall_feedback": f.overall_feedback, "issue_tags": f.issue_tags_json or [], "feedback_status": _feedback_status(f), "created_at": f.created_at.isoformat() if f.created_at else None, "updated_at": f.updated_at.isoformat() if f.updated_at else None}
+
+
+def _upsert_feedback(db: Session, review: QAReview, call: Call, payload: QAFeedbackPayload, user: User) -> QAFeedback:
+    if user.role not in {"admin", "manager", "supervisor"}:
+        raise HTTPException(status_code=403, detail="Only admins, managers, and supervisors can edit QA feedback")
+    require_can_modify_call(call, user)
+    f = db.execute(select(QAFeedback).where(QAFeedback.review_id == review.id, QAFeedback.created_by_user_id == user.id).order_by(QAFeedback.id.desc())).scalars().first()
+    created = f is None
+    if f is None:
+        f = QAFeedback(review_id=review.id, call_id=call.id, created_by_user_id=user.id, created_by_email=user.email)
+        db.add(f)
+    data = payload.model_dump(exclude_unset=True)
+    for field in ["transcript_quality", "qa_analysis_quality"]:
+        if field in data and data[field] is not None and data[field] not in VALID_QUALITY_VALUES:
+            raise HTTPException(status_code=400, detail=f"invalid {field}")
+    if data.get("score_agreement") is not None and data["score_agreement"] not in VALID_SCORE_AGREEMENTS:
+        raise HTTPException(status_code=400, detail="invalid score_agreement")
+    if data.get("scorecard_fit") is not None and data["scorecard_fit"] not in VALID_SCORECARD_FITS:
+        raise HTTPException(status_code=400, detail="invalid scorecard_fit")
+    if "issue_tags" in data:
+        tags = [str(t).strip() for t in (data.get("issue_tags") or []) if str(t).strip()]
+        bad = [t for t in tags if t not in VALID_ISSUE_TAGS]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"invalid issue_tags: {bad}")
+        f.issue_tags_json = tags
+    for field in ["transcript_quality", "qa_analysis_quality", "score_agreement", "scorecard_fit", "ai_missed_something", "ai_missed_comment", "ai_false_positive", "ai_false_positive_comment", "useful_for_coaching", "coaching_usefulness_comment", "overall_feedback"]:
+        if field in data:
+            setattr(f, field, data[field] if not isinstance(data[field], str) else _normalize_optional_text(data[field]))
+    f.updated_at = _utcnow()
+    _log_audit_event(db, user, "feedback_submitted" if created else "feedback_updated", "qa_feedback", f.id, "QA feedback saved", {"review_id": review.id, "call_id": call.id})
+    db.commit(); db.refresh(f)
+    return f
+
 @app.get("/qa-reviews")
 def list_qa_reviews(
     q: str | None = None,
@@ -1990,6 +2094,9 @@ def list_qa_reviews(
     min_score: float | None = None,
     max_score: float | None = None,
     min_delta: float | None = None,
+    assigned_to: str | None = None,
+    feedback_status: str | None = None,
+    view: str | None = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -2017,8 +2124,32 @@ def list_qa_reviews(
         stmt = stmt.where(QAReview.score <= max_score)
     if min_delta is not None:
         stmt = stmt.where(func.abs(QAReview.ai_human_score_delta) >= min_delta)
+    if view == "my_assigned" or assigned_to == "me":
+        stmt = stmt.join(QAReviewAssignment, QAReviewAssignment.review_id == QAReview.id).where(QAReviewAssignment.assigned_to_user_id == user.id, QAReviewAssignment.status.in_(["assigned", "in_review"]))
+    elif assigned_to:
+        try:
+            assigned_user_id = int(assigned_to)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="assigned_to must be a user id or me")
+        stmt = stmt.join(QAReviewAssignment, QAReviewAssignment.review_id == QAReview.id).where(QAReviewAssignment.assigned_to_user_id == assigned_user_id)
+    if view == "disputed": stmt = stmt.where(QAReview.review_status == "disputed")
+    if view == "needs_rework": stmt = stmt.where(QAReview.review_status == "needs_rework")
+    if view == "calibration": stmt = stmt.where(QAReview.calibration_flag.is_(True))
+    if view == "low_score": stmt = stmt.where(QAReview.score <= 70)
+    if view == "ai_unreviewed": stmt = stmt.where(or_(QAReview.review_status == "ai_generated", QAReview.review_status.is_(None)))
+    if feedback_status in {"feedback_added", "has_issue", "no_feedback"}:
+        feedback_ids = [row[0] for row in db.execute(select(QAFeedback.review_id)).all()]
+        issue_ids = [row[0] for row in db.execute(select(QAFeedback.review_id).where(QAFeedback.issue_tags_json.is_not(None))).all()]
+        if feedback_status == "no_feedback": stmt = stmt.where(QAReview.id.not_in(feedback_ids or [-1]))
+        elif feedback_status == "feedback_added": stmt = stmt.where(QAReview.id.in_(feedback_ids or [-1]))
+        elif feedback_status == "has_issue": stmt = stmt.where(QAReview.id.in_(issue_ids or [-1]))
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     reviews = db.execute(stmt.order_by(QAReview.created_at.desc(), QAReview.id.desc()).limit(limit).offset(offset)).scalars().all()
+    review_ids = [r.id for r in reviews]
+    assignments = _latest_assignments(db, review_ids)
+    feedback_map = _feedback_by_review(db, review_ids)
+    user_ids = {a.assigned_to_user_id for a in assignments.values()}
+    users = {u.id: u for u in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()} if user_ids else {}
     items = []
     for review in reviews:
         call = calls_by_id.get(review.call_id)
@@ -2032,6 +2163,11 @@ def list_qa_reviews(
             "campaign": call.campaign if call else None,
             "coaching_actions_count": coaching_count,
             "open_coaching_actions_count": open_count,
+            "assignment": _serialize_assignment(assignments.get(review.id), users),
+            "assigned_to_user_id": assignments.get(review.id).assigned_to_user_id if assignments.get(review.id) else None,
+            "assigned_to_email": users.get(assignments.get(review.id).assigned_to_user_id).email if assignments.get(review.id) and users.get(assignments.get(review.id).assigned_to_user_id) else None,
+            "feedback": _serialize_feedback(feedback_map.get(review.id)),
+            "feedback_status": _feedback_status(feedback_map.get(review.id)),
         })
     return {"items": items, "total": int(total), "limit": limit, "offset": offset}
 
@@ -2596,6 +2732,9 @@ def serialize_review_full(review: QAReview, db: Session) -> dict:
         "human_reviewer_user_id": review.human_reviewer_user_id,
         "calibration_notes": review.calibration_notes,
         "coaching_actions": [_serialize_coaching_action(action) for action in db.execute(select(QACoachingAction).where(QACoachingAction.review_id == review.id).order_by(QACoachingAction.created_at.desc(), QACoachingAction.id.desc())).scalars().all()],
+        "assignment": _serialize_assignment(_latest_assignments(db, [review.id]).get(review.id), {u.id: u for u in db.execute(select(User).where(User.id.in_([a.assigned_to_user_id for a in _latest_assignments(db, [review.id]).values()]))).scalars().all()}),
+        "feedback": _serialize_feedback(_feedback_by_review(db, [review.id]).get(review.id)),
+        "feedback_status": _feedback_status(_feedback_by_review(db, [review.id]).get(review.id)),
         "provider_preset": review.provider_preset or metadata_fallback.get("preset"),
         "provider_name": review.provider_name or metadata_fallback.get("provider"),
         "model": review.model or metadata_fallback.get("model"),
@@ -2707,6 +2846,95 @@ def patch_coaching_action(call_id: int, review_id: int, action_id: int, payload:
     db.refresh(action)
     return {"action": _serialize_coaching_action(action)}
 
+
+@app.post("/calls/{call_id}/qa/reviews/{review_id}/assignments")
+def assign_qa_review(call_id: int, review_id: int, payload: QAReviewAssignmentPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id); review = db.get(QAReview, review_id); target = db.get(User, payload.assigned_to_user_id)
+    if not call or not review or review.call_id != call_id: raise HTTPException(status_code=404, detail="Review not found")
+    require_can_modify_call(call, user)
+    if not target or not target.is_active: raise HTTPException(status_code=404, detail="Assigned user not found")
+    if not _can_view_call(target, call): raise HTTPException(status_code=403, detail="Assigned review is outside user's scope")
+    assignment = QAReviewAssignment(review_id=review.id, call_id=call.id, assigned_to_user_id=target.id, assigned_by_user_id=user.id, status="assigned", due_date=payload.due_date)
+    db.add(assignment); db.flush()
+    _log_audit_event(db, user, "review_assigned", "qa_review_assignment", assignment.id, "QA review assigned", {"review_id": review.id, "assigned_to_user_id": target.id})
+    db.commit(); db.refresh(assignment)
+    return {"assignment": _serialize_assignment(assignment, {target.id: target})}
+
+
+@app.patch("/calls/{call_id}/qa/reviews/{review_id}/assignments/{assignment_id}")
+def patch_qa_review_assignment(call_id: int, review_id: int, assignment_id: int, payload: QAReviewAssignmentPatchPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id); review = db.get(QAReview, review_id); assignment = db.get(QAReviewAssignment, assignment_id)
+    if not call or not review or not assignment or review.call_id != call_id or assignment.review_id != review_id: raise HTTPException(status_code=404, detail="Assignment not found")
+    if user.role == "admin" or assignment.assigned_to_user_id == user.id: require_can_view_call(call, user)
+    else: require_can_modify_call(call, user)
+    old = assignment.status
+    if payload.status is not None:
+        status = payload.status.strip().lower()
+        if status not in VALID_ASSIGNMENT_STATUSES: raise HTTPException(status_code=400, detail="invalid assignment status")
+        assignment.status = status
+    if payload.due_date is not None: assignment.due_date = payload.due_date
+    assignment.updated_at = _utcnow()
+    if old != assignment.status and assignment.status == "completed": _log_audit_event(db, user, "assignment_completed", "qa_review_assignment", assignment.id, "QA assignment completed")
+    else: _log_audit_event(db, user, "assignment_updated", "qa_review_assignment", assignment.id, "QA assignment updated")
+    db.commit(); db.refresh(assignment)
+    target = db.get(User, assignment.assigned_to_user_id)
+    return {"assignment": _serialize_assignment(assignment, {target.id: target} if target else {})}
+
+
+@app.get("/calls/{call_id}/qa/reviews/{review_id}/feedback")
+def get_qa_feedback(call_id: int, review_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id); review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id: raise HTTPException(status_code=404, detail="Review not found")
+    require_can_view_call(call, user)
+    items = db.execute(select(QAFeedback).where(QAFeedback.review_id == review.id).order_by(QAFeedback.updated_at.desc(), QAFeedback.id.desc())).scalars().all()
+    return {"items": [_serialize_feedback(f) for f in items], "feedback": _serialize_feedback(items[0] if items else None)}
+
+
+@app.put("/calls/{call_id}/qa/reviews/{review_id}/feedback")
+def put_qa_feedback(call_id: int, review_id: int, payload: QAFeedbackPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id); review = db.get(QAReview, review_id)
+    if not call or not review or review.call_id != call_id: raise HTTPException(status_code=404, detail="Review not found")
+    feedback = _upsert_feedback(db, review, call, payload, user)
+    return {"feedback": _serialize_feedback(feedback)}
+
+
+@app.get("/dashboard/pilot-feedback")
+def pilot_feedback_metrics(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    calls = db.execute(_filtered_calls_statement(user=user)).scalars().all(); calls_by_id = {c.id: c for c in calls}
+    feedback = db.execute(select(QAFeedback).where(QAFeedback.call_id.in_(list(calls_by_id.keys())))).scalars().all() if calls_by_id else []
+    review_ids = [f.review_id for f in feedback]
+    reviews = {r.id: r for r in db.execute(select(QAReview).where(QAReview.id.in_(review_ids))).scalars().all()} if review_ids else {}
+    def dist(field):
+        out = {}
+        for f in feedback:
+            v = getattr(f, field) or "not_set"; out[v] = out.get(v, 0) + 1
+        return out
+    tags = {}
+    for f in feedback:
+        for tag in (f.issue_tags_json or []): tags[tag] = tags.get(tag, 0) + 1
+    deltas = [abs(float(reviews[f.review_id].ai_human_score_delta)) for f in feedback if reviews.get(f.review_id) and reviews[f.review_id].ai_human_score_delta is not None]
+    useful = [f.useful_for_coaching for f in feedback if f.useful_for_coaching is not None]
+    return {"reviews_with_feedback": len({f.review_id for f in feedback}), "transcript_quality_distribution": dist("transcript_quality"), "qa_quality_distribution": dist("qa_analysis_quality"), "score_agreement_distribution": dist("score_agreement"), "useful_for_coaching_percent": round(100 * sum(1 for v in useful if v) / len(useful), 2) if useful else None, "top_issue_tags": sorted(([{"tag": k, "count": v} for k, v in tags.items()]), key=lambda x: x["count"], reverse=True)[:10], "reviews_with_stt_problems": sum(1 for f in feedback if "stt_quality" in (f.issue_tags_json or [])), "reviews_with_qa_logic_problems": sum(1 for f in feedback if "qa_logic" in (f.issue_tags_json or [])), "average_ai_human_delta_with_feedback": round(sum(deltas)/len(deltas),2) if deltas else None}
+
+
+@app.get("/qa-feedback/export")
+def export_qa_feedback(format: str = Query("csv", pattern="^(xlsx|csv)$"), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    calls = db.execute(_filtered_calls_statement(user=user)).scalars().all(); calls_by_id = {c.id: c for c in calls}
+    feedback = db.execute(select(QAFeedback).where(QAFeedback.call_id.in_(list(calls_by_id.keys()))).order_by(QAFeedback.created_at.desc())).scalars().all() if calls_by_id else []
+    reviews = {r.id: r for r in db.execute(select(QAReview).where(QAReview.id.in_([f.review_id for f in feedback]))).scalars().all()} if feedback else {}
+    headers = ["review_id","call_id","agent","team","campaign","ai_score","human_score","transcript_quality","qa_analysis_quality","score_agreement","scorecard_fit","useful_for_coaching","issue_tags","comments","created_by","created_at"]
+    rows=[]
+    for f in feedback:
+        c=calls_by_id.get(f.call_id); r=reviews.get(f.review_id); comments=" | ".join(x for x in [f.ai_missed_comment, f.ai_false_positive_comment, f.coaching_usefulness_comment, f.overall_feedback] if x)
+        rows.append([f.review_id,f.call_id,c.agent_name if c else "",c.team if c else "",c.campaign if c else "",r.score if r and r.score is not None else "",r.human_total_score if r and r.human_total_score is not None else "",f.transcript_quality or "",f.qa_analysis_quality or "",f.score_agreement or "",f.scorecard_fit or "",f.useful_for_coaching if f.useful_for_coaching is not None else "", ",".join(f.issue_tags_json or []), comments, f.created_by_email or "", f.created_at.isoformat() if f.created_at else ""])
+    _log_audit_event(db, user, "pilot_export_created", "qa_feedback", None, "QA feedback export created", {"format": format, "count": len(rows)}, commit=True)
+    if format == "csv":
+        buf=StringIO(); buf.write("\ufeff"); w=csv.writer(buf); w.writerow(headers); w.writerows(rows)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="callquanta-qa-feedback.csv"'})
+    wb=Workbook(); ws=wb.active; ws.title="QA feedback"; ws.append(headers)
+    for row in rows: ws.append(row)
+    out=BytesIO(); wb.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="callquanta-qa-feedback.xlsx"'})
 
 @app.get("/calls/{call_id}/qa/reviews")
 def list_call_reviews(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:

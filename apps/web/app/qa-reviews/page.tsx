@@ -21,13 +21,15 @@ type QAQueueItem = {
   campaign?: string | null;
   coaching_actions_count?: number;
   open_coaching_actions_count?: number;
+  assigned_to_email?: string | null;
+  feedback_status?: string;
 };
 
 export default function QAReviewsPage() {
   const { t } = useI18n();
   const [items, setItems] = useState<QAQueueItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [filters, setFilters] = useState({ review_status: "", calibration_flag: "", min_delta: "", agent_name: "", team: "", campaign: "" });
+  const [filters, setFilters] = useState({ view: "", review_status: "", calibration_flag: "", min_delta: "", agent_name: "", team: "", campaign: "", assigned_to: "", feedback_status: "" });
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -57,6 +59,7 @@ export default function QAReviewsPage() {
         <Link className="button button-secondary" href="/dashboard">{t("nav.dashboard")}</Link>
       </div>
       <div className="filters-grid">
+        <label>View<select value={filters.view} onChange={(e) => update("view", e.target.value)}><option value="">All visible reviews</option><option value="my_assigned">My assigned reviews</option><option value="ai_unreviewed">AI generated, not human reviewed</option><option value="disputed">Disputed</option><option value="needs_rework">Needs rework</option><option value="calibration">Calibration samples</option><option value="low_score">Low score reviews</option></select></label>
         <label>{t("qa.reviewStatus")}<select value={filters.review_status} onChange={(e) => update("review_status", e.target.value)}>
           <option value="">All</option>
           <option value="ai_generated">AI generated</option>
@@ -70,17 +73,23 @@ export default function QAReviewsPage() {
         <label>{t("calls.agent")}<input value={filters.agent_name} onChange={(e) => update("agent_name", e.target.value)} /></label>
         <label>{t("calls.team")}<input value={filters.team} onChange={(e) => update("team", e.target.value)} /></label>
         <label>{t("calls.campaign")}<input value={filters.campaign} onChange={(e) => update("campaign", e.target.value)} /></label>
+        <label>Assigned to<input value={filters.assigned_to} onChange={(e) => update("assigned_to", e.target.value)} placeholder="me or user id" /></label>
+        <label>Feedback status<select value={filters.feedback_status} onChange={(e) => update("feedback_status", e.target.value)}><option value="">All</option><option value="no_feedback">No feedback</option><option value="feedback_added">Feedback added</option><option value="has_issue">Has issue</option></select></label>
       </div>
     </section>
     <section className="card">
       <div className="table-wrap">
         <table className="data-table">
-          <thead><tr><th>Date</th><th>Call</th><th>Agent</th><th>Status</th><th>AI</th><th>Human</th><th>Delta</th><th>Coaching</th><th>Link</th></tr></thead>
+          <thead><tr><th>Date</th><th>Call</th><th>Agent</th><th>Team</th><th>Campaign</th><th>Status</th><th>Assigned to</th><th>Feedback</th><th>AI</th><th>Human</th><th>Delta</th><th>Coaching</th><th>Link</th></tr></thead>
           <tbody>{items.map((item) => <tr key={item.id}>
             <td>{item.created_at ? new Date(item.created_at).toLocaleString() : "-"}</td>
             <td>{item.filename || `Call #${item.call_id}`}{item.calibration_flag ? <span className="badge badge-uploaded" style={{ marginLeft: 6 }}>{t("qa.calibrationSample")}</span> : null}</td>
             <td>{item.agent_name || "-"}</td>
+            <td>{item.team || "-"}</td>
+            <td>{item.campaign || "-"}</td>
             <td><span className="badge">{(item.review_status || "ai_generated").replaceAll("_", " ")}</span></td>
+            <td>{item.assigned_to_email || "-"}</td>
+            <td><span className="badge">{(item.feedback_status || "no_feedback").replaceAll("_", " ")}</span></td>
             <td>{item.score ?? "-"}</td>
             <td>{item.human_total_score ?? "-"}</td>
             <td>{item.ai_human_score_delta ?? "-"}</td>
