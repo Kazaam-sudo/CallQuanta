@@ -149,6 +149,42 @@ class QAReview(Base):
     calibration_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class QAReviewAssignment(Base):
+    __tablename__ = "qa_review_assignments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("qa_reviews.id"))
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"))
+    assigned_to_user_id: Mapped[int] = mapped_column(Integer)
+    assigned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="assigned")
+    due_date: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class QAFeedback(Base):
+    __tablename__ = "qa_feedback"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("qa_reviews.id"))
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"))
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transcript_quality: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    qa_analysis_quality: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    score_agreement: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scorecard_fit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_missed_something: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_missed_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_false_positive: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_false_positive_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    useful_for_coaching: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    coaching_usefulness_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    overall_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issue_tags_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class QACoachingAction(Base):
     __tablename__ = "qa_coaching_actions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -289,6 +325,11 @@ def migrate_qa_coaching_actions_table(engine: Engine) -> None:
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
+
+
+def migrate_pilot_feedback_tables(engine: Engine) -> None:
+    Base.metadata.tables["qa_review_assignments"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["qa_feedback"].create(bind=engine, checkfirst=True)
 
 def migrate_calls_table(engine: Engine) -> None:
     """Backfill/upgrade calls table with metadata columns for operator-level reporting."""

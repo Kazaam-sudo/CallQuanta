@@ -5,4 +5,13 @@
     "calls": "Звонки",
     "settings": "Настройки"
   }
+,
+  "pilotTesting": "Pilot testing",
+  "pilotChecklist": "Pilot checklist",
+  "qaReviewQueue": "QA review queue",
+  "myReviews": "My reviews",
+  "assignReview": "Assign review",
+  "reviewFeedback": "Review feedback",
+  "transcriptQuality": "Transcript quality",
+  "qaAnalysisQuality": "QA analysis quality"
 }

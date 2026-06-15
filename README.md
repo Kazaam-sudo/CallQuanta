@@ -141,3 +141,17 @@ docker compose up --build
 - [Providers](docs/providers.md)
 - [Scorecards](docs/scorecards.md)
 - [Production deployment](docs/deploy-production.md)
+
+## Pilot testing workflow (v0.23.0)
+
+CallQuanta includes a lightweight pilot workflow for internal manager testing before wider rollout:
+
+- Admins and scoped managers can assign QA reviews to supervisors/managers.
+- Managers can use **My assigned reviews** in the QA Review Queue to validate AI output.
+- Call Details includes a manager feedback loop for transcript quality, QA analysis quality, score agreement, scorecard fit, missed issues, false positives, and coaching usefulness.
+- Quick feedback buttons let managers mark transcript, QA, score, and coaching usefulness without completing a long survey.
+- The dashboard includes **Pilot Feedback** metrics such as feedback coverage, quality distributions, useful-for-coaching rate, top issue tags, STT problems, QA logic problems, and AI-human score delta.
+- QA feedback can be exported as CSV or XLSX for pilot summaries.
+- The `/pilot` checklist page guides admins and managers through the recommended pilot format.
+
+See [docs/pilot-testing.md](docs/pilot-testing.md) for the recommended 3-manager, 5–10-calls-each pilot plan.

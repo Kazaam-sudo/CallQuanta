@@ -65,7 +65,8 @@ type QACriterion = {
   human_agrees?: boolean | null;
 };
 type CoachingAction = { id:number; title:string; description?:string|null; status:string; due_date?:string|null; agent_name?:string|null; created_by_email?:string|null };
-type QAReview = { id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; review_status?: string; human_total_score?: number | null; human_summary?: string | null; human_notes?: string | null; human_reviewer_email?: string | null; human_reviewed_at?: string | null; ai_human_score_delta?: number | null; calibration_flag?: boolean; calibration_notes?: string | null; criteria: QACriterion[]; findings: QAFinding[]; coaching_actions?: CoachingAction[] };
+type QAFeedback = { transcript_quality?: string | null; qa_analysis_quality?: string | null; score_agreement?: string | null; scorecard_fit?: string | null; ai_missed_something?: boolean; ai_missed_comment?: string | null; ai_false_positive?: boolean; ai_false_positive_comment?: string | null; useful_for_coaching?: boolean | null; coaching_usefulness_comment?: string | null; overall_feedback?: string | null; issue_tags?: string[]; feedback_status?: string };
+type QAReview = { feedback?: QAFeedback | null; feedback_status?: string; assignment?: { id:number; assigned_to_email?: string | null; status:string } | null; id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; review_status?: string; human_total_score?: number | null; human_summary?: string | null; human_notes?: string | null; human_reviewer_email?: string | null; human_reviewed_at?: string | null; ai_human_score_delta?: number | null; calibration_flag?: boolean; calibration_notes?: string | null; criteria: QACriterion[]; findings: QAFinding[]; coaching_actions?: CoachingAction[] };
 type AuthUser = { id:number; email:string; role:string };
 type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean; review_status?:string; human_total_score?:number|null; calibration_flag?:boolean };
 
@@ -95,6 +96,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [humanForm, setHumanForm] = useState({ review_status: "approved", human_total_score: "", human_summary: "", human_notes: "", calibration_flag: false, calibration_notes: "" });
   const [criterionReviews, setCriterionReviews] = useState<Record<string, { human_score: string; human_comment: string; human_agrees: string; human_severity: string }>>({});
   const [coachingForm, setCoachingForm] = useState({ title: "", description: "", due_date: "" });
+  const [feedbackForm, setFeedbackForm] = useState<QAFeedback>({ transcript_quality: "", qa_analysis_quality: "", score_agreement: "", scorecard_fit: "", useful_for_coaching: null, issue_tags: [] });
+  const [assignUserId, setAssignUserId] = useState("");
   const [savingHumanReview, setSavingHumanReview] = useState(false);
   const [savingCoaching, setSavingCoaching] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
@@ -161,6 +164,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       };
     });
     setCriterionReviews(criteria);
+    setFeedbackForm(review.feedback || { transcript_quality: "", qa_analysis_quality: "", score_agreement: "", scorecard_fit: "", useful_for_coaching: null, issue_tags: [] });
   }, [review]);
 
   useEffect(() => {
@@ -330,6 +334,19 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     }
   };
 
+  const saveFeedback = async (patch?: QAFeedback) => {
+    if (!review) return;
+    const body = { ...feedbackForm, ...(patch || {}) };
+    const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/feedback`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (response.ok) { const data = await response.json(); setFeedbackForm(data.feedback); setReview({ ...review, feedback: data.feedback, feedback_status: data.feedback?.feedback_status }); }
+  };
+
+  const assignReview = async () => {
+    if (!review || !assignUserId.trim()) return;
+    const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/assignments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assigned_to_user_id: Number(assignUserId) }) });
+    if (response.ok) { const data = await response.json(); setReview({ ...review, assignment: data.assignment }); setAssignUserId(""); }
+  };
+
   const updateCoachingStatus = async (actionId: number, status: string) => {
     if (!review) return;
     const response = await fetch(`${API_BASE_URL}/calls/${params.id}/qa/reviews/${review.id}/coaching-actions/${actionId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
@@ -415,6 +432,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     { id: "transcript", label: t("call.tab.transcript"), help: t("help.sttProvider") },
     { id: "qa", label: t("call.tab.qa"), help: t("help.aiReview") },
     { id: "human", label: t("call.tab.human"), help: t("help.humanReview") },
+    { id: "feedback", label: "Pilot feedback" },
     { id: "coaching", label: t("call.tab.coaching"), help: t("help.coachingActions") },
     { id: "history", label: t("call.tab.history") },
   ];
@@ -545,6 +563,26 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             {humanForm.calibration_flag ? <Field label={t("qa.calibrationNotes")}><textarea value={humanForm.calibration_notes} onChange={(e) => setHumanForm((f) => ({ ...f, calibration_notes: e.target.value }))} /></Field> : null}
             <div><Button onClick={saveHumanReview} disabled={savingHumanReview}>{savingHumanReview ? t("call.saving") : t("qa.saveHumanReview")}</Button></div>
           </div> : <p className="message">{t("qa.viewOnlyHumanReview")}</p>}
+        </div>}
+      </Card>}
+
+
+      {activeTab === "feedback" && <Card>
+        <SectionHeader title="Review feedback" description="What should I check? Transcript accuracy, AI evidence, score fit, missed issues, false positives, and whether this helps coaching." />
+        {!review ? <EmptyState title={t("call.noQaReview")} /> : <div className="grid">
+          <div className="actions"><Button variant="secondary" onClick={() => saveFeedback({ transcript_quality: "good" })}>Transcript OK</Button><Button variant="secondary" onClick={() => saveFeedback({ transcript_quality: "poor", issue_tags: Array.from(new Set([...(feedbackForm.issue_tags || []), "stt_quality"])) })}>Transcript problem</Button><Button variant="secondary" onClick={() => saveFeedback({ qa_analysis_quality: "good" })}>QA OK</Button><Button variant="secondary" onClick={() => saveFeedback({ qa_analysis_quality: "poor", issue_tags: Array.from(new Set([...(feedbackForm.issue_tags || []), "qa_logic"])) })}>QA problem</Button><Button variant="secondary" onClick={() => saveFeedback({ score_agreement: "agree" })}>Score OK</Button><Button variant="secondary" onClick={() => saveFeedback({ score_agreement: "disagree" })}>Score problem</Button><Button variant="secondary" onClick={() => saveFeedback({ useful_for_coaching: true })}>Useful for coaching</Button><Button variant="secondary" onClick={() => saveFeedback({ useful_for_coaching: false })}>Not useful</Button></div>
+          <div className="grid-2">
+            <Field label="Transcript quality"><select value={feedbackForm.transcript_quality || ""} onChange={(e) => setFeedbackForm((f) => ({...f, transcript_quality:e.target.value}))}><option value="">-</option><option value="good">Good</option><option value="acceptable">Acceptable</option><option value="poor">Poor</option><option value="unusable">Unusable</option></select></Field>
+            <Field label="QA analysis quality"><select value={feedbackForm.qa_analysis_quality || ""} onChange={(e) => setFeedbackForm((f) => ({...f, qa_analysis_quality:e.target.value}))}><option value="">-</option><option value="good">Good</option><option value="acceptable">Acceptable</option><option value="poor">Poor</option><option value="unusable">Unusable</option></select></Field>
+            <Field label="Score agreement"><select value={feedbackForm.score_agreement || ""} onChange={(e) => setFeedbackForm((f) => ({...f, score_agreement:e.target.value}))}><option value="">-</option><option value="agree">Agree</option><option value="partially_agree">Partially agree</option><option value="disagree">Disagree</option></select></Field>
+            <Field label="Scorecard fit"><select value={feedbackForm.scorecard_fit || ""} onChange={(e) => setFeedbackForm((f) => ({...f, scorecard_fit:e.target.value}))}><option value="">-</option><option value="good">Good</option><option value="needs_changes">Needs changes</option><option value="wrong_for_this_call_type">Wrong for this call type</option></select></Field>
+          </div>
+          <label><input type="checkbox" style={{width:"auto", marginRight:8}} checked={Boolean(feedbackForm.ai_missed_something)} onChange={(e) => setFeedbackForm((f) => ({...f, ai_missed_something:e.target.checked}))} />AI missed something</label><Field label="Missed comment"><textarea value={feedbackForm.ai_missed_comment || ""} onChange={(e) => setFeedbackForm((f) => ({...f, ai_missed_comment:e.target.value}))} /></Field>
+          <label><input type="checkbox" style={{width:"auto", marginRight:8}} checked={Boolean(feedbackForm.ai_false_positive)} onChange={(e) => setFeedbackForm((f) => ({...f, ai_false_positive:e.target.checked}))} />AI found something extra</label><Field label="False-positive comment"><textarea value={feedbackForm.ai_false_positive_comment || ""} onChange={(e) => setFeedbackForm((f) => ({...f, ai_false_positive_comment:e.target.value}))} /></Field>
+          <Field label="Issue tags (comma separated)"><input value={(feedbackForm.issue_tags || []).join(",")} onChange={(e) => setFeedbackForm((f) => ({...f, issue_tags:e.target.value.split(",").map((x) => x.trim()).filter(Boolean)}))} /></Field>
+          <Field label="Overall feedback"><textarea value={feedbackForm.overall_feedback || ""} onChange={(e) => setFeedbackForm((f) => ({...f, overall_feedback:e.target.value}))} /></Field>
+          <div className="actions"><Button onClick={() => saveFeedback()}>Save feedback</Button>{canHumanReview ? <><input placeholder="Assign to user id" value={assignUserId} onChange={(e) => setAssignUserId(e.target.value)} /><Button variant="secondary" onClick={assignReview}>Assign review</Button></> : null}</div>
+          {review.assignment ? <p className="message">Assigned to {review.assignment.assigned_to_email || review.assignment.id} ({review.assignment.status})</p> : null}
         </div>}
       </Card>}
 
