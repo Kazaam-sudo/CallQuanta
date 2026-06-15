@@ -53,6 +53,23 @@ CallQuanta is organized as a small multi-service application:
 - **Recording worker**: downloads recordings referenced by telephony ingestion events.
 - **Uploads storage**: local mounted storage for uploaded and imported audio files.
 
+
+## Free pilot testing without a domain
+
+CallQuanta can run a short manager pilot through a local Caddy gateway and Cloudflare Quick Tunnel. This gives you one temporary `https://*.trycloudflare.com` URL without buying a domain or VPS. Managers open that one URL for the UI, and API traffic stays same-origin through the gateway.
+
+This mode is good for short pilots and development testing only. The URL changes after tunnel restarts, your local machine or Codespace must stay running, and production deployments should use a VPS, domain, HTTPS, backups, monitoring, and hardening.
+
+Quick start:
+
+```bash
+cp .env.pilot.example .env
+docker compose -f docker-compose.yml -f docker-compose.pilot.yml up -d --build
+cloudflared tunnel --url http://localhost:8080
+```
+
+See [Free pilot tunnel mode](docs/pilot-free-tunnel.md) and [Manager pilot instructions](docs/manager-pilot-instructions.md).
+
 ## Local development
 
 ### Start the stack

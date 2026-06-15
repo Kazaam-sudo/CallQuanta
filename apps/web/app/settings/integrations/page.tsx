@@ -52,7 +52,8 @@ export default function TelephonyIntegrationsPage() {
   const [latestTokens, setLatestTokens] = useState<Record<number, string>>({});
 
   const appOrigin = useMemo(() => (typeof window === "undefined" ? "" : window.location.origin), []);
-  const webhookBase = process.env.NEXT_PUBLIC_API_BASE_URL || appOrigin;
+  const publicAppUrl = process.env.NEXT_PUBLIC_PUBLIC_APP_URL || "";
+  const webhookBase = publicAppUrl || appOrigin;
 
   const load = useCallback(async () => {
     setError(null);
@@ -131,6 +132,7 @@ export default function TelephonyIntegrationsPage() {
         <SettingsNav />
         <h2>{t("telephony.title")}</h2>
         <p className="message">{t("telephony.help")}</p>
+        {!publicAppUrl && <p className="message message-warning">Set PUBLIC_APP_URL to display a full webhook URL for tunnel testing. Until then, the browser origin is used for display.</p>}
         {message && <p className="message">{message}</p>}
         {error && <p className="message message-error">{error}</p>}
       </section>
