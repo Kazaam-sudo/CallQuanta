@@ -34,6 +34,35 @@ scripts/pilot-tunnel.sh
 
 Open the local gateway at `http://localhost:8080` to verify the stack before sharing the Cloudflare URL.
 
+
+## Gateway API routing checks
+
+After `scripts/pilot-up.sh` reports the stack is healthy, verify that backend paths are routed through the pilot gateway instead of being served as Next.js pages:
+
+```bash
+curl -i http://localhost:8080/health
+curl -i http://localhost:8080/auth/me
+curl -i http://localhost:8080/settings/upload-limits
+```
+
+Expected results:
+
+- `/health` returns API JSON such as `{"status":"ok"}` with HTTP 200.
+- `/auth/me` returns an API auth response such as HTTP 401 when you are not logged in, not a Next.js HTML 404 page.
+- `/settings/upload-limits` returns API JSON or an auth-protected API response, not Next.js HTML.
+
+If `/health` returns HTML or a 404, the pilot gateway is running but `/health` is not routed to the API. Check `deploy/pilot/Caddyfile` before sharing the tunnel URL.
+
+## Language selector check
+
+Use the same browser origin you plan to share with pilot users (`http://localhost:8080` locally or the `https://*.trycloudflare.com` URL publicly):
+
+1. Open the gateway URL.
+2. Change the language selector to Russian.
+3. Confirm visible UI text changes immediately.
+4. Refresh the page and confirm Russian remains selected.
+5. Navigate to **Calls**, **Dashboard**, and **Settings** and confirm the language does not reset to English.
+
 ## Public URL and webhooks
 
 Cloudflare prints a URL like `https://random.trycloudflare.com`. Copy that URL into `PUBLIC_APP_URL` in `.env` and restart the pilot stack if you want Settings → Telephony Integrations to display full webhook URLs using the tunnel host.
