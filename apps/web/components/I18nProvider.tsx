@@ -14,6 +14,31 @@ type I18nContextValue = {
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
+const interfaceLanguageStorageKey = "callquanta.interface_language";
+const interfaceLanguageCookieName = "cq_interface_language";
+const supportedInterfaceLanguageCodes = new Set(defaultInterfaceLanguages.map((language) => language.code));
+
+function isSupportedInterfaceLanguage(code: string | null | undefined): code is string {
+  return Boolean(code && supportedInterfaceLanguageCodes.has(code));
+}
+
+function readPersistedInterfaceLanguage() {
+  if (typeof window === "undefined") return null;
+  const stored = window.localStorage.getItem(interfaceLanguageStorageKey);
+  if (isSupportedInterfaceLanguage(stored)) return stored;
+  const cookie = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${interfaceLanguageCookieName}=`));
+  const cookieValue = cookie ? decodeURIComponent(cookie.split("=").slice(1).join("=")) : null;
+  return isSupportedInterfaceLanguage(cookieValue) ? cookieValue : null;
+}
+
+function persistInterfaceLanguage(code: string) {
+  if (typeof window === "undefined" || !isSupportedInterfaceLanguage(code)) return;
+  window.localStorage.setItem(interfaceLanguageStorageKey, code);
+  document.cookie = `${interfaceLanguageCookieName}=${encodeURIComponent(code)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+}
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<WorkspaceSettings>(defaultWorkspaceSettings);
@@ -21,6 +46,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [sttLanguages, setSttLanguages] = useState<SttLanguageItem[]>([]);
 
   useEffect(() => {
+    const persistedLanguage = readPersistedInterfaceLanguage();
+    if (persistedLanguage) {
+      setSettings((current) => ({ ...current, interface_language: persistedLanguage }));
+    }
+
     const load = async () => {
       try {
         const [settingsRes, languagesRes, sttLanguagesRes] = await Promise.all([
@@ -28,21 +58,33 @@ export function I18nProvider({ children }: { children: ReactNode }) {
           fetchWithCredentials(`${API_BASE_URL}/settings/languages`),
           fetchWithCredentials(`${API_BASE_URL}/settings/stt-languages`),
         ]);
-        if (settingsRes.ok) setSettings(await settingsRes.json());
+        if (settingsRes.ok) {
+          const apiSettings = (await settingsRes.json()) as WorkspaceSettings;
+          const preferredLanguage = readPersistedInterfaceLanguage() || apiSettings.interface_language;
+          setSettings({ ...apiSettings, interface_language: preferredLanguage });
+          if (preferredLanguage !== apiSettings.interface_language) {
+            fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ interface_language: preferredLanguage }),
+            }).catch(() => null);
+          }
+        }
         if (languagesRes.ok) {
           const catalog = (await languagesRes.json()) as LanguageCatalogItem[];
-          const supportedInterfaceLanguages = catalog.filter((language) => ["en", "ru", "uz"].includes(language.code));
+          const supportedInterfaceLanguages = catalog.filter((language) => isSupportedInterfaceLanguage(language.code));
           setLanguages(supportedInterfaceLanguages.length ? supportedInterfaceLanguages : defaultInterfaceLanguages);
         }
         if (sttLanguagesRes.ok) setSttLanguages(await sttLanguagesRes.json());
       } catch {
-        // Keep English fallback if API is unavailable during local development.
+        // Keep same-origin persisted language or English fallback if API is unavailable during local development.
       }
     };
     load();
   }, []);
 
   const updateWorkspaceSettings = useCallback(async (updates: Partial<WorkspaceSettings>) => {
+    if (updates.interface_language) persistInterfaceLanguage(updates.interface_language);
     const response = await fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -51,11 +93,19 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     if (!response.ok) throw new Error("Failed to save workspace settings.");
     const saved = (await response.json()) as WorkspaceSettings;
     setSettings(saved);
+    if (saved.interface_language) persistInterfaceLanguage(saved.interface_language);
     return saved;
   }, []);
 
   const setInterfaceLanguage = useCallback(async (code: string) => {
-    await updateWorkspaceSettings({ interface_language: code });
+    if (!isSupportedInterfaceLanguage(code)) return;
+    persistInterfaceLanguage(code);
+    setSettings((current) => ({ ...current, interface_language: code }));
+    try {
+      await updateWorkspaceSettings({ interface_language: code });
+    } catch {
+      // Local same-origin persistence keeps the selector working through pilot gateways even before login.
+    }
   }, [updateWorkspaceSettings]);
 
   const value = useMemo(() => ({

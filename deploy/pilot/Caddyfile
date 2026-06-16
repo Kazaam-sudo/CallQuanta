@@ -1,12 +1,18 @@
 :8080 {
   encode gzip zstd
 
-  @apiDirect path /auth* /calls* /dashboard* /settings* /system* /integrations* /health* /qa-reviews* /exports* /jobs* /qa-feedback*
-  reverse_proxy @apiDirect api:8000
+  @apiHealth path /health
+  reverse_proxy @apiHealth api:8000
 
   handle_path /api/* {
     reverse_proxy api:8000
   }
+
+  @apiBackend {
+    not header Accept *text/html*
+    path /auth/* /calls* /dashboard* /settings* /system* /integrations* /qa-reviews* /exports* /feedback* /pilot-feedback* /scorecards* /jobs* /qa-feedback*
+  }
+  reverse_proxy @apiBackend api:8000
 
   handle {
     reverse_proxy web:3000

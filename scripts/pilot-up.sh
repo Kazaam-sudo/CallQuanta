@@ -19,10 +19,17 @@ echo "Local API URL:   http://localhost:${API_PORT:-8000}"
 echo ""
 echo "Checking API health through pilot gateway..."
 for attempt in {1..30}; do
-  if curl -fsS http://localhost:8080/health >/dev/null; then
+  health_body="$(curl -sS http://localhost:8080/health || true)"
+  if printf '%s' "$health_body" | python -c 'import json,sys; data=json.load(sys.stdin); sys.exit(0 if data.get("status") == "ok" else 1)' 2>/dev/null; then
     echo "Health check passed: http://localhost:8080/health"
     exit 0
   fi
+
+  if printf '%s' "$health_body" | grep -qiE '<!doctype html|<html|404'; then
+    echo "Pilot gateway is running, but /health is not routed to API. Check deploy/pilot/Caddyfile." >&2
+    exit 1
+  fi
+
   sleep 2
 done
 
