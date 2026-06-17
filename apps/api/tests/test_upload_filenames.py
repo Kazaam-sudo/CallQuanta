@@ -66,6 +66,26 @@ class UploadFilenameTests(unittest.IsolatedAsyncioTestCase):
                 db.close()
                 main.UPLOAD_DIR = original_upload_dir
 
+    def test_ogg_opus_and_webm_audio_types_are_accepted(self):
+        cases = [
+            ("recording.ogg", "audio/ogg"),
+            ("recording.ogg", "application/ogg"),
+            ("recording.opus", "audio/opus"),
+            ("recording.webm", "audio/webm"),
+        ]
+        for filename, content_type in cases:
+            with self.subTest(filename=filename, content_type=content_type):
+                display_name, safe_name = main._validate_upload_file(AsyncUploadFile(filename, content_type=content_type))
+                self.assertEqual(display_name, filename)
+                self.assertTrue(safe_name.endswith(Path(filename).suffix))
+
+    def test_unknown_audio_content_type_is_rejected(self):
+        with self.assertRaises(main.HTTPException) as raised:
+            main._validate_upload_file(AsyncUploadFile("recording.wav", content_type="audio/not-real"))
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "Unsupported file type")
+
     def test_invalid_png_is_rejected_with_original_filename_context_available(self):
         with self.assertRaises(main.HTTPException) as raised:
             main._validate_upload_file(AsyncUploadFile("Звонок клиента.png", content_type="image/png"))
