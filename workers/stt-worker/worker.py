@@ -7,12 +7,14 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import redis
 import requests
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from audio_normalization import convert_audio_to_wav, is_decode_error, should_try_ffmpeg_fallback
 from db import Call, IngestionEvent, SttProviderConfig, TranscriptSegment
 from stt_language import normalize_stt_language, stt_initial_prompt
 
@@ -114,7 +116,7 @@ class FasterWhisperLocalProvider(STTProvider):
     def __init__(self, config: RuntimeProviderConfig):
         self.config = config
 
-    def transcribe(self, file_path: str, language: str | None, initial_prompt: str | None) -> TranscriptionResult:
+    def _transcribe_path(self, file_path: str, language: str | None, initial_prompt: str | None) -> TranscriptionResult:
         model_name = self.config.model or FASTER_WHISPER_MODEL
         model = get_faster_whisper_model(model_name)
         transcribe_kwargs = {}
@@ -140,6 +142,20 @@ class FasterWhisperLocalProvider(STTProvider):
             stt_language_used=language,
             detected_language=getattr(info, "language", None),
         )
+
+    def transcribe(self, file_path: str, language: str | None, initial_prompt: str | None) -> TranscriptionResult:
+        try:
+            return self._transcribe_path(file_path, language, initial_prompt)
+        except Exception as exc:
+            if not should_try_ffmpeg_fallback(file_path) or not is_decode_error(exc):
+                raise
+            print(f"faster-whisper direct decode failed for extension={Path(file_path).suffix.lower()}; using ffmpeg WAV fallback: {safe_error(exc, 500)}")
+        wav_path = convert_audio_to_wav(file_path)
+        try:
+            print(f"ffmpeg WAV fallback conversion completed for extension={Path(file_path).suffix.lower()}")
+            return self._transcribe_path(wav_path, language, initial_prompt)
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
 
 
 class OpenAICompatibleAudioProvider(STTProvider):

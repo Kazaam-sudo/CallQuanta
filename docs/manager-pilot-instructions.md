@@ -6,7 +6,7 @@ Use the CallQuanta pilot link and credentials provided by the project admin.
 
 1. Open the assigned CallQuanta pilot URL.
 2. Log in with your email and temporary password.
-3. Open **QA Reviews** or the review links assigned to you.
+3. Open **QA Reviews** or the review links assigned to you. If you upload pilot recordings, supported formats include WAV, MP3, M4A, OGG/Opus, FLAC, and WebM.
 4. Check the call transcript for accuracy, speaker clarity, and missing or incorrect words.
 5. Check the AI review score, evidence, findings, and recommendations.
 6. Add your human review: confirm what is correct, correct what is wrong, and add short notes where useful.
@@ -21,7 +21,7 @@ Tell the pilot lead about:
 - Login or access problems.
 - Missing assigned reviews.
 - Slow pages or uploads.
-- Transcript mistakes that affect scoring.
+- Transcript mistakes that affect scoring. OGG/Opus pilot uploads are supported, but if one recording cannot be transcribed, try WAV/MP3 or report the file as an STT issue.
 - AI scores that do not match the call.
 - AI evidence that is missing, weak, or incorrect.
 - Coaching suggestions that are not useful.

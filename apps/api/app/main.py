@@ -28,7 +28,7 @@ from werkzeug.utils import secure_filename
 from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.24.0")
+app = FastAPI(title="CallQuanta API", version="0.24.2")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -43,7 +43,7 @@ CORS_ORIGINS = os.environ.get(
     "http://localhost:3000,http://127.0.0.1:3000",
 )
 ALLOWED_CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
-ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
+ALLOWED_UPLOAD_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".webm"}
 MAX_DISPLAY_FILENAME_LENGTH = 255
 INGESTION_PAYLOAD_LOGGING = os.environ.get("INGESTION_PAYLOAD_LOGGING", "false").lower() in {"1", "true", "yes", "on"}
 ALLOWED_UPLOAD_CONTENT_TYPES = {
@@ -54,6 +54,8 @@ ALLOWED_UPLOAD_CONTENT_TYPES = {
     "audio/mp4",
     "audio/aac",
     "audio/ogg",
+    "application/ogg",
+    "audio/opus",
     "audio/flac",
     "audio/webm",
     "video/webm",
@@ -889,7 +891,6 @@ def _validate_upload_file(file: UploadFile) -> tuple[str, str]:
         content_type
         and content_type != "application/octet-stream"
         and content_type not in ALLOWED_UPLOAD_CONTENT_TYPES
-        and not content_type.startswith("audio/")
     ):
         raise HTTPException(status_code=400, detail="Unsupported file type")
     return display_name, _safe_storage_filename(display_name, extension)

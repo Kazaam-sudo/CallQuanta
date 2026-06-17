@@ -25,8 +25,8 @@ TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs"
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 MAX_BYTES = int(os.environ.get("RECORDING_DOWNLOAD_MAX_BYTES", str(100 * 1024 * 1024)))
 TIMEOUT_SECONDS = int(os.environ.get("RECORDING_DOWNLOAD_TIMEOUT_SECONDS", "120"))
-ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
-ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/aac", "audio/ogg", "audio/flac", "audio/webm", "video/webm", "application/octet-stream"}
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".webm"}
+ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/aac", "audio/ogg", "application/ogg", "audio/opus", "audio/flac", "audio/webm", "video/webm", "application/octet-stream"}
 CHUNK_SIZE = 1024 * 1024
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -61,12 +61,29 @@ def safe_error(exc: Exception, limit: int = 1000) -> str:
     return message[:limit]
 
 
-def display_filename(filename: str | None, url: str) -> tuple[str, str]:
+def extension_for_content_type(content_type: str | None) -> str | None:
+    return {
+        "audio/ogg": ".ogg",
+        "application/ogg": ".ogg",
+        "audio/opus": ".opus",
+        "audio/webm": ".webm",
+        "video/webm": ".webm",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/mp4": ".m4a",
+        "audio/aac": ".m4a",
+        "audio/flac": ".flac",
+    }.get((content_type or "").split(";", 1)[0].strip().lower())
+
+
+def display_filename(filename: str | None, url: str, content_type: str | None = None) -> tuple[str, str]:
     raw = (filename or url.rsplit("/", 1)[-1] or "recording.wav").split("?", 1)[0]
     raw = raw.replace("\\", "/").rsplit("/", 1)[-1].strip() or "recording.wav"
     ext = Path(raw).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        guessed = mimetypes.guess_extension(mimetypes.guess_type(url)[0] or "") or ".wav"
+        guessed = extension_for_content_type(content_type) or mimetypes.guess_extension(mimetypes.guess_type(url)[0] or "") or ".wav"
         ext = guessed if guessed in ALLOWED_EXTENSIONS else ".wav"
         raw = f"{Path(raw).stem or 'recording'}{ext}"
     safe = secure_filename(raw)
@@ -98,15 +115,15 @@ def enqueue_transcription(call_id: int) -> bool:
 
 def download_recording(url: str, filename: str | None) -> tuple[str, Path, int, str | None]:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    _, safe = display_filename(filename, url)
-    stored_name = f"{uuid4().hex}_{safe}"
-    stored_path = UPLOAD_DIR / stored_name
     size = 0
     with requests.get(url, stream=True, allow_redirects=True, timeout=TIMEOUT_SECONDS) as response:
         response.raise_for_status()
         content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower() or None
-        if content_type and content_type not in ALLOWED_CONTENT_TYPES and not content_type.startswith("audio/"):
+        if content_type and content_type not in ALLOWED_CONTENT_TYPES:
             raise ValueError("Recording URL did not return a supported audio content type")
+        _, safe = display_filename(filename, url, content_type)
+        stored_name = f"{uuid4().hex}_{safe}"
+        stored_path = UPLOAD_DIR / stored_name
         declared = int(response.headers.get("content-length") or "0")
         if MAX_BYTES and declared and declared > MAX_BYTES:
             raise ValueError("Recording download exceeds the configured max size")

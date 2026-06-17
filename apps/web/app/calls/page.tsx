@@ -197,7 +197,7 @@ const formatBytes = (value?: number | null) => {
 const statusKey = (status: string) => `status.${status}`;
 
 export default function CallsPage() {
-  const { t, sttLanguages } = useI18n();
+  const { t, sttLanguages, settings } = useI18n();
   const [calls, setCalls] = useState<Call[]>([]);
   const [total, setTotal] = useState(0);
   const [limit, setLimit] = useState(50);
@@ -721,7 +721,7 @@ export default function CallsPage() {
             type="file"
             name="files"
             multiple
-            accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm"
+            accept="audio/*,.wav,.mp3,.m4a,.ogg,.opus,.flac,.webm"
             onChange={(event) => {
               setSelectedFiles(Array.from(event.currentTarget.files ?? []));
               setUploadResult(null);
@@ -729,6 +729,11 @@ export default function CallsPage() {
               setUploadWarning(null);
             }}
           />
+          <small>
+            {settings.interface_language === "ru"
+              ? "Поддерживаются: WAV, MP3, M4A, OGG/Opus, FLAC, WebM."
+              : "Supported: WAV, MP3, M4A, OGG/Opus, FLAC, WebM."}
+          </small>
           <div className="selected-files">
             <div className="selected-files-summary">
               <strong>

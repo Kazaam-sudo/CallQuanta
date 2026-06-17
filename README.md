@@ -24,7 +24,7 @@ Upload / Telephony import → STT → Transcript → QA analysis → Human revie
 
 ## Key features
 
-- Manual call upload and bulk upload.
+- Manual call upload and bulk upload, including WAV, MP3, M4A, OGG/Opus, FLAC, and WebM audio for pilots.
 - Generic telephony webhook ingestion for recording imports.
 - Configurable STT providers and STT language handling.
 - Configurable LLM providers for QA analysis.
@@ -136,7 +136,7 @@ docker compose up --build
 
 - SMTP invitation and password reset emails are not implemented yet.
 - Telephony ingestion currently provides a generic webhook; provider-specific telephony adapters are future work.
-- STT quality depends on provider, model, language, recording quality, and diarization capability.
+- STT quality depends on provider, model, language, recording quality, diarization capability, and the source audio codec. OGG/Opus is supported for pilot uploads; if transcription fails for a specific file, try converting it to WAV/MP3 or report the recording as an STT issue.
 - QA quality depends on LLM provider/model behavior and scorecard quality.
 - The product is still MVP / early beta and should be validated carefully before production use.
 
