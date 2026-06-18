@@ -4,10 +4,12 @@ import hmac
 import json
 import secrets
 import logging
+import mimetypes
 import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 from datetime import UTC, datetime, timedelta, time as datetime_time
 
@@ -28,7 +30,7 @@ from werkzeug.utils import secure_filename
 from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.24.2")
+app = FastAPI(title="CallQuanta API", version="0.24.3")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -61,6 +63,7 @@ ALLOWED_UPLOAD_CONTENT_TYPES = {
     "video/webm",
 }
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+AUDIO_STREAM_CHUNK_SIZE = 64 * 1024
 DEFAULT_MAX_UPLOAD_BYTES_PER_FILE = 100 * 1024 * 1024
 DEFAULT_MAX_BULK_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_UPLOAD_BYTES_PER_FILE = int(
@@ -1491,6 +1494,109 @@ def serialize_call(call: Call) -> dict:
         "last_error_message": call.last_error_message,
         "last_processed_at": call.last_processed_at.isoformat() if call.last_processed_at else None,
     }
+
+
+_AUDIO_MIME_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+}
+
+
+def _audio_content_type(call: Call, path: Path) -> str:
+    stored_type = (call.content_type or "").split(";", 1)[0].strip().lower()
+    if stored_type in ALLOWED_UPLOAD_CONTENT_TYPES:
+        return {
+            "audio/x-wav": "audio/wav",
+            "audio/mp3": "audio/mpeg",
+            "application/ogg": "audio/ogg",
+            "audio/opus": "audio/ogg",
+            "video/webm": "audio/webm",
+        }.get(stored_type, stored_type)
+    return _AUDIO_MIME_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def _parse_byte_range(value: str, file_size: int) -> tuple[int, int]:
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+    if not match or file_size <= 0:
+        raise HTTPException(status_code=416, detail="Requested range is not satisfiable", headers={"Content-Range": f"bytes */{file_size}"})
+    start_text, end_text = match.groups()
+    if not start_text and not end_text:
+        raise HTTPException(status_code=416, detail="Requested range is not satisfiable", headers={"Content-Range": f"bytes */{file_size}"})
+    if not start_text:
+        suffix_length = int(end_text)
+        if suffix_length <= 0:
+            raise HTTPException(status_code=416, detail="Requested range is not satisfiable", headers={"Content-Range": f"bytes */{file_size}"})
+        start = max(file_size - suffix_length, 0)
+        end = file_size - 1
+    else:
+        start = int(start_text)
+        end = min(int(end_text), file_size - 1) if end_text else file_size - 1
+    if start >= file_size or start > end:
+        raise HTTPException(status_code=416, detail="Requested range is not satisfiable", headers={"Content-Range": f"bytes */{file_size}"})
+    return start, end
+
+
+def _stream_file_range(path: Path, start: int, length: int):
+    with path.open("rb") as audio_file:
+        audio_file.seek(start)
+        remaining = length
+        while remaining:
+            chunk = audio_file.read(min(AUDIO_STREAM_CHUNK_SIZE, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+@app.get("/calls/{call_id}/audio")
+def get_call_audio(
+    call_id: int,
+    request: Request,
+    download: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    require_can_view_call(call, user)
+    path = Path(call.stored_path) if call.stored_path else None
+    if call.audio_deleted or not path or not path.is_file():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    file_size = path.stat().st_size
+    content_type = _audio_content_type(call, path)
+    headers = {"Accept-Ranges": "bytes"}
+    status_code = 200
+    start, end = 0, max(file_size - 1, 0)
+    range_header = request.headers.get("range")
+    if range_header:
+        start, end = _parse_byte_range(range_header, file_size)
+        status_code = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    content_length = end - start + 1 if file_size else 0
+    headers["Content-Length"] = str(content_length)
+
+    if download:
+        original_name = Path(call.filename or path.name).name or path.name
+        fallback_name = secure_filename(original_name) or "call-recording"
+        headers["Content-Disposition"] = f"attachment; filename=\"{fallback_name}\"; filename*=UTF-8''{quote(original_name)}"
+        _log_audit_event(db, user, "audio_downloaded", "call", call.id, f"Audio downloaded: {original_name}")
+        db.commit()
+
+    return StreamingResponse(
+        _stream_file_range(path, start, content_length),
+        status_code=status_code,
+        media_type=content_type,
+        headers=headers,
+    )
 
 
 @app.patch("/calls/{call_id}/metadata")

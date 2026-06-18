@@ -40,6 +40,7 @@ type Call = {
   ingestion_status?: string | null;
   ingestion_error?: string | null;
   imported_at?: string | null;
+  audio_deleted?: boolean;
 };
 
 type TranscriptSegment = {
@@ -101,6 +102,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [savingHumanReview, setSavingHumanReview] = useState(false);
   const [savingCoaching, setSavingCoaching] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+  const [audioError, setAudioError] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -438,7 +440,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   ];
 
   const metaValue = (value?: string | number | null) => value == null || value === "" ? "-" : value;
+  const formatFileSize = (bytes?: number | null) => {
+    if (bytes == null) return "-";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
   const reviewMeta = (value?: string | null, key?: string) => review?.legacy_review ? (value || (key && providerMeta[key]) ? t("call.recoveredMetadata") : t("call.notCaptured")) : (value || t("call.notCaptured"));
+  const hasAudio = Boolean(call?.stored_path && !call?.audio_deleted);
+  const audioUrl = `${API_BASE_URL}/calls/${params.id}/audio`;
 
   return (
     <div className="grid page-stack">
@@ -465,6 +475,26 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       </Card>
 
       {activeTab === "overview" && <div className="tab-panel">
+        <Card>
+          <SectionHeader title={t("call.recording")} description={t("call.recordingHelp")} />
+          {!call ? <p>{t("call.loading")}</p> : !hasAudio ? (
+            <EmptyState title={t("call.audioNotFound")} description={t("call.noAudioAvailable")} />
+          ) : (
+            <div className="grid" style={{ gap: 12 }}>
+              <audio controls preload="metadata" src={audioUrl} onCanPlay={() => setAudioError(false)} onError={() => setAudioError(true)} style={{ width: "100%" }}>
+                {t("call.browserCannotPlay")}
+              </audio>
+              {audioError && <p className="message message-warning">{t("call.browserCannotPlay")}</p>}
+              <div className="meta-grid">
+                <div className="meta-item"><small>{t("calls.filename")}</small>{call.filename}</div>
+                <div className="meta-item"><small>{t("call.contentType")}</small>{metaValue(call.content_type)}</div>
+                <div className="meta-item"><small>{t("calls.fileSize")}</small>{formatFileSize(call.file_size_bytes)}</div>
+                <div className="meta-item"><small>{t("telephony.sourceProvider")}</small>{call.source_provider || call.source || t("call.uploadedSource")}</div>
+              </div>
+              <div><a className="button button-secondary" href={`${audioUrl}?download=1`}>{t("call.downloadAudio")}</a></div>
+            </div>
+          )}
+        </Card>
         <Card>
           <SectionHeader title={t("call.overview")} description={t("call.overviewHelp")} />
           {call ? <div className="meta-grid">
@@ -499,6 +529,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
       {activeTab === "transcript" && <Card>
         <SectionHeader title={t("call.transcriptSegments")} description={t("call.transcriptHelp")} />
+        <p className="message">{t("call.transcriptAudioHint")}</p>
         {call && <div className="meta-grid" style={{ marginBottom: 14 }}>
           <div className="meta-item"><small>{t("call.audioLanguage")} <HelpTooltip text={t("help.audioLanguage")} /></small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
           <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{call.stt_language_used || normalizeSttLanguageCode(call.language) || "auto"}</div>
