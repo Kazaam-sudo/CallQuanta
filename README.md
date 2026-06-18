@@ -1,5 +1,11 @@
 # CallQuanta
 
+## Secure call recording playback
+
+Call Details includes an authenticated **Call recording** player so managers can compare the original audio with the transcript, AI QA findings, and human review. Playback supports browser byte-range requests for seeking and uses the same role and visibility-scope checks as the call itself; recordings are not exposed as public static files.
+
+If a browser cannot play the stored format (for example, an OGG/Opus variant), use **Download audio** in the recording card. Playback and downloads use same-origin application URLs, including through the pilot Cloudflare tunnel.
+
 CallQuanta is an early-beta contact center quality assurance platform. It helps teams turn call recordings into transcripts, AI-assisted QA reviews, human calibration notes, coaching actions, dashboard metrics, and exports.
 
 ## Product status

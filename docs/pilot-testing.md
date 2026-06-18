@@ -11,12 +11,15 @@ Use 3 contact center managers or supervisors who already understand the campaign
 
 ## What to check
 1. Upload real calls and confirm metadata: agent, team, campaign, language, and direction.
-2. Check transcript quality, including language detection and speaker separation.
-3. Run QA analysis and review score, evidence, findings, and criteria.
-4. Add a human review and compare AI score vs human score.
-5. Submit manager feedback for transcript quality, QA logic, score agreement, scorecard fit, missed issues, false positives, and coaching usefulness.
-6. Add coaching actions only when there is a specific behavior to improve.
-7. Review Pilot Feedback metrics and export QA feedback.
+2. Open Call Details, play the original recording, and compare the audio with the transcript and AI findings. Confirm play, pause, seeking, and **Download audio**; use the download when the browser cannot play the source format.
+3. Check transcript quality, including language detection and speaker separation.
+4. Run QA analysis and review score, evidence, findings, and criteria.
+5. Add a human review and compare AI score vs human score.
+6. Submit manager feedback for transcript quality, QA logic, score agreement, scorecard fit, missed issues, false positives, and coaching usefulness.
+7. Add coaching actions only when there is a specific behavior to improve.
+8. Review Pilot Feedback metrics and export QA feedback.
+
+Repeat playback checks as a scoped manager and through the pilot tunnel URL. A user outside the call's team/own-call scope must not be able to stream or download the recording.
 
 ## Feedback questions
 - Is the transcript good enough for QA scoring?
