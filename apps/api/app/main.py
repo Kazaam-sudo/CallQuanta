@@ -27,10 +27,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, AuditEvent, Base, Call, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables
+from .db import AppSetting, AuditEvent, Base, Call, CallTopic, CallTopicClassification, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TopicActionResult, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables, migrate_topic_tables
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
-app = FastAPI(title="CallQuanta API", version="0.24.3")
+app = FastAPI(title="CallQuanta API", version="0.25.0")
 logger = logging.getLogger("callquanta.api")
 
 DATABASE_URL = "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta"
@@ -39,6 +39,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 TRANSCRIPTION_QUEUE = os.environ.get("TRANSCRIPTION_QUEUE", "transcription_jobs")
 RECORDING_QUEUE = os.environ.get("RECORDING_QUEUE", "recording_jobs")
 QA_QUEUE = os.environ.get("QA_QUEUE", "qa_jobs")
+TOPIC_CLASSIFICATION_QUEUE = os.environ.get("TOPIC_CLASSIFICATION_QUEUE", "topic_classification_jobs")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
@@ -291,6 +292,25 @@ class BatchMetadataPayload(CallMetadataPayload):
 class BatchDeletePayload(BaseModel):
     call_ids: list[int]
     delete_files: bool = True
+
+
+class CallTopicPayload(BaseModel):
+    id: int | None = None
+    name: str
+    slug: str | None = None
+    description: str | None = None
+    examples: list[str] | None = None
+    keywords: list[str] | None = None
+    negative_examples: list[str] | None = None
+    required_actions: list[str] | None = None
+    script_checklist: list[str] | None = None
+    is_active: bool = True
+    priority: int = 100
+
+
+class ManualTopicPayload(BaseModel):
+    primary_topic_id: int | None = None
+    manual_notes: str | None = None
 
 
 VALID_ROLES = {"admin", "manager", "supervisor", "agent", "viewer"}
@@ -566,6 +586,12 @@ def require_can_modify_call(call: Call, user: User) -> Call:
     return require_can_view_call(call, user)
 
 
+def require_can_correct_topic(call: Call, user: User) -> Call:
+    if user.role not in {"admin", "manager", "supervisor"}:
+        raise HTTPException(status_code=403, detail="Admin, manager, or supervisor role required")
+    return require_can_view_call(call, user)
+
+
 def _serialize_user(user: User) -> dict:
     return {
         "id": user.id,
@@ -819,11 +845,13 @@ def on_startup() -> None:
     migrate_pilot_feedback_tables(engine)
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
-    migrate_telephony_ingestion_tables(engine)
+    migrate_telephony_ingestion_tables, migrate_topic_tables(engine)
     migrate_production_readiness_tables(engine)
     migrate_access_control_tables(engine)
+    migrate_topic_tables(engine)
     with SessionLocal() as db:
         _bootstrap_admin_user(db)
+        _seed_default_topics(db)
         db.execute(text("UPDATE users SET visibility_scope = 'all' WHERE role = 'admin' AND (visibility_scope IS NULL OR visibility_scope = '' OR visibility_scope = 'team')"))
         db.commit()
     if APP_ENV in {"production", "prod"} and REQUIRE_AUTH and not ADMIN_PASSWORD:
@@ -1647,6 +1675,93 @@ CALL_SORT_COLUMNS = {
     "last_processed_at": Call.last_processed_at,
 }
 
+DEFAULT_CALL_TOPICS = [
+    ("Узнать баланс", "balance", "Клиент звонит, чтобы узнать баланс, задолженность, остаток средств или причину списания.", ["баланс", "задолженность", "списали", "остаток"], ["Идентифицировать клиента, если это требуется.", "Назвать баланс / задолженность / сумму списания.", "Объяснить причину списания, если клиент спрашивает.", "Подсказать, как клиент может самостоятельно посмотреть баланс в приложении.", "Уточнить, остались ли дополнительные вопросы."]),
+    ("Смена тарифа", "change-tariff", "Клиент хочет изменить тарифный план.", ["тариф", "сменить тариф", "перейти"], ["Уточнить потребность клиента.", "Назвать текущий тариф, если доступно из разговора.", "Предложить подходящий тариф.", "Объяснить стоимость, лимиты, условия и дату списания.", "Предупредить о возможных изменениях условий.", "Подтвердить согласие клиента перед сменой."]),
+    ("Ближайший офис", "nearest-office", "Клиент уточняет адрес, график или документы для офиса.", ["офис", "адрес", "ближайший", "график"], ["Уточнить город/район клиента.", "Назвать ближайший офис.", "Назвать график работы.", "Подсказать, какие документы нужно взять.", "Если вопрос можно решить онлайн, подсказать альтернативу в приложении/сайте."]),
+    ("Подключить услугу", "enable-service", "Клиент хочет подключить услугу.", ["подключить", "активировать", "услуга"], ["Уточнить нужную услугу.", "Объяснить стоимость и условия.", "Получить согласие клиента.", "Сообщить срок подключения."]),
+    ("Отключить услугу", "disable-service", "Клиент хочет отключить услугу.", ["отключить", "деактивировать", "убрать услугу"], ["Уточнить услугу для отключения.", "Сообщить последствия и дату отключения.", "Получить подтверждение клиента.", "Предложить альтернативу, если уместно."]),
+    ("Проблема с оплатой", "payment-issue", "Оплата не прошла, не зачислилась или возникла ошибка платежа.", ["оплата", "платеж", "не прошла", "не зачислилась"], ["Уточнить сумму и способ оплаты.", "Проверить статус платежа по разговору.", "Объяснить сроки зачисления или дальнейшие шаги.", "Создать/обновить заявку, если требуется."]),
+    ("Жалоба", "complaint", "Клиент выражает недовольство качеством услуги, обслуживания или решением.", ["жалоба", "недоволен", "претензия"], ["Выслушать и признать проблему.", "Уточнить детали жалобы.", "Сообщить порядок рассмотрения.", "Зафиксировать обращение или передать на эскалацию."]),
+    ("Проблема со связью/интернетом", "connectivity-issue", "Клиент сообщает о проблемах со связью, интернетом или качеством соединения.", ["связь", "интернет", "не работает", "сигнал"], ["Уточнить адрес/локацию и симптомы.", "Проверить базовые настройки по разговору.", "Предложить troubleshooting шаги.", "Создать заявку, если проблема не решена."]),
+    ("Статус заявки", "request-status", "Клиент хочет узнать статус ранее созданной заявки.", ["статус заявки", "заявка", "обращение"], ["Идентифицировать заявку/клиента.", "Назвать текущий статус.", "Сообщить ожидаемый срок решения.", "Уточнить, нужна ли дополнительная помощь."]),
+    ("Консультация по приложению", "app-consultation", "Клиенту нужна помощь с мобильным приложением или личным кабинетом.", ["приложение", "личный кабинет", "не могу зайти"], ["Уточнить сценарий в приложении.", "Дать пошаговую инструкцию.", "Проверить, помогло ли решение.", "Предложить альтернативный канал, если нужно."]),
+    ("Другое / не определено", "other-unknown", "Тема не входит в активную таксономию или уверенность классификации низкая.", [], []),
+]
+
+
+def _slugify_topic(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9а-яё]+", "-", value.lower()).strip("-")
+    return slug or f"topic-{uuid4().hex[:8]}"
+
+
+def _list_of_strings(value) -> list[str]:
+    return [str(item).strip() for item in (value or []) if str(item).strip()]
+
+
+def _serialize_topic(topic: CallTopic) -> dict:
+    return {"id": topic.id, "name": topic.name, "slug": topic.slug, "description": topic.description or "", "examples": topic.examples or [], "keywords": topic.keywords or [], "negative_examples": topic.negative_examples or [], "required_actions": topic.required_actions or [], "script_checklist": topic.script_checklist or [], "is_active": bool(topic.is_active), "priority": topic.priority, "created_at": topic.created_at.isoformat() if topic.created_at else None, "updated_at": topic.updated_at.isoformat() if topic.updated_at else None}
+
+
+def _seed_default_topics(db: Session) -> None:
+    if db.execute(select(CallTopic.id).limit(1)).first():
+        return
+    for priority, (name, slug, description, keywords, actions) in enumerate(DEFAULT_CALL_TOPICS, start=10):
+        db.add(CallTopic(name=name, slug=slug, description=description, examples=[], keywords=keywords, negative_examples=[], required_actions=actions, script_checklist=[], is_active=True, priority=priority))
+    db.commit()
+
+
+def _topic_classification_dict(item: CallTopicClassification | None, actions: list[TopicActionResult] | None = None) -> dict | None:
+    if not item:
+        return None
+    total = len(actions or [])
+    done = sum(1 for a in (actions or []) if a.status == "completed")
+    missed = sum(1 for a in (actions or []) if a.status == "missed")
+    return {"id": item.id, "call_id": item.call_id, "primary_topic_id": item.primary_topic_id, "primary_topic_name": item.primary_topic_name, "secondary_topics": item.secondary_topics or [], "confidence": item.confidence, "rationale": item.rationale, "evidence": item.evidence or [], "classified_by": item.classified_by, "manually_overridden": bool(item.manually_overridden), "manual_topic_id": item.manual_topic_id, "manual_notes": item.manual_notes, "actions": [{"id": a.id, "topic_id": a.topic_id, "action_key": a.action_key, "action_text": a.action_text, "status": a.status, "evidence": a.evidence or [], "rationale": a.rationale} for a in (actions or [])], "topic_required_actions_total": total, "topic_required_actions_completed": done, "topic_required_actions_missed": missed, "topic_compliance_score": round(done * 100 / total, 2) if total else None}
+
+
+def _latest_topic_classification(db: Session, call_id: int) -> CallTopicClassification | None:
+    return db.execute(select(CallTopicClassification).where(CallTopicClassification.call_id == call_id).order_by(CallTopicClassification.updated_at.desc(), CallTopicClassification.id.desc())).scalars().first()
+
+
+def _classify_call_topic_sync(db: Session, call: Call, provider_label: str = "rules/keyword") -> CallTopicClassification:
+    topics = db.execute(select(CallTopic).where(CallTopic.is_active == True).order_by(CallTopic.priority.asc(), CallTopic.id.asc())).scalars().all()
+    if not topics:
+        _seed_default_topics(db); topics = db.execute(select(CallTopic).where(CallTopic.is_active == True).order_by(CallTopic.priority.asc(), CallTopic.id.asc())).scalars().all()
+    segments = db.execute(select(TranscriptSegment).where(TranscriptSegment.call_id == call.id).order_by(TranscriptSegment.start_ms.asc(), TranscriptSegment.id.asc())).scalars().all()
+    transcript = "\n".join(s.text for s in segments).lower()
+    other = next((t for t in topics if "другое" in t.name.lower() or "unknown" in t.slug), None)
+    scored = []
+    for topic in topics:
+        hay = " ".join([topic.name, topic.description or "", *(_list_of_strings(topic.examples)), *(_list_of_strings(topic.keywords))]).lower()
+        score = sum(1 for token in set(re.findall(r"[\wа-яё]{3,}", hay)) if token in transcript)
+        scored.append((score, topic))
+    scored.sort(key=lambda x: (x[0], -x[1].priority), reverse=True)
+    best_score, best_topic = scored[0] if scored else (0, other)
+    if not best_topic or best_score <= 0:
+        best_topic = other or (topics[0] if topics else None)
+    confidence = min(0.95, 0.35 + best_score * 0.12) if best_score else 0.2
+    if confidence < 0.45 and other:
+        best_topic = other
+    secondary = [t.name for score, t in scored[1:4] if score > 0 and t.id != best_topic.id]
+    item = _latest_topic_classification(db, call.id) or CallTopicClassification(call_id=call.id)
+    item.primary_topic_id = best_topic.id if best_topic else None
+    item.primary_topic_name = best_topic.name if best_topic else "Другое / не определено"
+    item.secondary_topics = secondary
+    item.confidence = confidence
+    item.rationale = "Классификация выполнена по совпадениям темы, описания, примеров и ключевых слов с транскриптом."
+    item.evidence = [s.text for s in segments[:3]]
+    item.classified_by = provider_label
+    if item.id is None:
+        db.add(item); db.flush()
+    db.execute(delete(TopicActionResult).where(TopicActionResult.call_id == call.id))
+    for idx, action in enumerate(_list_of_strings(best_topic.required_actions if best_topic else []), start=1):
+        words = [w for w in re.findall(r"[\wа-яё]{4,}", action.lower()) if w not in {"если", "клиента", "клиент", "требуется"}]
+        matched = any(w in transcript for w in words[:6])
+        db.add(TopicActionResult(call_id=call.id, topic_id=best_topic.id, action_key=f"action_{idx}", action_text=action, status="completed" if matched else "missed", evidence=[action if matched else "В транскрипте не найдено явное выполнение действия."], rationale="Автоматическая проверка по текстовым признакам; менеджер может перепроверить вручную."))
+    db.commit(); db.refresh(item)
+    return item
+
 
 def _clean_filter(value: str | None) -> str | None:
     if value is None:
@@ -1968,6 +2083,11 @@ def list_calls(
     language: str | None = None,
     created_from: str | None = None,
     created_to: str | None = None,
+    primary_topic: str | None = None,
+    topic_confidence_min: float | None = None,
+    has_missed_required_actions: bool | None = None,
+    topic_manually_corrected: bool | None = None,
+    topic_unknown: bool | None = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort_by: str = "created_at",
@@ -1977,6 +2097,16 @@ def list_calls(
 ) -> dict:
     filters = _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to)
     filtered = _filtered_calls_statement(user=user, **filters)
+    if _clean_filter(primary_topic):
+        filtered = filtered.join(CallTopicClassification, CallTopicClassification.call_id == Call.id).where(CallTopicClassification.primary_topic_name == primary_topic)
+    if topic_confidence_min is not None:
+        filtered = filtered.join(CallTopicClassification, CallTopicClassification.call_id == Call.id).where(CallTopicClassification.confidence >= topic_confidence_min)
+    if topic_manually_corrected is not None:
+        filtered = filtered.join(CallTopicClassification, CallTopicClassification.call_id == Call.id).where(CallTopicClassification.manually_overridden == topic_manually_corrected)
+    if topic_unknown:
+        filtered = filtered.outerjoin(CallTopicClassification, CallTopicClassification.call_id == Call.id).where(or_(CallTopicClassification.id.is_(None), CallTopicClassification.primary_topic_name.ilike("%Другое%")))
+    if has_missed_required_actions:
+        filtered = filtered.join(TopicActionResult, TopicActionResult.call_id == Call.id).where(TopicActionResult.status == "missed")
     total = db.execute(select(func.count()).select_from(filtered.subquery())).scalar_one()
     sort_column = CALL_SORT_COLUMNS.get(sort_by, Call.created_at)
     order = sort_column.asc() if sort_dir.lower() == "asc" else sort_column.desc()
@@ -2016,7 +2146,123 @@ def call_filter_options(db: Session = Depends(get_db), user: User = Depends(get_
     }
 
 
-def _calls_csv_rows(calls: list[Call]) -> list[list]:
+@app.get("/settings/call-topics")
+def list_call_topics(include_inactive: bool = True, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    stmt = select(CallTopic)
+    if not include_inactive:
+        stmt = stmt.where(CallTopic.is_active == True)
+    topics = db.execute(stmt.order_by(CallTopic.priority.asc(), CallTopic.id.asc())).scalars().all()
+    return {"items": [_serialize_topic(topic) for topic in topics]}
+
+
+@app.post("/settings/call-topics")
+def create_call_topic(payload: CallTopicPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    topic = CallTopic(name=payload.name.strip(), slug=(payload.slug or _slugify_topic(payload.name)).strip(), description=payload.description, examples=_list_of_strings(payload.examples), keywords=_list_of_strings(payload.keywords), negative_examples=_list_of_strings(payload.negative_examples), required_actions=_list_of_strings(payload.required_actions), script_checklist=_list_of_strings(payload.script_checklist), is_active=payload.is_active, priority=payload.priority)
+    if not topic.name:
+        raise HTTPException(status_code=400, detail="Topic name is required")
+    db.add(topic); db.commit(); db.refresh(topic)
+    return _serialize_topic(topic)
+
+
+@app.patch("/settings/call-topics/{topic_id}")
+def patch_call_topic(topic_id: int, payload: CallTopicPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    topic = db.get(CallTopic, topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    topic.name = payload.name.strip() or topic.name
+    topic.slug = (payload.slug or topic.slug or _slugify_topic(topic.name)).strip()
+    topic.description = payload.description
+    topic.examples = _list_of_strings(payload.examples)
+    topic.keywords = _list_of_strings(payload.keywords)
+    topic.negative_examples = _list_of_strings(payload.negative_examples)
+    topic.required_actions = _list_of_strings(payload.required_actions)
+    topic.script_checklist = _list_of_strings(payload.script_checklist)
+    topic.is_active = payload.is_active
+    topic.priority = payload.priority
+    db.commit(); db.refresh(topic)
+    return _serialize_topic(topic)
+
+
+@app.post("/settings/call-topics/{topic_id}/activate")
+def activate_call_topic(topic_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    topic = db.get(CallTopic, topic_id)
+    if not topic: raise HTTPException(status_code=404, detail="Topic not found")
+    topic.is_active = True; db.commit(); return _serialize_topic(topic)
+
+
+@app.post("/settings/call-topics/{topic_id}/deactivate")
+def deactivate_call_topic(topic_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)) -> dict:
+    topic = db.get(CallTopic, topic_id)
+    if not topic: raise HTTPException(status_code=404, detail="Topic not found")
+    topic.is_active = False; db.commit(); return _serialize_topic(topic)
+
+
+@app.get("/dashboard/topics")
+def dashboard_topics(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    calls = db.execute(apply_call_scope(select(Call), user)).scalars().all()
+    ids = [c.id for c in calls]
+    items = db.execute(select(CallTopicClassification).where(CallTopicClassification.call_id.in_(ids))).scalars().all() if ids else []
+    reviews = {r.call_id: r for r in db.execute(select(QAReview).where(QAReview.call_id.in_(ids), QAReview.status == "success")).scalars().all()} if ids else {}
+    actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id.in_(ids))).scalars().all() if ids else []
+    by_topic: dict[str, dict] = {}
+    for item in items:
+        name = item.primary_topic_name or "Другое / не определено"
+        bucket = by_topic.setdefault(name, {"topic": name, "calls": 0, "ai_scores": [], "human_scores": [], "action_total": 0, "action_done": 0, "disputed_reviews": 0, "coaching_actions": 0})
+        bucket["calls"] += 1
+        r = reviews.get(item.call_id)
+        if r and r.score is not None: bucket["ai_scores"].append(r.score)
+        if r and r.human_total_score is not None: bucket["human_scores"].append(r.human_total_score)
+        if r and r.review_status == "disputed": bucket["disputed_reviews"] += 1
+    for a in actions:
+        item = next((i for i in items if i.call_id == a.call_id), None)
+        if not item: continue
+        bucket = by_topic.setdefault(item.primary_topic_name or "Другое / не определено", {"topic": item.primary_topic_name, "calls": 0, "ai_scores": [], "human_scores": [], "action_total": 0, "action_done": 0, "disputed_reviews": 0, "coaching_actions": 0})
+        bucket["action_total"] += 1
+        if a.status == "completed": bucket["action_done"] += 1
+    rows = []
+    total = len(items) or 1
+    for b in by_topic.values():
+        rows.append({"topic": b["topic"], "calls": b["calls"], "distribution_percent": round(b["calls"] * 100 / total, 2), "average_ai_score": round(sum(b["ai_scores"]) / len(b["ai_scores"]), 2) if b["ai_scores"] else None, "average_human_score": round(sum(b["human_scores"]) / len(b["human_scores"]), 2) if b["human_scores"] else None, "average_topic_compliance_score": round(b["action_done"] * 100 / b["action_total"], 2) if b["action_total"] else None, "disputed_reviews": b["disputed_reviews"]})
+    missed = db.execute(select(TopicActionResult.action_text, func.count(TopicActionResult.id)).where(TopicActionResult.status == "missed").group_by(TopicActionResult.action_text).order_by(func.count(TopicActionResult.id).desc()).limit(10)).all()
+    return {"items": sorted(rows, key=lambda x: x["calls"], reverse=True), "most_missed_required_actions": [{"action": m[0], "count": m[1]} for m in missed]}
+
+
+@app.get("/exports/topic-statistics")
+def export_topic_statistics(format: str = Query("csv", pattern="^(xlsx|csv)$"), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    data = dashboard_topics(db, user)
+    headers = ["topic","calls","distribution_percent","average_ai_score","average_human_score","average_topic_compliance_score","disputed_reviews"]
+    rows = [[i.get(h, "") for h in headers] for i in data["items"]]
+    if format == "csv":
+        buf = StringIO(); buf.write("\ufeff"); writer = csv.writer(buf); writer.writerow(headers); writer.writerows(rows)
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="callquanta-topic-statistics.csv"'})
+    wb = Workbook(); ws = wb.active; ws.title = "Topic statistics"; ws.append(headers)
+    for row in rows: ws.append(row)
+    out = BytesIO(); wb.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="callquanta-topic-statistics.xlsx"'})
+
+
+def _topic_export_fields(db: Session, call_id: int) -> list:
+    item = _latest_topic_classification(db, call_id)
+    actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id == call_id)).scalars().all() if item else []
+    total = len(actions)
+    done = sum(1 for a in actions if a.status == "completed")
+    missed_actions = [a.action_text for a in actions if a.status == "missed"]
+    return [
+        item.primary_topic_name if item else "",
+        ", ".join(item.secondary_topics or []) if item else "",
+        item.confidence if item and item.confidence is not None else "",
+        item.rationale if item else "",
+        " | ".join(item.evidence or []) if item else "",
+        bool(item.manually_overridden) if item else False,
+        total,
+        done,
+        len(missed_actions),
+        " | ".join(missed_actions),
+        round(done * 100 / total, 2) if total else "",
+    ]
+
+
+def _calls_csv_rows(calls: list[Call], db: Session | None = None) -> list[list]:
     return [[
         call.id,
         call.filename,
@@ -2039,6 +2285,7 @@ def _calls_csv_rows(calls: list[Call]) -> list[list]:
         call.ended_at.isoformat() if call.ended_at else "",
         call.duration_seconds or "",
         call.ingestion_status or "",
+        *(_topic_export_fields(db, call.id) if db is not None else []),
     ] for call in calls]
 
 
@@ -2094,14 +2341,14 @@ def export_calls(
 ):
     calls = _filtered_calls_for_export(db, _call_filter_query_params(q, status, agent_name, team, campaign, direction, language, created_from, created_to), call_ids=call_ids, user=user)
     _log_audit_event(db, user, "export_triggered", "calls", None, "Calls export triggered", {"format": format, "count": len(calls)}, commit=True)
-    headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error", "Source provider", "External call ID", "Customer phone", "Agent phone", "Started at", "Ended at", "Duration seconds", "Ingestion status"]
+    headers = ["ID", "Filename", "Status", "Agent", "Team", "Campaign", "Direction", "Language", "File size bytes", "Content type", "Created at", "Last processed at", "Last error", "Source provider", "External call ID", "Customer phone", "Agent phone", "Started at", "Ended at", "Duration seconds", "Ingestion status", "primary_topic", "secondary_topics", "topic_confidence", "topic_rationale", "topic_evidence", "topic_manual_override", "topic_required_actions_total", "topic_required_actions_completed", "topic_required_actions_missed", "missed_required_actions", "topic_compliance_score"]
     safe_name = "callquanta-filtered-calls"
     if format == "csv":
         buf = StringIO(); buf.write("\ufeff")
-        writer = csv.writer(buf); writer.writerow(headers); writer.writerows(_calls_csv_rows(calls))
+        writer = csv.writer(buf); writer.writerow(headers); writer.writerows(_calls_csv_rows(calls, db))
         return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'})
     wb = Workbook(); ws = wb.active; ws.title = "Calls"; ws.append(headers)
-    for row in _calls_csv_rows(calls): ws.append(row)
+    for row in _calls_csv_rows(calls, db): ws.append(row)
     out = BytesIO(); wb.save(out); out.seek(0)
     return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'})
 
@@ -2475,6 +2722,34 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
     return {"results": results}
 
 
+@app.post("/calls/batch/classify-topics")
+def batch_classify_topics(payload: BatchCallsPayload, only_without_topic: bool = True, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    results: list[dict] = []
+    for call_id in _unique_call_ids(payload.call_ids):
+        call = db.get(Call, call_id)
+        if not call:
+            results.append({"call_id": call_id, "status": "not_found", "error": "Call not found"})
+            continue
+        try:
+            require_can_modify_call(call, user)
+        except HTTPException as exc:
+            results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
+            continue
+        if only_without_topic and _latest_topic_classification(db, call_id):
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Topic already exists"})
+            continue
+        if not db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first():
+            results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
+            continue
+        queued, warning = _enqueue_job(TOPIC_CLASSIFICATION_QUEUE, {"call_id": call_id})
+        if queued:
+            results.append({"call_id": call_id, "status": "topic_classification_queued"})
+        else:
+            _classify_call_topic_sync(db, call)
+            results.append({"call_id": call_id, "status": "classified_inline", "warning": warning})
+    return {"results": results}
+
+
 
 @app.patch("/calls/batch/metadata")
 def batch_patch_call_metadata(payload: BatchMetadataPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
@@ -2674,6 +2949,46 @@ def analyze_call(call_id: int, db: Session = Depends(get_db), user: User = Depen
     return {"call_id": call_id, "status": "analysis_queued"}
 
 
+@app.post("/calls/{call_id}/classify-topic")
+def classify_call_topic(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    require_can_modify_call(call, user)
+    if not db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first():
+        raise HTTPException(status_code=400, detail="Call has no transcript segments")
+    classification = _classify_call_topic_sync(db, call)
+    actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id == call.id).order_by(TopicActionResult.id.asc())).scalars().all()
+    return {"call_id": call.id, "topic": _topic_classification_dict(classification, actions)}
+
+
+@app.post("/calls/{call_id}/topic/reclassify")
+def reclassify_call_topic(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    return classify_call_topic(call_id, db, user)
+
+
+@app.patch("/calls/{call_id}/topic")
+def patch_call_topic_manual(call_id: int, payload: ManualTopicPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    require_can_correct_topic(call, user)
+    topic = db.get(CallTopic, payload.primary_topic_id) if payload.primary_topic_id else None
+    item = _latest_topic_classification(db, call_id) or CallTopicClassification(call_id=call_id)
+    item.primary_topic_id = topic.id if topic else None
+    item.primary_topic_name = topic.name if topic else "Другое / не определено"
+    item.manual_topic_id = topic.id if topic else None
+    item.manually_overridden = True
+    item.manual_notes = payload.manual_notes
+    item.confidence = item.confidence or 1.0
+    item.rationale = item.rationale or "Тема скорректирована вручную."
+    if item.id is None:
+        db.add(item)
+    db.commit(); db.refresh(item)
+    actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id == call.id).order_by(TopicActionResult.id.asc())).scalars().all()
+    return {"call_id": call.id, "topic": _topic_classification_dict(item, actions)}
+
+
 @app.get("/calls/{call_id}/qa")
 def get_call_qa(call_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     call = db.get(Call, call_id)
@@ -2686,10 +3001,12 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db), user: User = Depend
         .where(QAReview.call_id == call_id, QAReview.status == "success")
         .order_by(QAReview.created_at.desc(), QAReview.id.desc())
     ).scalars().first()
+    topic = _latest_topic_classification(db, call_id)
+    actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id == call_id).order_by(TopicActionResult.id.asc())).scalars().all() if topic else []
     if not review:
-        return {"call_id": call_id, "status": call.status, "review": None}
+        return {"call_id": call_id, "status": call.status, "review": None, "topic": _topic_classification_dict(topic, actions)}
 
-    return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db)}
+    return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db), "topic": _topic_classification_dict(topic, actions)}
 
 
 

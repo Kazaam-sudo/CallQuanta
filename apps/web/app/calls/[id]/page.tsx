@@ -69,6 +69,7 @@ type CoachingAction = { id:number; title:string; description?:string|null; statu
 type QAFeedback = { transcript_quality?: string | null; qa_analysis_quality?: string | null; score_agreement?: string | null; scorecard_fit?: string | null; ai_missed_something?: boolean; ai_missed_comment?: string | null; ai_false_positive?: boolean; ai_false_positive_comment?: string | null; useful_for_coaching?: boolean | null; coaching_usefulness_comment?: string | null; overall_feedback?: string | null; issue_tags?: string[]; feedback_status?: string };
 type QAReview = { feedback?: QAFeedback | null; feedback_status?: string; assignment?: { id:number; assigned_to_email?: string | null; status:string } | null; id: number; created_at?: string; status?: string; score: number; summary: string; analysis_mode?: string; provider_name?: string; provider_preset?: string; model?: string; scorecard_name?: string; report_language?: string; legacy_review?: boolean; review_status?: string; human_total_score?: number | null; human_summary?: string | null; human_notes?: string | null; human_reviewer_email?: string | null; human_reviewed_at?: string | null; ai_human_score_delta?: number | null; calibration_flag?: boolean; calibration_notes?: string | null; criteria: QACriterion[]; findings: QAFinding[]; coaching_actions?: CoachingAction[] };
 type AuthUser = { id:number; email:string; role:string };
+type CallTopicInfo = { primary_topic_name?: string; confidence?: number; secondary_topics?: string[]; rationale?: string; evidence?: string[]; manually_overridden?: boolean; actions?: { id:number; action_text:string; status:string; evidence?:string[]; rationale?:string }[]; topic_compliance_score?: number | null };
 type QAReviewCompact = { id:number; created_at?:string; status:string; score?:number; provider_name?:string; model?:string; scorecard_name?:string; report_language?:string; analysis_mode?:string; legacy_review?:boolean; review_status?:string; human_total_score?:number|null; calibration_flag?:boolean };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -80,6 +81,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [call, setCall] = useState<Call | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [review, setReview] = useState<QAReview | null>(null);
+  const [topic, setTopic] = useState<CallTopicInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<QAReviewCompact[]>([]);
   const [viewingReviewId, setViewingReviewId] = useState<number | null>(null);
@@ -131,7 +133,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         const transcriptData = await transcriptResponse.json();
         setSegments(transcriptData.segments || []);
       }
-      if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); }
+      if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); setTopic(qaData.topic || null); }
       if (historyResponse.ok) { const hist = await historyResponse.json(); setHistory(hist.reviews || []); }
       fetch(`${API_BASE_URL}/settings/stt`).then((res) => res.ok ? res.json() : null).then((data) => { if (data) setSttSettings(data); }).catch(() => {});
       fetch(`${API_BASE_URL}/auth/me`).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setUser(data.user); }).catch(() => {});
@@ -541,7 +543,23 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {segments.length === 0 ? <EmptyState title={t("call.noTranscript")} description={t("call.noTranscriptHelp")} /> : <div className="grid">{segments.map((segment) => <article key={segment.id} className="segment"><small>{msToSeconds(segment.start_ms)} - {msToSeconds(segment.end_ms)} • {segment.speaker}</small><p>{segment.text}</p></article>)}</div>}
       </Card>}
 
-      {activeTab === "qa" && <Card id="qa-review-section">
+      {activeTab === "qa" && <>
+        <Card>
+          <SectionHeader title="Тематика звонка / Call topic" description="AI-классификация темы входящего звонка и проверка обязательных действий по этой теме." />
+          {!topic ? <EmptyState title="Тема пока не определена" description="Запустите классификацию после появления транскрипта." /> : <div className="grid">
+            <div className="meta-grid">
+              <div className="meta-item"><small>Основная тема</small>{topic.primary_topic_name || "-"}</div>
+              <div className="meta-item"><small>Уверенность</small>{topic.confidence != null ? `${Math.round(topic.confidence * 100)}%` : "-"}</div>
+              <div className="meta-item"><small>Дополнительные темы</small>{(topic.secondary_topics || []).join(", ") || "-"}</div>
+              <div className="meta-item"><small>Ручная корректировка</small>{topic.manually_overridden ? "Да" : "Нет"}</div>
+            </div>
+            {topic.rationale ? <p className="message"><strong>Обоснование:</strong> {topic.rationale}</p> : null}
+            {(topic.evidence || []).length ? <div><strong>Доказательства:</strong><ul>{(topic.evidence || []).map((e, i) => <li key={i}>{e}</li>)}</ul></div> : null}
+            <SectionHeader title="Обязательные действия по теме" description={topic.topic_compliance_score != null ? `Соблюдение: ${topic.topic_compliance_score}%` : undefined} />
+            {(topic.actions || []).length === 0 ? <EmptyState title="Для темы не заданы обязательные действия" /> : <div className="grid" style={{ gap: 8 }}>{(topic.actions || []).map((action) => <article key={action.id} className="segment"><Badge tone={action.status === "completed" ? "success" : action.status === "missed" ? "danger" : "warning"}>{action.status === "completed" ? "✅" : action.status === "missed" ? "❌" : "⚠️"} {action.status}</Badge><p>{action.action_text}</p>{action.rationale ? <small>{action.rationale}</small> : null}</article>)}</div>}
+          </div>}
+        </Card>
+        <Card id="qa-review-section">
         <SectionHeader title={t("call.qaReview")} description={t("call.qaHelp")} help={t("help.aiReview")} />
         {!review ? <EmptyState title={t("call.noQaReview")} description={t("call.noQaReviewHelp")} /> : <div className="grid">
           <div className="review-hero">
@@ -573,7 +591,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
             </article>)}</div>
           </details>
         </div>}
-      </Card>}
+      </Card>
+      </>}
 
       {activeTab === "human" && <Card>
         <SectionHeader title={t("qa.humanReview")} description={t("call.humanHelp")} help={t("help.humanReview")} />

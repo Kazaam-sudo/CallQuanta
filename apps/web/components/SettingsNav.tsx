@@ -7,6 +7,7 @@ const settingsLinks = [
   { href: "/settings/llm", key: "settings.llmProviders" },
   { href: "/settings/stt", key: "settings.sttProviders" },
   { href: "/settings/scorecard", key: "settings.scorecard" },
+  { href: "/settings/call-topics", key: "Тематики звонков" },
   { href: "/settings/workspace", key: "settings.workspaceLanguage" },
   { href: "/settings/integrations", key: "settings.telephonyIntegrations" },
   { href: "/settings/users", key: "settings.usersAccess" },

@@ -237,6 +237,60 @@ class AppSetting(Base):
     value: Mapped[dict] = mapped_column(JSON)
 
 
+class CallTopic(Base):
+    __tablename__ = "call_topics"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    examples: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    negative_examples: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    required_actions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    script_checklist: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CallTopicClassification(Base):
+    __tablename__ = "call_topic_classifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"), index=True)
+    primary_topic_id: Mapped[int | None] = mapped_column(ForeignKey("call_topics.id"), nullable=True)
+    primary_topic_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    secondary_topics: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    classified_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manually_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
+    manual_topic_id: Mapped[int | None] = mapped_column(ForeignKey("call_topics.id"), nullable=True)
+    manual_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TopicActionResult(Base):
+    __tablename__ = "topic_action_results"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"), index=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("call_topics.id"), index=True)
+    action_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    action_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="unclear")
+    evidence: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+def migrate_topic_tables(engine: Engine) -> None:
+    for table in ("call_topics", "call_topic_classifications", "topic_action_results"):
+        Base.metadata.tables[table].create(bind=engine, checkfirst=True)
+
+
 def migrate_qa_reviews_table(engine: Engine) -> None:
     """Backfill/upgrade pre-v0.10.0 qa_reviews tables in-place.
 

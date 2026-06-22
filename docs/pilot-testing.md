@@ -38,3 +38,13 @@ Repeat playback checks as a scoped manager and through the pilot tunnel URL. A u
 
 ## Recommended pilot format
 Run a structured pilot with 3 managers, 5–10 calls each, at least 2 campaigns, and at least 2 operators. Compare AI score vs human score, collect STT/QA/UI feedback, export the feedback file, then summarize the top fixes before production rollout.
+
+## Проверка тематик звонков (v0.25.0)
+
+1. Под администратором откройте **Settings → Call Topics / Тематики звонков**.
+2. Создайте или измените тему, добавив описание, ключевые слова и обязательные действия.
+3. Загрузите/импортируйте звонок, выполните транскрипцию и QA-анализ.
+4. На странице звонка проверьте блок **Тематика звонка / Call topic** и список обязательных действий.
+5. При необходимости вручную исправьте тему через API/менеджерский workflow.
+6. Проверьте фильтрацию/экспорт: CSV/XLSX содержит `primary_topic`, `secondary_topics`, `topic_confidence`, missed actions и compliance score.
+7. Откройте topic dashboard/export для распределения звонков по темам и наиболее часто пропущенных действий.
