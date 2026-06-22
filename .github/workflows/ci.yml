@@ -74,6 +74,7 @@ jobs:
 
       - name: Start local stack
         run: |
+          docker compose pull postgres redis ollama || docker compose pull postgres redis ollama || true
           docker compose up -d --build
 
           for i in {1..30}; do
