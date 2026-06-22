@@ -178,3 +178,11 @@ CallQuanta includes a lightweight pilot workflow for internal manager testing be
 - The `/pilot` checklist page guides admins and managers through the recommended pilot format.
 
 See [docs/pilot-testing.md](docs/pilot-testing.md) for the recommended 3-manager, 5–10-calls-each pilot plan.
+
+## Call topics and topic-specific compliance (v0.25.0)
+
+CallQuanta can classify inbound contact-center calls into an admin-managed topic taxonomy. Admins configure **Settings → Call Topics / Тематики звонков** with a topic name, description, examples, keywords, required operator actions, optional script checklist, active status, and priority. Default editable topics include Узнать баланс, Смена тарифа, Ближайший офис, Подключить услугу, Отключить услугу, Проблема с оплатой, Жалоба, Проблема со связью/интернетом, Статус заявки, Консультация по приложению, and Другое / не определено.
+
+After a transcript is available, CallQuanta stores the primary topic, optional secondary topics, confidence, rationale, and evidence. The QA worker also checks the primary topic's required actions and stores completed, missed, partial, not applicable, or unclear action results. This topic layer is shown in Call Details next to the usual QA review and does not replace the general QA score.
+
+Managers, supervisors, and admins can manually correct a call topic. Topic fields are included in call exports, and `/dashboard/topics` plus `/exports/topic-statistics` provide topic distribution, average QA scores by topic, and missed-action analytics.

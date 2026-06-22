@@ -10,14 +10,15 @@ from typing import Any
 import redis
 import requests
 import yaml
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, delete
 from sqlalchemy.orm import sessionmaker
 
-from db import AppSetting, Call, ProviderConfig, QAReview, ScorecardConfig, TranscriptSegment
+from db import AppSetting, Call, CallTopic, CallTopicClassification, ProviderConfig, QAReview, ScorecardConfig, TopicActionResult, TranscriptSegment
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 QA_QUEUE = os.environ.get("QA_QUEUE", "qa_jobs")
+TOPIC_CLASSIFICATION_QUEUE = os.environ.get("TOPIC_CLASSIFICATION_QUEUE", "topic_classification_jobs")
 QA_MODE = os.environ.get("QA_MODE", "placeholder")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai_compatible")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
@@ -546,6 +547,56 @@ def fallback_review(scorecard: dict[str, Any], parse_error: str) -> dict[str, An
     return normalize_review(review, scorecard)
 
 
+
+def classify_topic_placeholder(db, call: Call, transcript_text: str) -> CallTopicClassification | None:
+    topics = db.execute(select(CallTopic).where(CallTopic.is_active == True).order_by(CallTopic.priority.asc(), CallTopic.id.asc())).scalars().all()
+    if not topics:
+        return None
+    text = transcript_text.lower()
+    other = next((t for t in topics if "другое" in t.name.lower() or "unknown" in t.slug), None)
+    scored = []
+    for topic in topics:
+        words = set()
+        for value in [topic.name, topic.description or "", *(topic.examples or []), *(topic.keywords or [])]:
+            words.update(w for w in __import__("re").findall(r"[\wа-яё]{3,}", str(value).lower()))
+        scored.append((sum(1 for w in words if w in text), topic))
+    scored.sort(key=lambda x: (x[0], -x[1].priority), reverse=True)
+    score, topic = scored[0]
+    confidence = min(0.95, 0.35 + score * 0.12) if score else 0.2
+    if confidence < 0.45 and other:
+        topic = other
+    item = db.execute(select(CallTopicClassification).where(CallTopicClassification.call_id == call.id).order_by(CallTopicClassification.id.desc())).scalars().first() or CallTopicClassification(call_id=call.id)
+    item.primary_topic_id = topic.id
+    item.primary_topic_name = topic.name
+    item.secondary_topics = [t.name for s, t in scored[1:4] if s > 0 and t.id != topic.id]
+    item.confidence = confidence
+    item.rationale = "Классификация выполнена по совпадениям темы, описания, примеров и ключевых слов с транскриптом."
+    item.evidence = transcript_text.splitlines()[:3]
+    item.classified_by = "qa-worker/rules"
+    if item.id is None:
+        db.add(item); db.flush()
+    db.execute(delete(TopicActionResult).where(TopicActionResult.call_id == call.id))
+    for idx, action in enumerate(topic.required_actions or [], start=1):
+        words = [w for w in __import__("re").findall(r"[\wа-яё]{4,}", str(action).lower()) if w not in {"если", "клиента", "клиент", "требуется"}]
+        matched = any(w in text for w in words[:6])
+        db.add(TopicActionResult(call_id=call.id, topic_id=topic.id, action_key=f"action_{idx}", action_text=str(action), status="completed" if matched else "missed", evidence=[str(action) if matched else "В транскрипте не найдено явное выполнение действия."], rationale="Автоматическая проверка по текстовым признакам."))
+    return item
+
+def process_topic_classification_job(call_id: int) -> None:
+    with SessionLocal() as db:
+        call = db.get(Call, call_id)
+        if not call:
+            print(f"call {call_id} not found, skipping topic job")
+            return
+        segments = db.execute(select(TranscriptSegment).where(TranscriptSegment.call_id == call_id).order_by(TranscriptSegment.start_ms.asc(), TranscriptSegment.id.asc())).scalars().all()
+        if not segments:
+            print(f"call {call_id} has no transcript segments for topic classification")
+            return
+        classify_topic_placeholder(db, call, format_transcript(segments))
+        db.commit()
+        print(f"call {call_id} topic classified")
+
+
 def process_qa_job(call_id: int) -> None:
     with SessionLocal() as db:
         call = db.get(Call, call_id)
@@ -574,6 +625,7 @@ def process_qa_job(call_id: int) -> None:
             call.last_error_type = None
             call.last_error_message = None
             db.commit()
+            classify_topic_placeholder(db, call, transcript_text)
             scorecard = load_active_scorecard(db)
             workspace_settings = load_workspace_settings(db)
             resolved_report_language = resolve_report_language(scorecard, workspace_settings, call)
@@ -650,15 +702,15 @@ def process_qa_job(call_id: int) -> None:
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE}")
+print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE} topic_queue={TOPIC_CLASSIFICATION_QUEUE}")
 
 while running:
     write_heartbeat()
-    job = redis_client.brpop(QA_QUEUE, timeout=2)
+    job = redis_client.brpop([QA_QUEUE, TOPIC_CLASSIFICATION_QUEUE], timeout=2)
     if not job:
         continue
 
-    _, payload = job
+    queue_name, payload = job
     try:
         data = json.loads(payload)
         call_id = int(data["call_id"])
@@ -666,6 +718,6 @@ while running:
         print(f"invalid QA job payload: {payload}")
         continue
 
-    process_qa_job(call_id)
+    process_topic_classification_job(call_id) if queue_name == TOPIC_CLASSIFICATION_QUEUE else process_qa_job(call_id)
 
 print("qa-worker stopped gracefully.")
