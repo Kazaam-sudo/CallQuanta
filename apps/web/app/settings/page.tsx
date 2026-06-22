@@ -9,6 +9,11 @@ const cards = [
   { href: "/settings/llm", titleKey: "settings.llmProviders", textKey: "settings.card.llm" },
   { href: "/settings/stt", titleKey: "settings.sttProviders", textKey: "settings.card.stt" },
   { href: "/settings/scorecard", titleKey: "settings.scorecard", textKey: "settings.card.scorecard" },
+  {
+    href: "/settings/call-topics",
+    title: "Тематики звонков",
+    text: "Управление тематиками входящих звонков, примерами, ключевыми словами и обязательными действиями.",
+  },
   { href: "/settings/workspace", titleKey: "settings.workspaceLanguage", textKey: "settings.card.workspace" },
   { href: "/settings/integrations", titleKey: "settings.telephonyIntegrations", textKey: "settings.card.telephony" },
   { href: "/settings/users", titleKey: "settings.usersAccess", textKey: "settings.card.users" },
@@ -54,8 +59,8 @@ export default function SettingsPage() {
       <section className="grid grid-2">
         {cards.map((card) => (
           <Link key={card.href} className="card" href={card.href} style={{ textDecoration: "none", color: "inherit" }}>
-            <h3>{t(card.titleKey)}</h3>
-            <p style={{ color: "var(--text-muted)" }}>{t(card.textKey)}</p>
+            <h3>{card.title || t(card.titleKey || "")}</h3>
+            <p style={{ color: "var(--text-muted)" }}>{card.text || t(card.textKey || "")}</p>
           </Link>
         ))}
       </section>

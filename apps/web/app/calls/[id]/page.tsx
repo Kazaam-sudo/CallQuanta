@@ -89,6 +89,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [classifyingTopic, setClassifyingTopic] = useState(false);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataSaveSuccess, setMetadataSaveSuccess] = useState(false);
   const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
@@ -199,6 +200,31 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       setError("Transcribe request failed: Network error.");
     } finally {
       setTranscribing(false);
+    }
+  };
+
+  const classifyTopic = async () => {
+    if (!call || classifyingTopic) return;
+    try {
+      setError(null);
+      setClassifyingTopic(true);
+      const response = await fetch(`${API_BASE_URL}/calls/${params.id}/classify-topic`, { method: "POST" });
+      if (!response.ok) {
+        let detail = "Failed to classify topic.";
+        try {
+          const data = await response.json();
+          if (typeof data?.detail === "string" && data.detail) detail = data.detail;
+        } catch {}
+        setError(`Topic classification failed: ${detail}`);
+        return;
+      }
+      const data = await response.json();
+      setTopic(data.topic || null);
+      await load();
+    } catch {
+      setError("Topic classification failed: Network error.");
+    } finally {
+      setClassifyingTopic(false);
     }
   };
 
@@ -434,6 +460,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const tabs = [
     { id: "overview", label: t("call.tab.overview") },
     { id: "transcript", label: t("call.tab.transcript"), help: t("help.sttProvider") },
+    { id: "topic", label: "Тематика" },
     { id: "qa", label: t("call.tab.qa"), help: t("help.aiReview") },
     { id: "human", label: t("call.tab.human"), help: t("help.humanReview") },
     { id: "feedback", label: "Pilot feedback" },
@@ -543,22 +570,27 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         {segments.length === 0 ? <EmptyState title={t("call.noTranscript")} description={t("call.noTranscriptHelp")} /> : <div className="grid">{segments.map((segment) => <article key={segment.id} className="segment"><small>{msToSeconds(segment.start_ms)} - {msToSeconds(segment.end_ms)} • {segment.speaker}</small><p>{segment.text}</p></article>)}</div>}
       </Card>}
 
+      {activeTab === "topic" && <Card>
+        <SectionHeader
+          title="Тематика звонка"
+          description="AI-классификация темы входящего звонка и проверка обязательных действий по этой теме."
+          actions={<Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? "Определяем…" : "Определить тематику"}</Button>}
+        />
+        {!topic ? <div className="grid" style={{ gap: 12 }}><EmptyState title="Тематика ещё не определена" description="Запустите классификацию после появления транскрипта." /><div className="actions"><Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? "Определяем…" : "Определить тематику"}</Button></div></div> : <div className="grid">
+          <div className="meta-grid">
+            <div className="meta-item"><small>Основная тема</small>{topic.primary_topic_name || "-"}</div>
+            <div className="meta-item"><small>Уверенность</small>{topic.confidence != null ? `${Math.round(topic.confidence * 100)}%` : "-"}</div>
+            <div className="meta-item"><small>Дополнительные темы</small>{(topic.secondary_topics || []).join(", ") || "-"}</div>
+            <div className="meta-item"><small>Ручная корректировка</small>{topic.manually_overridden ? "Да" : "Нет"}</div>
+          </div>
+          {topic.rationale ? <p className="message"><strong>Обоснование:</strong> {topic.rationale}</p> : null}
+          {(topic.evidence || []).length ? <div><strong>Доказательства:</strong><ul>{(topic.evidence || []).map((e, i) => <li key={i}>{e}</li>)}</ul></div> : null}
+          <SectionHeader title="Обязательные действия по теме" description={topic.topic_compliance_score != null ? `Соблюдение: ${topic.topic_compliance_score}%` : undefined} />
+          {(topic.actions || []).length === 0 ? <EmptyState title="Для темы не заданы обязательные действия" /> : <div className="grid" style={{ gap: 8 }}>{(topic.actions || []).map((action) => <article key={action.id} className="segment"><Badge tone={action.status === "completed" ? "success" : action.status === "missed" ? "danger" : "warning"}>{action.status === "completed" ? "✅" : action.status === "missed" ? "❌" : "⚠️"} {action.status}</Badge><p>{action.action_text}</p>{action.rationale ? <small>{action.rationale}</small> : null}</article>)}</div>}
+        </div>}
+      </Card>}
+
       {activeTab === "qa" && <>
-        <Card>
-          <SectionHeader title="Тематика звонка / Call topic" description="AI-классификация темы входящего звонка и проверка обязательных действий по этой теме." />
-          {!topic ? <EmptyState title="Тема пока не определена" description="Запустите классификацию после появления транскрипта." /> : <div className="grid">
-            <div className="meta-grid">
-              <div className="meta-item"><small>Основная тема</small>{topic.primary_topic_name || "-"}</div>
-              <div className="meta-item"><small>Уверенность</small>{topic.confidence != null ? `${Math.round(topic.confidence * 100)}%` : "-"}</div>
-              <div className="meta-item"><small>Дополнительные темы</small>{(topic.secondary_topics || []).join(", ") || "-"}</div>
-              <div className="meta-item"><small>Ручная корректировка</small>{topic.manually_overridden ? "Да" : "Нет"}</div>
-            </div>
-            {topic.rationale ? <p className="message"><strong>Обоснование:</strong> {topic.rationale}</p> : null}
-            {(topic.evidence || []).length ? <div><strong>Доказательства:</strong><ul>{(topic.evidence || []).map((e, i) => <li key={i}>{e}</li>)}</ul></div> : null}
-            <SectionHeader title="Обязательные действия по теме" description={topic.topic_compliance_score != null ? `Соблюдение: ${topic.topic_compliance_score}%` : undefined} />
-            {(topic.actions || []).length === 0 ? <EmptyState title="Для темы не заданы обязательные действия" /> : <div className="grid" style={{ gap: 8 }}>{(topic.actions || []).map((action) => <article key={action.id} className="segment"><Badge tone={action.status === "completed" ? "success" : action.status === "missed" ? "danger" : "warning"}>{action.status === "completed" ? "✅" : action.status === "missed" ? "❌" : "⚠️"} {action.status}</Badge><p>{action.action_text}</p>{action.rationale ? <small>{action.rationale}</small> : null}</article>)}</div>}
-          </div>}
-        </Card>
         <Card id="qa-review-section">
         <SectionHeader title={t("call.qaReview")} description={t("call.qaHelp")} help={t("help.aiReview")} />
         {!review ? <EmptyState title={t("call.noQaReview")} description={t("call.noQaReviewHelp")} /> : <div className="grid">
