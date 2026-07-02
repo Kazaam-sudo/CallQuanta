@@ -231,47 +231,113 @@ jobs:
           curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/transcript | python -c "import json,sys; data=json.load(sys.stdin); assert len(data['segments']) > 0"
 
 
-      - name: Smoke test QA analysis flow
+      - name: Smoke test invalid transcript blocks QA
         run: |
           set -euo pipefail
-          printf 'RIFF....WAVEfmt ' > /tmp/sample3.wav
+          diagnostics() {
+            echo "GET /calls/${call_id:-unknown}"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} || true; fi
+            echo "GET /calls/${call_id:-unknown}/qa"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa || true; fi
+            echo "GET /calls/${call_id:-unknown}/transcript"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/transcript || true; fi
+            echo "docker compose logs qa-worker"
+            docker compose logs --no-color --tail=200 qa-worker || true
+          }
+          trap 'diagnostics' ERR
 
-          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3.wav" http://localhost:8000/calls/upload)
+          printf 'RIFF....WAVEfmt ' > /tmp/sample3-invalid.wav
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3-invalid.wav" http://localhost:8000/calls/upload)
           call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
           curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/transcribe
-
           for i in {1..30}; do
             status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
-            if [ "$status" = "transcribed" ]; then
-              break
-            fi
+            if [ "$status" = "transcribed" ]; then break; fi
             sleep 1
           done
 
           curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/analyze
-
           for i in {1..30}; do
             status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
-            if [ "$status" = "analyzed" ]; then
-              break
-            fi
+            if [ "$status" = "analysis_blocked_invalid_transcript" ]; then break; fi
             sleep 1
           done
 
-          final_status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
-          if [ "$final_status" != "analyzed" ]; then
-            echo "Expected analyzed status, got: $final_status"
-            echo "GET /calls/${call_id}"
-            curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} || true
-            echo "GET /calls/${call_id}/qa"
-            curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa || true
-            echo "docker compose logs qa-worker"
-            docker compose logs --no-color qa-worker || true
-            exit 1
-          fi
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} > /tmp/invalid-call.json
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa > /tmp/invalid-qa.json
+          python - <<'PY'
+          import json
 
-          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa | python -c "import json,sys; d=json.load(sys.stdin); r=d['review']; assert isinstance(r, dict); assert isinstance(r['score'], (int,float)); assert isinstance(r['summary'], str) and r['summary']; assert isinstance(r['findings'], list)"
+          call = json.load(open('/tmp/invalid-call.json'))
+          qa = json.load(open('/tmp/invalid-qa.json'))
+          review = qa.get('review') or {}
+          validity = review.get('transcript_validity') or {}
+          if call.get('status') != 'analysis_blocked_invalid_transcript':
+              raise AssertionError(f"Expected analysis_blocked_invalid_transcript, got: {call.get('status')}; call={call}; qa={qa}")
+          assert call.get('last_error_type') == 'invalid_transcript', call
+          assert review.get('score') is None, review
+          assert review.get('qa_invalid_due_to_transcript') is True, review
+          assert validity.get('is_valid') is False, validity
+          assert 'placeholder_transcript' in (validity.get('flags') or []), validity
+          PY
+
+      - name: Smoke test QA analysis with valid transcript
+        run: |
+          set -euo pipefail
+          diagnostics() {
+            echo "GET /calls/${call_id:-unknown}"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} || true; fi
+            echo "GET /calls/${call_id:-unknown}/qa"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa || true; fi
+            echo "GET /calls/${call_id:-unknown}/transcript"
+            if [ -n "${call_id:-}" ]; then curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/transcript || true; fi
+            echo "docker compose logs qa-worker"
+            docker compose logs --no-color --tail=200 qa-worker || true
+          }
+          trap 'diagnostics' ERR
+
+          printf 'RIFF....WAVEfmt ' > /tmp/sample3-valid.wav
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3-valid.wav" http://localhost:8000/calls/upload)
+          call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
+
+          docker compose exec -T postgres psql -U "${POSTGRES_USER:-callquanta}" -d "${POSTGRES_DB:-callquanta}" -v call_id="$call_id" <<'SQL'
+          DELETE FROM transcript_segments WHERE call_id = :call_id;
+          INSERT INTO transcript_segments (call_id, speaker, start_ms, end_ms, text) VALUES
+            (:call_id, 'agent', 0, 5000, 'Hello, this is CallQuanta support. How can I help you today?'),
+            (:call_id, 'customer', 5000, 10000, 'I want to understand why my balance changed.'),
+            (:call_id, 'agent', 10000, 18000, 'I checked your account. The balance changed because of the monthly plan charge.'),
+            (:call_id, 'customer', 18000, 22000, 'Thank you.'),
+            (:call_id, 'agent', 22000, 32000, 'You can also check your balance in the mobile app. Is there anything else I can help with?');
+          UPDATE calls SET status = 'transcribed', last_error_type = NULL, last_error_message = NULL WHERE id = :call_id;
+          SQL
+
+          curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/analyze
+          for i in {1..30}; do
+            status=$(curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} | python -c "import json,sys; print(json.load(sys.stdin)['status'])")
+            if [ "$status" = "analyzed" ]; then break; fi
+            sleep 1
+          done
+
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id} > /tmp/valid-call.json
+          curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/qa > /tmp/valid-qa.json
+          python - <<'PY'
+          import json
+
+          call = json.load(open('/tmp/valid-call.json'))
+          qa = json.load(open('/tmp/valid-qa.json'))
+          review = qa.get('review') or {}
+          if call.get('status') != 'analyzed':
+              raise AssertionError(f"Expected analyzed status, got: {call.get('status')}; call={call}; qa={qa}")
+          assert call.get('last_error_type') != 'invalid_transcript', call
+          assert isinstance(review, dict), qa
+          assert isinstance(review.get('score'), (int, float)), review
+          assert isinstance(review.get('criteria'), list) and review['criteria'], review
+          assert isinstance(review.get('summary'), str) and review['summary'], review
+          assert review.get('qa_invalid_due_to_transcript') is not True, review
+          validity = review.get('transcript_validity')
+          assert validity in (None, {}) or validity.get('is_valid') is True, validity
+          PY
 
       - name: Print Docker Compose logs on failure
         if: failure()
