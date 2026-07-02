@@ -427,6 +427,12 @@ class QAFeedbackPayload(BaseModel):
     coaching_usefulness_comment: str | None = None
     overall_feedback: str | None = None
     issue_tags: list[str] | None = None
+    ai_topic_correct: str | None = None
+    manager_correct_topic: str | None = None
+    topic_feedback_comment: str | None = None
+    required_actions_correct: str | None = None
+    missed_required_actions_feedback: str | None = None
+    false_required_actions_feedback: str | None = None
 
 
 
@@ -2355,10 +2361,10 @@ def export_calls(
 
 
 VALID_ASSIGNMENT_STATUSES = {"assigned", "in_review", "completed", "skipped"}
-VALID_QUALITY_VALUES = {"good", "acceptable", "poor", "unusable"}
+VALID_QUALITY_VALUES = {"excellent", "good", "acceptable", "average", "poor", "unusable", "not_evaluated", "skip_bad_transcript"}
 VALID_SCORE_AGREEMENTS = {"agree", "partially_agree", "disagree"}
-VALID_SCORECARD_FITS = {"good", "needs_changes", "wrong_for_this_call_type"}
-VALID_ISSUE_TAGS = {"stt_quality", "wrong_language", "speaker_separation", "qa_logic", "score_too_high", "score_too_low", "missing_evidence", "bad_scorecard_criterion", "ui_confusing", "export_problem", "other"}
+VALID_SCORECARD_FITS = {"fits", "partially_fits", "does_not_fit", "unclear", "good", "needs_changes", "wrong_for_this_call_type"}
+VALID_ISSUE_TAGS = {"stt_quality", "wrong_language", "speaker_separation", "qa_logic", "score_too_high", "score_too_low", "missing_evidence", "bad_scorecard_criterion", "scorecard_mismatch", "topic_classification", "required_actions", "ui_confusing", "ui_ux", "access_permissions", "audio_playback", "export_problem", "other"}
 
 
 def _latest_assignments(db: Session, review_ids: list[int]) -> dict[int, QAReviewAssignment]:
@@ -2398,7 +2404,7 @@ def _feedback_status(f: QAFeedback | None) -> str:
 def _serialize_feedback(f: QAFeedback | None) -> dict | None:
     if not f:
         return None
-    return {"id": f.id, "review_id": f.review_id, "call_id": f.call_id, "created_by_user_id": f.created_by_user_id, "created_by_email": f.created_by_email, "transcript_quality": f.transcript_quality, "qa_analysis_quality": f.qa_analysis_quality, "score_agreement": f.score_agreement, "scorecard_fit": f.scorecard_fit, "ai_missed_something": bool(f.ai_missed_something), "ai_missed_comment": f.ai_missed_comment, "ai_false_positive": bool(f.ai_false_positive), "ai_false_positive_comment": f.ai_false_positive_comment, "useful_for_coaching": f.useful_for_coaching, "coaching_usefulness_comment": f.coaching_usefulness_comment, "overall_feedback": f.overall_feedback, "issue_tags": f.issue_tags_json or [], "feedback_status": _feedback_status(f), "created_at": f.created_at.isoformat() if f.created_at else None, "updated_at": f.updated_at.isoformat() if f.updated_at else None}
+    return {"id": f.id, "review_id": f.review_id, "call_id": f.call_id, "created_by_user_id": f.created_by_user_id, "created_by_email": f.created_by_email, "transcript_quality": f.transcript_quality, "qa_analysis_quality": f.qa_analysis_quality, "score_agreement": f.score_agreement, "scorecard_fit": f.scorecard_fit, "ai_missed_something": bool(f.ai_missed_something), "ai_missed_comment": f.ai_missed_comment, "ai_false_positive": bool(f.ai_false_positive), "ai_false_positive_comment": f.ai_false_positive_comment, "useful_for_coaching": f.useful_for_coaching, "coaching_usefulness_comment": f.coaching_usefulness_comment, "overall_feedback": f.overall_feedback, "issue_tags": f.issue_tags_json or [], "ai_topic_correct": f.ai_topic_correct, "manager_correct_topic": f.manager_correct_topic, "topic_feedback_comment": f.topic_feedback_comment, "required_actions_correct": f.required_actions_correct, "missed_required_actions_feedback": f.missed_required_actions_feedback, "false_required_actions_feedback": f.false_required_actions_feedback, "feedback_status": _feedback_status(f), "created_at": f.created_at.isoformat() if f.created_at else None, "updated_at": f.updated_at.isoformat() if f.updated_at else None}
 
 
 def _upsert_feedback(db: Session, review: QAReview, call: Call, payload: QAFeedbackPayload, user: User) -> QAFeedback:
@@ -2424,7 +2430,7 @@ def _upsert_feedback(db: Session, review: QAReview, call: Call, payload: QAFeedb
         if bad:
             raise HTTPException(status_code=400, detail=f"invalid issue_tags: {bad}")
         f.issue_tags_json = tags
-    for field in ["transcript_quality", "qa_analysis_quality", "score_agreement", "scorecard_fit", "ai_missed_something", "ai_missed_comment", "ai_false_positive", "ai_false_positive_comment", "useful_for_coaching", "coaching_usefulness_comment", "overall_feedback"]:
+    for field in ["transcript_quality", "qa_analysis_quality", "score_agreement", "scorecard_fit", "ai_missed_something", "ai_missed_comment", "ai_false_positive", "ai_false_positive_comment", "useful_for_coaching", "coaching_usefulness_comment", "overall_feedback", "ai_topic_correct", "manager_correct_topic", "topic_feedback_comment", "required_actions_correct", "missed_required_actions_feedback", "false_required_actions_feedback"]:
         if field in data:
             setattr(f, field, data[field] if not isinstance(data[field], str) else _normalize_optional_text(data[field]))
     f.updated_at = _utcnow()
@@ -2670,6 +2676,7 @@ def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get
         if call.status in {"analysis_pending", "analyzing"}:
             results.append({"call_id": call_id, "status": "skipped", "reason": "Call is already in another workflow"})
             continue
+        db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
         call.status = "transcription_pending"
         call.last_error_type = None
         call.last_error_message = None
@@ -2827,6 +2834,7 @@ def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(g
             results.append({"call_id": call_id, "status": "forbidden", "error": str(exc.detail)})
             continue
         if call.status in {"transcription_failed", "failed"}:
+            db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
             call.status = "transcription_pending"
             call.last_error_type = None
             call.last_error_message = None
@@ -2879,6 +2887,7 @@ def transcribe_call(call_id: int, db: Session = Depends(get_db), user: User = De
         raise HTTPException(status_code=404, detail="Call not found")
     require_can_modify_call(call, user)
 
+    db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
     call.status = "transcription_pending"
     call.last_error_type = None
     call.last_error_message = None
@@ -2998,13 +3007,13 @@ def get_call_qa(call_id: int, db: Session = Depends(get_db), user: User = Depend
 
     review = db.execute(
         select(QAReview)
-        .where(QAReview.call_id == call_id, QAReview.status == "success")
+        .where(QAReview.call_id == call_id)
         .order_by(QAReview.created_at.desc(), QAReview.id.desc())
     ).scalars().first()
     topic = _latest_topic_classification(db, call_id)
     actions = db.execute(select(TopicActionResult).where(TopicActionResult.call_id == call_id).order_by(TopicActionResult.id.asc())).scalars().all() if topic else []
-    if not review:
-        return {"call_id": call_id, "status": call.status, "review": None, "topic": _topic_classification_dict(topic, actions)}
+    if not review or (review.status != "success" and review.error_message and "invalid_transcript" not in review.error_message):
+        return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db) if review else None, "topic": _topic_classification_dict(topic, actions)}
 
     return {"call_id": call_id, "status": call.status, "review": serialize_review_full(review, db), "topic": _topic_classification_dict(topic, actions)}
 
@@ -3168,6 +3177,8 @@ def serialize_review_full(review: QAReview, db: Session) -> dict:
         "criteria": criteria,
         "findings": findings,
         "error_message": review.error_message,
+        "transcript_validity": (review.normalized_review_json or {}).get("transcript_validity") if isinstance(review.normalized_review_json, dict) else None,
+        "qa_invalid_due_to_transcript": bool((review.normalized_review_json or {}).get("qa_invalid_due_to_transcript")) if isinstance(review.normalized_review_json, dict) else False,
     }
 
 
@@ -3338,7 +3349,7 @@ def pilot_feedback_metrics(db: Session = Depends(get_db), user: User = Depends(g
         for tag in (f.issue_tags_json or []): tags[tag] = tags.get(tag, 0) + 1
     deltas = [abs(float(reviews[f.review_id].ai_human_score_delta)) for f in feedback if reviews.get(f.review_id) and reviews[f.review_id].ai_human_score_delta is not None]
     useful = [f.useful_for_coaching for f in feedback if f.useful_for_coaching is not None]
-    return {"reviews_with_feedback": len({f.review_id for f in feedback}), "transcript_quality_distribution": dist("transcript_quality"), "qa_quality_distribution": dist("qa_analysis_quality"), "score_agreement_distribution": dist("score_agreement"), "useful_for_coaching_percent": round(100 * sum(1 for v in useful if v) / len(useful), 2) if useful else None, "top_issue_tags": sorted(([{"tag": k, "count": v} for k, v in tags.items()]), key=lambda x: x["count"], reverse=True)[:10], "reviews_with_stt_problems": sum(1 for f in feedback if "stt_quality" in (f.issue_tags_json or [])), "reviews_with_qa_logic_problems": sum(1 for f in feedback if "qa_logic" in (f.issue_tags_json or [])), "average_ai_human_delta_with_feedback": round(sum(deltas)/len(deltas),2) if deltas else None}
+    return {"reviews_with_feedback": len({f.review_id for f in feedback}), "transcript_quality_distribution": dist("transcript_quality"), "qa_quality_distribution": dist("qa_analysis_quality"), "score_agreement_distribution": dist("score_agreement"), "useful_for_coaching_percent": round(100 * sum(1 for v in useful if v) / len(useful), 2) if useful else None, "top_issue_tags": sorted(([{"tag": k, "count": v} for k, v in tags.items()]), key=lambda x: x["count"], reverse=True)[:10], "reviews_with_stt_problems": sum(1 for f in feedback if "stt_quality" in (f.issue_tags_json or [])), "reviews_with_qa_logic_problems": sum(1 for f in feedback if "qa_logic" in (f.issue_tags_json or [])), "reviews_with_scorecard_mismatch": sum(1 for f in feedback if "scorecard_mismatch" in (f.issue_tags_json or []) or f.scorecard_fit in {"does_not_fit", "wrong_for_this_call_type"}), "reviews_with_topic_classification_problems": sum(1 for f in feedback if "topic_classification" in (f.issue_tags_json or []) or f.ai_topic_correct in {"no", "partially"}), "reviews_with_required_actions_problems": sum(1 for f in feedback if "required_actions" in (f.issue_tags_json or []) or f.required_actions_correct in {"no", "partially"}), "reviews_with_ui_ux_problems": sum(1 for f in feedback if "ui_ux" in (f.issue_tags_json or []) or "ui_confusing" in (f.issue_tags_json or [])), "reviews_not_evaluated_invalid_transcript": sum(1 for f in feedback if f.qa_analysis_quality == "skip_bad_transcript" or (reviews.get(f.review_id) and reviews[f.review_id].error_message and "invalid_transcript" in reviews[f.review_id].error_message)), "average_ai_human_delta_with_feedback": round(sum(deltas)/len(deltas),2) if deltas else None}
 
 
 @app.get("/qa-feedback/export")
@@ -3346,11 +3357,12 @@ def export_qa_feedback(format: str = Query("csv", pattern="^(xlsx|csv)$"), db: S
     calls = db.execute(_filtered_calls_statement(user=user)).scalars().all(); calls_by_id = {c.id: c for c in calls}
     feedback = db.execute(select(QAFeedback).where(QAFeedback.call_id.in_(list(calls_by_id.keys()))).order_by(QAFeedback.created_at.desc())).scalars().all() if calls_by_id else []
     reviews = {r.id: r for r in db.execute(select(QAReview).where(QAReview.id.in_([f.review_id for f in feedback]))).scalars().all()} if feedback else {}
-    headers = ["review_id","call_id","agent","team","campaign","ai_score","human_score","transcript_quality","qa_analysis_quality","score_agreement","scorecard_fit","useful_for_coaching","issue_tags","comments","created_by","created_at"]
+    headers = ["review_id","call_id","agent","team","campaign","ai_score","human_score","transcript_quality","qa_analysis_quality","score_agreement","scorecard_fit","useful_for_coaching","issue_tags","comments","created_by","created_at","transcript_validity_flags","transcript_validity_reason","qa_invalid_due_to_transcript","ai_topic_correct","manager_correct_topic","topic_feedback_comment","required_actions_correct","missed_required_actions_feedback","false_required_actions_feedback"]
     rows=[]
     for f in feedback:
         c=calls_by_id.get(f.call_id); r=reviews.get(f.review_id); comments=" | ".join(x for x in [f.ai_missed_comment, f.ai_false_positive_comment, f.coaching_usefulness_comment, f.overall_feedback] if x)
-        rows.append([f.review_id,f.call_id,c.agent_name if c else "",c.team if c else "",c.campaign if c else "",r.score if r and r.score is not None else "",r.human_total_score if r and r.human_total_score is not None else "",f.transcript_quality or "",f.qa_analysis_quality or "",f.score_agreement or "",f.scorecard_fit or "",f.useful_for_coaching if f.useful_for_coaching is not None else "", ",".join(f.issue_tags_json or []), comments, f.created_by_email or "", f.created_at.isoformat() if f.created_at else ""])
+        validity = (r.normalized_review_json or {}).get("transcript_validity", {}) if r and isinstance(r.normalized_review_json, dict) else {}
+        rows.append([f.review_id,f.call_id,c.agent_name if c else "",c.team if c else "",c.campaign if c else "",r.score if r and r.score is not None else "",r.human_total_score if r and r.human_total_score is not None else "",f.transcript_quality or "",f.qa_analysis_quality or "",f.score_agreement or "",f.scorecard_fit or "",f.useful_for_coaching if f.useful_for_coaching is not None else "", ",".join(f.issue_tags_json or []), comments, f.created_by_email or "", f.created_at.isoformat() if f.created_at else "", ",".join(validity.get("flags") or []), validity.get("reason", ""), bool((r.normalized_review_json or {}).get("qa_invalid_due_to_transcript")) if r and isinstance(r.normalized_review_json, dict) else False, f.ai_topic_correct or "", f.manager_correct_topic or "", f.topic_feedback_comment or "", f.required_actions_correct or "", f.missed_required_actions_feedback or "", f.false_required_actions_feedback or ""])
     _log_audit_event(db, user, "pilot_export_created", "qa_feedback", None, "QA feedback export created", {"format": format, "count": len(rows)}, commit=True)
     if format == "csv":
         buf=StringIO(); buf.write("\ufeff"); w=csv.writer(buf); w.writerow(headers); w.writerows(rows)
@@ -3579,6 +3591,12 @@ def _system_status(db: Session) -> dict:
         "providers": {
             "llm": serialize_provider_config(active_llm) if active_llm else None,
             "stt": serialize_stt_provider_config(active_stt) if active_stt else None,
+        },
+        "qa": {
+            "mode": os.environ.get("QA_MODE", "placeholder"),
+            "active_provider": bool(active_llm),
+            "provider_name": active_llm.name if active_llm else None,
+            "model": (active_llm.config or {}).get("model") if active_llm else os.environ.get("LLM_MODEL", ""),
         },
         "upload_limits": upload_limits(),
         "storage": _upload_dir_usage(),
