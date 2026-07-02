@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, select, delete
 from sqlalchemy.orm import sessionmaker
 
 from db import AppSetting, Call, CallTopic, CallTopicClassification, ProviderConfig, QAReview, ScorecardConfig, TopicActionResult, TranscriptSegment
+from transcript_validation import validate_transcript_for_qa
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -206,6 +207,7 @@ def placeholder_review(scorecard: dict[str, Any]) -> dict:
         "criteria": criteria,
         "findings": findings,
     }
+
 
 
 def format_transcript(segments: list[TranscriptSegment]) -> str:
@@ -618,7 +620,34 @@ def process_qa_job(call_id: int) -> None:
             print(f"call {call_id} has no transcript segments")
             return
 
+        transcript_validity = validate_transcript_for_qa(call, segments)
         transcript_text = format_transcript(segments)
+
+        if not transcript_validity["is_valid"]:
+            reason = transcript_validity["reason"] or "Transcript is invalid for QA."
+            qa_review = QAReview(
+                call_id=call_id,
+                status="failed",
+                review_status="ai_generated",
+                calibration_flag=False,
+                analysis_mode=QA_MODE,
+                error_message=f"invalid_transcript: {reason}",
+                summary="QA was not performed: transcript is invalid. Re-run transcription.",
+                findings=[{"severity": "error", "evidence": reason}],
+                normalized_review_json={
+                    "error_type": "invalid_transcript",
+                    "transcript_validity": transcript_validity,
+                    "qa_invalid_due_to_transcript": True,
+                },
+            )
+            db.add(qa_review)
+            call.status = "analysis_blocked_invalid_transcript"
+            call.last_error_type = "invalid_transcript"
+            call.last_error_message = "QA analysis blocked: transcript is invalid. Re-run transcription."
+            call.last_processed_at = datetime.now(UTC)
+            db.commit()
+            print(f"call {call_id} QA blocked: invalid transcript flags={transcript_validity['flags']}")
+            return
 
         try:
             call.status = "analyzing"
@@ -699,25 +728,30 @@ def process_qa_job(call_id: int) -> None:
             print(f"failed to analyze call {call_id}: {clean_error}")
 
 
-signal.signal(signal.SIGINT, handle_shutdown)
-signal.signal(signal.SIGTERM, handle_shutdown)
+def main() -> None:
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 
-print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE} topic_queue={TOPIC_CLASSIFICATION_QUEUE}")
+    print(f"qa-worker started. mode={QA_MODE} queue={QA_QUEUE} topic_queue={TOPIC_CLASSIFICATION_QUEUE}")
 
-while running:
-    write_heartbeat()
-    job = redis_client.brpop([QA_QUEUE, TOPIC_CLASSIFICATION_QUEUE], timeout=2)
-    if not job:
-        continue
+    while running:
+        write_heartbeat()
+        job = redis_client.brpop([QA_QUEUE, TOPIC_CLASSIFICATION_QUEUE], timeout=2)
+        if not job:
+            continue
 
-    queue_name, payload = job
-    try:
-        data = json.loads(payload)
-        call_id = int(data["call_id"])
-    except Exception:
-        print(f"invalid QA job payload: {payload}")
-        continue
+        queue_name, payload = job
+        try:
+            data = json.loads(payload)
+            call_id = int(data["call_id"])
+        except Exception:
+            print(f"invalid QA job payload: {payload}")
+            continue
 
-    process_topic_classification_job(call_id) if queue_name == TOPIC_CLASSIFICATION_QUEUE else process_qa_job(call_id)
+        process_topic_classification_job(call_id) if queue_name == TOPIC_CLASSIFICATION_QUEUE else process_qa_job(call_id)
 
-print("qa-worker stopped gracefully.")
+    print("qa-worker stopped gracefully.")
+
+
+if __name__ == "__main__":
+    main()

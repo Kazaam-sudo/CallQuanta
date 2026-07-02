@@ -181,6 +181,12 @@ class QAFeedback(Base):
     coaching_usefulness_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     overall_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
     issue_tags_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    ai_topic_correct: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    manager_correct_topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    topic_feedback_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_actions_correct: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    missed_required_actions_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    false_required_actions_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -384,6 +390,21 @@ def migrate_qa_coaching_actions_table(engine: Engine) -> None:
 def migrate_pilot_feedback_tables(engine: Engine) -> None:
     Base.metadata.tables["qa_review_assignments"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["qa_feedback"].create(bind=engine, checkfirst=True)
+    inspector = inspect(engine)
+    if "qa_feedback" in inspector.get_table_names():
+        existing_columns = {column["name"] for column in inspector.get_columns("qa_feedback")}
+        add_columns_sql = {
+            "ai_topic_correct": "ALTER TABLE qa_feedback ADD COLUMN ai_topic_correct VARCHAR(32)",
+            "manager_correct_topic": "ALTER TABLE qa_feedback ADD COLUMN manager_correct_topic VARCHAR(255)",
+            "topic_feedback_comment": "ALTER TABLE qa_feedback ADD COLUMN topic_feedback_comment TEXT",
+            "required_actions_correct": "ALTER TABLE qa_feedback ADD COLUMN required_actions_correct VARCHAR(32)",
+            "missed_required_actions_feedback": "ALTER TABLE qa_feedback ADD COLUMN missed_required_actions_feedback TEXT",
+            "false_required_actions_feedback": "ALTER TABLE qa_feedback ADD COLUMN false_required_actions_feedback TEXT",
+        }
+        with engine.begin() as conn:
+            for column_name, ddl in add_columns_sql.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))
 
 def migrate_calls_table(engine: Engine) -> None:
     """Backfill/upgrade calls table with metadata columns for operator-level reporting."""
