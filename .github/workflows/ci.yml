@@ -231,7 +231,7 @@ jobs:
           curl -fsS -b /tmp/cookies.txt http://localhost:8000/calls/${call_id}/transcript | python -c "import json,sys; data=json.load(sys.stdin); assert len(data['segments']) > 0"
 
 
-      - name: Smoke test invalid transcript blocks QA
+      - name: Smoke test placeholder transcript blocks QA
         run: |
           set -euo pipefail
           diagnostics() {
@@ -246,8 +246,8 @@ jobs:
           }
           trap 'diagnostics' ERR
 
-          printf 'RIFF....WAVEfmt ' > /tmp/sample3-invalid.wav
-          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3-invalid.wav" http://localhost:8000/calls/upload)
+          printf 'RIFF....WAVEfmt ' > /tmp/sample3-placeholder.wav
+          upload_response=$(curl -fsS -b /tmp/cookies.txt -X POST -F "file=@/tmp/sample3-placeholder.wav" http://localhost:8000/calls/upload)
           call_id=$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$upload_response")
 
           curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/transcribe
@@ -309,7 +309,7 @@ jobs:
             (:call_id, 'agent', 10000, 18000, 'I checked your account. The balance changed because of the monthly plan charge.'),
             (:call_id, 'customer', 18000, 22000, 'Thank you.'),
             (:call_id, 'agent', 22000, 32000, 'You can also check your balance in the mobile app. Is there anything else I can help with?');
-          UPDATE calls SET status = 'transcribed', last_error_type = NULL, last_error_message = NULL WHERE id = :call_id;
+          UPDATE calls SET status = 'transcribed', duration_seconds = 32, last_error_type = NULL, last_error_message = NULL WHERE id = :call_id;
           SQL
 
           curl -fsS -b /tmp/cookies.txt -X POST http://localhost:8000/calls/${call_id}/analyze
