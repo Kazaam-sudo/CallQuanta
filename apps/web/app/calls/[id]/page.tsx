@@ -109,6 +109,8 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [audioError, setAudioError] = useState(false);
   const transcriptInvalid = Boolean(review?.qa_invalid_due_to_transcript || call?.last_error_type === "invalid_transcript");
   const isPlaceholderQa = review?.analysis_mode === "placeholder";
+  const transcriptFlags = review?.transcript_validity?.flags || [];
+  const transcriptHasPlaceholder = transcriptFlags.some((flag) => flag.toLowerCase().includes("placeholder")) || segments.some((segment) => segment.text.toLowerCase().includes("placeholder"));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -463,15 +465,17 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const tabs = [
     { id: "overview", label: t("call.tab.overview") },
     { id: "transcript", label: t("call.tab.transcript"), help: t("help.sttProvider") },
-    { id: "topic", label: "Тематика" },
+    { id: "topic", label: t("call.tab.topic") },
     { id: "qa", label: t("call.tab.qa"), help: t("help.aiReview") },
     { id: "human", label: t("call.tab.human"), help: t("help.humanReview") },
-    { id: "feedback", label: "Pilot feedback" },
+    { id: "feedback", label: t("call.tab.feedback") },
     { id: "coaching", label: t("call.tab.coaching"), help: t("help.coachingActions") },
     { id: "history", label: t("call.tab.history") },
   ];
 
   const metaValue = (value?: string | number | null) => value == null || value === "" ? "-" : value;
+  const statusLabel = (status?: string | null) => t(`status.${status || "unknown"}`);
+  const actionStatusLabel = (status?: string | null) => t(`topic.action.${status || "unclear"}`);
   const formatFileSize = (bytes?: number | null) => {
     if (bytes == null) return "-";
     if (bytes < 1024) return `${bytes} B`;
@@ -481,13 +485,23 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const reviewMeta = (value?: string | null, key?: string) => review?.legacy_review ? (value || (key && providerMeta[key]) ? t("call.recoveredMetadata") : t("call.notCaptured")) : (value || t("call.notCaptured"));
   const hasAudio = Boolean(call?.stored_path && !call?.audio_deleted);
   const audioUrl = `${API_BASE_URL}/calls/${params.id}/audio`;
+  const transcriptState = !segments.length ? t("call.status.notReady") : transcriptInvalid ? t("call.status.invalid") : t("call.status.valid");
+  const qaState = transcriptInvalid ? t("call.status.blocked") : review ? t("call.status.ready") : t("call.status.notReady");
+  const topicState = topic ? t("call.status.ready") : t("call.status.notReady");
+  const nextAction = !segments.length
+    ? { label: t("call.transcribe"), run: transcribe, disabled: !call || transcribing }
+    : transcriptInvalid
+      ? { label: t("pilot.retranscribe"), run: transcribe, disabled: !call || transcribing }
+      : !review
+        ? { label: t("call.analyze"), run: analyze, disabled: !call || analyzing }
+        : { label: t("call.openQa"), run: () => setActiveTab("qa"), disabled: false };
 
   return (
     <div className="grid page-stack">
       <p style={{ margin: 0 }}><Link href="/calls">← {t("call.backToCalls")}</Link></p>
 
       <PageHeader
-        title={<span className="call-summary-row"><span>Call #{call?.id ?? params.id}</span>{call?.status ? <StatusBadge status={call.status} /> : null}</span>}
+        title={<span className="call-summary-row"><span>Call #{call?.id ?? params.id}</span>{call?.status ? <StatusBadge status={call.status} label={statusLabel(call.status)} /> : null}</span>}
         description={call?.filename || t("call.detailsDescription")}
         actions={<>
           <Button variant="secondary" onClick={load}>{t("call.refresh")}</Button>
@@ -507,6 +521,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       </Card>
 
       {activeTab === "overview" && <div className="tab-panel">
+        <Card>
+          <SectionHeader title={t("call.recommendedNextAction")} description={t("call.recommendedNextActionHelp")} actions={<Button onClick={nextAction.run} disabled={nextAction.disabled}>{nextAction.label}</Button>} />
+          <div className="status-summary-grid">
+            <div className="meta-item"><small>{t("call.status.audio")}</small>{hasAudio ? t("call.status.available") : t("call.status.missing")}</div>
+            <div className="meta-item"><small>{t("call.status.transcript")}</small>{transcriptState}</div>
+            <div className="meta-item"><small>QA</small>{qaState}</div>
+            <div className="meta-item"><small>{t("call.tab.topic")}</small>{topicState}</div>
+          </div>
+        </Card>
         <Card>
           <SectionHeader title={t("call.recording")} description={t("call.recordingHelp")} />
           {!call ? <p>{t("call.loading")}</p> : !hasAudio ? (
@@ -562,6 +585,12 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       {activeTab === "transcript" && <Card>
         <SectionHeader title={t("call.transcriptSegments")} description={t("call.transcriptHelp")} />
         <p className="message">{t("call.transcriptAudioHint")}</p>
+        <div className={`message ${transcriptInvalid || transcriptHasPlaceholder ? "message-warning" : "message-success"}`}>
+          <strong>{t("call.transcriptValidity")}:</strong> {transcriptState}
+          {review?.transcript_validity?.reason ? <><br />{review.transcript_validity.reason}</> : null}
+          {transcriptFlags.length ? <><br />{t("call.transcriptFlags")}: {transcriptFlags.join(", ")}</> : null}
+          {transcriptHasPlaceholder ? <><br />{t("call.placeholderTranscriptWarning")}</> : null}
+        </div>
         {call && <div className="meta-grid" style={{ marginBottom: 14 }}>
           <div className="meta-item"><small>{t("call.audioLanguage")} <HelpTooltip text={t("help.audioLanguage")} /></small>{sttLanguageLabel(call.language, sttLanguages, t)}</div>
           <div className="meta-item"><small>{t("call.sttLanguageUsed")}</small>{call.stt_language_used || normalizeSttLanguageCode(call.language) || "auto"}</div>
@@ -575,21 +604,21 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
 
       {activeTab === "topic" && <Card>
         <SectionHeader
-          title="Тематика звонка"
-          description="AI-классификация темы входящего звонка и проверка обязательных действий по этой теме."
-          actions={<Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? "Определяем…" : "Определить тематику"}</Button>}
+          title={t("topic.title")}
+          description={t("topic.help")}
+          actions={<Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? t("topic.classifying") : t("topic.classify")}</Button>}
         />
-        {!topic ? <div className="grid" style={{ gap: 12 }}><EmptyState title="Тематика ещё не определена" description="Запустите классификацию после появления транскрипта." /><div className="actions"><Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? "Определяем…" : "Определить тематику"}</Button></div></div> : <div className="grid">
+        {!topic ? <div className="grid" style={{ gap: 12 }}><EmptyState title={t("topic.emptyTitle")} description={t("topic.emptyDescription")} /><div className="actions"><Button onClick={classifyTopic} disabled={!call || classifyingTopic || segments.length === 0}>{classifyingTopic ? t("topic.classifying") : t("topic.classify")}</Button></div></div> : <div className="grid">
           <div className="meta-grid">
-            <div className="meta-item"><small>Основная тема</small>{topic.primary_topic_name || "-"}</div>
-            <div className="meta-item"><small>Уверенность</small>{topic.confidence != null ? `${Math.round(topic.confidence * 100)}%` : "-"}</div>
-            <div className="meta-item"><small>Дополнительные темы</small>{(topic.secondary_topics || []).join(", ") || "-"}</div>
-            <div className="meta-item"><small>Ручная корректировка</small>{topic.manually_overridden ? "Да" : "Нет"}</div>
+            <div className="meta-item"><small>{t("topic.primary")}</small>{topic.primary_topic_name || "-"}</div>
+            <div className="meta-item"><small>{t("topic.confidence")}</small>{topic.confidence != null ? `${Math.round(topic.confidence * 100)}%` : "-"}</div>
+            <div className="meta-item"><small>{t("topic.secondary")}</small>{(topic.secondary_topics || []).join(", ") || "-"}</div>
+            <div className="meta-item"><small>{t("topic.manualOverride")}</small>{topic.manually_overridden ? t("common.yes") : t("common.no")}</div>
           </div>
-          {topic.rationale ? <p className="message"><strong>Обоснование:</strong> {topic.rationale}</p> : null}
-          {(topic.evidence || []).length ? <div><strong>Доказательства:</strong><ul>{(topic.evidence || []).map((e, i) => <li key={i}>{e}</li>)}</ul></div> : null}
-          <SectionHeader title="Обязательные действия по теме" description={topic.topic_compliance_score != null ? `Соблюдение: ${topic.topic_compliance_score}%` : undefined} />
-          {(topic.actions || []).length === 0 ? <EmptyState title="Для темы не заданы обязательные действия" /> : <div className="grid" style={{ gap: 8 }}>{(topic.actions || []).map((action) => <article key={action.id} className="segment"><Badge tone={action.status === "completed" ? "success" : action.status === "missed" ? "danger" : "warning"}>{action.status === "completed" ? "✅" : action.status === "missed" ? "❌" : "⚠️"} {action.status}</Badge><p>{action.action_text}</p>{action.rationale ? <small>{action.rationale}</small> : null}</article>)}</div>}
+          {topic.rationale ? <p className="message"><strong>{t("topic.rationale")}:</strong> {topic.rationale}</p> : null}
+          {(topic.evidence || []).length ? <div><strong>{t("topic.evidence")}:</strong><ul>{(topic.evidence || []).map((e, i) => <li key={i}>{e}</li>)}</ul></div> : null}
+          <SectionHeader title={t("topic.requiredActions")} description={topic.topic_compliance_score != null ? `${t("topic.compliance")}: ${topic.topic_compliance_score}%` : undefined} />
+          {(topic.actions || []).length === 0 ? <EmptyState title={t("topic.noRequiredActions")} /> : <div className="grid" style={{ gap: 8 }}>{(topic.actions || []).map((action) => <article key={action.id} className="segment"><Badge tone={action.status === "completed" ? "success" : action.status === "missed" ? "danger" : "warning"}>{actionStatusLabel(action.status)}</Badge><p>{action.action_text}</p>{action.rationale ? <small>{action.rationale}</small> : null}</article>)}</div>}
         </div>}
       </Card>}
 
@@ -597,16 +626,16 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         <Card id="qa-review-section">
         <SectionHeader title={t("call.qaReview")} description={t("call.qaHelp")} help={t("help.aiReview")} />
         {!review ? <EmptyState title={t("call.noQaReview")} description={t("call.noQaReviewHelp")} /> : <div className="grid">
-          {transcriptInvalid ? <div className="message message-error"><strong>{t("pilot.qaInvalidTranscript")}</strong><br />{t("pilot.invalidTranscriptWarning")}<br />{review.transcript_validity?.reason || call?.last_error_message || ""}<div className="actions" style={{ marginTop: 8 }}><Button variant="secondary" onClick={transcribe}>{t("pilot.retranscribe")}</Button><Button variant="secondary" onClick={analyze} disabled={!segments.length}>{t("pilot.analyzeAfterTranscription")}</Button></div></div> : null}
+          {transcriptInvalid ? <div className="message message-error"><strong>{t("pilot.qaInvalidTranscript")}</strong><br />{t("pilot.invalidTranscriptWarning")}<br />{review.transcript_validity?.reason || call?.last_error_message || ""}<div className="actions" style={{ marginTop: 8 }}><Button variant="secondary" onClick={transcribe}>{t("pilot.retranscribe")}</Button></div></div> : null}
           {isPlaceholderQa ? <div className="message message-warning"><Badge tone="warning">{t("pilot.placeholderDemo")}</Badge> {t("pilot.placeholderQaWarning")}</div> : null}
-          <div className="review-hero">
-            <div className="review-score"><small>{t("qa.aiScore")}</small><strong>{transcriptInvalid ? "-" : review.score}</strong><StatusBadge status={review.status} /> {isPlaceholderQa ? <Badge tone="warning">{t("pilot.placeholderDemo")}</Badge> : null}</div>
+          {!transcriptInvalid ? <div className="review-hero">
+            <div className="review-score"><small>{t("qa.aiScore")}</small><strong>{review.score}</strong><StatusBadge status={review.status} label={statusLabel(review.status)} /> {isPlaceholderQa ? <Badge tone="warning">{t("pilot.placeholderDemo")}</Badge> : null}</div>
             <div>
               <p className="message" style={{ marginTop: 0 }}><strong>{viewingLatest ? t("call.viewingLatest") : t("call.viewingPrevious")} #{review.id}</strong> · {new Date(review.created_at || "").toLocaleString()}{review.legacy_review ? ` · ${t("call.legacyReview")}` : ""}</p>
               {recoveredReview && <p className="message message-warning">{t("call.recoveredReviewWarning")}</p>}
               <p><strong>{t("call.summary")}:</strong> {review.summary}</p>
             </div>
-          </div>
+          </div> : null}
           <div className="meta-grid">
             <div className="meta-item"><small>{t("call.analysisMode")}</small>{reviewMeta(review.analysis_mode, "analysis mode")}</div>
             <div className="meta-item"><small>{t("call.provider")}</small>{reviewMeta(review.provider_name, "provider")}</div>
@@ -637,7 +666,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           {transcriptInvalid ? <div className="message message-warning"><strong>{t("pilot.qaInvalidTranscript")}</strong><br />{t("pilot.invalidTranscriptWarning")}<br />{review.transcript_validity?.reason || call?.last_error_message || ""}<div className="actions" style={{ marginTop: 8 }}><Button variant="secondary" onClick={transcribe}>{t("pilot.retranscribe")}</Button><Button variant="secondary" onClick={analyze} disabled={!segments.length}>{t("pilot.analyzeAfterTranscription")}</Button></div></div> : null}
           {isPlaceholderQa ? <div className="message message-warning"><Badge tone="warning">{t("pilot.placeholderDemo")}</Badge> {t("pilot.placeholderQaWarning")}</div> : null}
           <div className="meta-grid">
-            <div className="meta-item"><small>{t("qa.reviewStatus")} <HelpTooltip text={t("help.reviewStatus")} /></small><StatusBadge status={review.review_status || "ai_generated"} /></div>
+            <div className="meta-item"><small>{t("qa.reviewStatus")} <HelpTooltip text={t("help.reviewStatus")} /></small><StatusBadge status={review.review_status || "ai_generated"} label={statusLabel(review.review_status || "ai_generated")} /></div>
             <div className="meta-item"><small>{t("qa.aiScore")}</small>{review.score ?? "-"}</div>
             <div className="meta-item"><small>{t("qa.humanScore")}</small>{review.human_total_score ?? "-"}</div>
             <div className="meta-item"><small>{t("qa.aiHumanDelta")} <HelpTooltip text={t("help.aiHumanDelta")} /></small>{review.ai_human_score_delta ?? "-"}</div>
@@ -659,14 +688,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       {activeTab === "feedback" && <Card>
         <SectionHeader title={t("pilot.reviewFeedback")} description={t("pilot.whatCheck")} />
         {!review ? <EmptyState title={t("call.noQaReview")} /> : <div className="grid">
+          <p className="message message-warning">{t("pilot.feedbackSafetyHelp")}</p>
           <div className="actions"><Button variant="secondary" onClick={() => saveFeedback({ transcript_quality: "good" })}>{t("pilot.transcriptOk")}</Button><Button variant="secondary" onClick={() => saveFeedback({ transcript_quality: "poor", issue_tags: Array.from(new Set([...(feedbackForm.issue_tags || []), "stt_quality"])) })}>{t("pilot.transcriptProblem")}</Button><Button variant="secondary" onClick={() => saveFeedback({ qa_analysis_quality: "good" })}>{t("pilot.qaOk")}</Button><Button variant="secondary" onClick={() => saveFeedback({ qa_analysis_quality: "poor", issue_tags: Array.from(new Set([...(feedbackForm.issue_tags || []), "qa_logic"])) })}>{t("pilot.qaProblem")}</Button><Button variant="secondary" onClick={() => saveFeedback({ score_agreement: "agree" })}>{t("pilot.scoreOk")}</Button><Button variant="secondary" onClick={() => saveFeedback({ score_agreement: "disagree" })}>{t("pilot.scoreProblem")}</Button><Button variant="secondary" onClick={() => saveFeedback({ useful_for_coaching: true })}>{t("pilot.usefulForCoaching")}</Button><Button variant="secondary" onClick={() => saveFeedback({ useful_for_coaching: false })}>{t("pilot.notUseful")}</Button></div>
           <div className="grid-2">
             <Field label={t("pilot.transcriptQuality")} help={t("pilot.transcriptQualityHelp")}><select value={feedbackForm.transcript_quality || ""} onChange={(e) => setFeedbackForm((f) => ({...f, transcript_quality:e.target.value}))}><option value="">-</option><option value="excellent">{t("pilot.excellent")}</option><option value="good">{t("pilot.good")}</option><option value="average">{t("pilot.average")}</option><option value="poor">{t("pilot.poor")}</option><option value="not_evaluated">{t("pilot.notEvaluated")}</option></select></Field>
             <Field label={t("pilot.qaAnalysisQuality")} help={t("pilot.qaAnalysisQualityHelp")}><select value={feedbackForm.qa_analysis_quality || ""} onChange={(e) => setFeedbackForm((f) => ({...f, qa_analysis_quality:e.target.value}))}><option value="">-</option><option value="good">{t("pilot.good")}</option><option value="average">{t("pilot.average")}</option><option value="poor">{t("pilot.poor")}</option><option value="skip_bad_transcript">{t("pilot.skipBadTranscript")}</option></select></Field>
-            <Field label={t("pilot.scoreAgreement")} help={t("pilot.scoreAgreementHelp")}><select value={feedbackForm.score_agreement || ""} onChange={(e) => setFeedbackForm((f) => ({...f, score_agreement:e.target.value}))}><option value="">-</option><option value="agree">Agree</option><option value="partially_agree">Partially</option><option value="disagree">Disagree</option></select></Field>
+            <Field label={t("pilot.scoreAgreement")} help={t("pilot.scoreAgreementHelp")}><select value={feedbackForm.score_agreement || ""} onChange={(e) => setFeedbackForm((f) => ({...f, score_agreement:e.target.value}))}><option value="">-</option><option value="agree">{t("pilot.agree")}</option><option value="partially_agree">{t("pilot.partiallyAgree")}</option><option value="disagree">{t("pilot.disagree")}</option><option value="skip_bad_transcript">{t("pilot.qaNotEvaluatedBadTranscript")}</option></select></Field>
             <Field label={t("pilot.scorecardFit")} help={t("pilot.scorecardFitHelp")}><select value={feedbackForm.scorecard_fit || ""} onChange={(e) => setFeedbackForm((f) => ({...f, scorecard_fit:e.target.value}))}><option value="">-</option><option value="fits">{t("pilot.fits")}</option><option value="partially_fits">{t("pilot.partiallyFits")}</option><option value="does_not_fit">{t("pilot.doesNotFit")}</option><option value="unclear">{t("pilot.unclear")}</option></select></Field>
-            <Field label={t("pilot.aiTopicCorrect")}><select value={feedbackForm.ai_topic_correct || ""} onChange={(e) => setFeedbackForm((f) => ({...f, ai_topic_correct:e.target.value}))}><option value="">-</option><option value="yes">yes</option><option value="no">no</option><option value="partially">partially</option><option value="not_evaluated">not evaluated</option></select></Field>
-            <Field label={t("pilot.requiredActionsCorrect")}><select value={feedbackForm.required_actions_correct || ""} onChange={(e) => setFeedbackForm((f) => ({...f, required_actions_correct:e.target.value}))}><option value="">-</option><option value="yes">yes</option><option value="no">no</option><option value="partially">partially</option><option value="not_evaluated">not evaluated</option></select></Field>
+            <Field label={t("pilot.aiTopicCorrect")}><select value={feedbackForm.ai_topic_correct || ""} onChange={(e) => setFeedbackForm((f) => ({...f, ai_topic_correct:e.target.value}))}><option value="">-</option><option value="yes">{t("common.yes")}</option><option value="no">{t("common.no")}</option><option value="partially">{t("pilot.partiallyAgree")}</option><option value="not_evaluated">{t("pilot.notEvaluated")}</option></select></Field>
+            <Field label={t("pilot.requiredActionsCorrect")}><select value={feedbackForm.required_actions_correct || ""} onChange={(e) => setFeedbackForm((f) => ({...f, required_actions_correct:e.target.value}))}><option value="">-</option><option value="yes">{t("common.yes")}</option><option value="no">{t("common.no")}</option><option value="partially">{t("pilot.partiallyAgree")}</option><option value="not_evaluated">{t("pilot.notEvaluated")}</option></select></Field>
           </div>
           <Field label={t("pilot.managerCorrectTopic")}><input value={feedbackForm.manager_correct_topic || ""} onChange={(e) => setFeedbackForm((f) => ({...f, manager_correct_topic:e.target.value}))} /></Field>
           <Field label={t("pilot.topicComment")}><textarea value={feedbackForm.topic_feedback_comment || ""} onChange={(e) => setFeedbackForm((f) => ({...f, topic_feedback_comment:e.target.value}))} /></Field>
@@ -676,15 +706,15 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           <Field label={t("pilot.falseRequiredActions")}><textarea value={feedbackForm.false_required_actions_feedback || ""} onChange={(e) => setFeedbackForm((f) => ({...f, false_required_actions_feedback:e.target.value}))} /></Field>
           <Field label={t("pilot.issueTags")}><input value={(feedbackForm.issue_tags || []).join(",")} onChange={(e) => setFeedbackForm((f) => ({...f, issue_tags:e.target.value.split(",").map((x) => x.trim()).filter(Boolean)}))} /></Field>
           <Field label={t("pilot.overallFeedback")}><textarea value={feedbackForm.overall_feedback || ""} onChange={(e) => setFeedbackForm((f) => ({...f, overall_feedback:e.target.value}))} /></Field>
-          <div className="actions"><Button onClick={() => saveFeedback()}>Save feedback</Button>{canHumanReview ? <><input placeholder="Assign to user id" value={assignUserId} onChange={(e) => setAssignUserId(e.target.value)} /><Button variant="secondary" onClick={assignReview}>Assign review</Button></> : null}</div>
-          {review.assignment ? <p className="message">Assigned to {review.assignment.assigned_to_email || review.assignment.id} ({review.assignment.status})</p> : null}
+          <div className="actions"><Button onClick={() => saveFeedback()}>{t("pilot.saveFeedback")}</Button>{canHumanReview ? <><input placeholder={t("pilot.assignUserPlaceholder")} value={assignUserId} onChange={(e) => setAssignUserId(e.target.value)} /><Button variant="secondary" onClick={assignReview}>{t("assignReview")}</Button></> : null}</div>
+          {review.assignment ? <p className="message">{t("pilot.assignedTo")} {review.assignment.assigned_to_email || review.assignment.id} ({review.assignment.status})</p> : null}
         </div>}
       </Card>}
 
       {activeTab === "coaching" && <Card>
         <SectionHeader title={t("qa.coachingActions")} description={t("call.coachingHelp")} help={t("help.coachingActions")} />
         {!review ? <EmptyState title={t("call.noQaReview")} /> : <div className="grid">
-          {(review.coaching_actions || []).length === 0 ? <EmptyState title={t("qa.noCoachingActions")} description={t("qa.noCoachingActionsHelp")} /> : <div className="grid">{(review.coaching_actions || []).map((action) => <article key={action.id} className="segment task-card"><div className="task-header"><strong>{action.title}</strong><StatusBadge status={action.status} /></div><small>{t("qa.dueDate")}: {action.due_date ? new Date(action.due_date).toLocaleDateString() : "-"} · {t("call.createdBy")}: {action.created_by_email || action.agent_name || "-"}</small>{action.description ? <p>{action.description}</p> : null}<div className="actions"><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "done")}>{t("qa.markDone")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "dismissed")}>{t("qa.dismiss")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "open")}>{t("qa.reopen")}</Button></div></article>)}</div>}
+          {(review.coaching_actions || []).length === 0 ? <EmptyState title={t("qa.noCoachingActions")} description={t("qa.noCoachingActionsHelp")} /> : <div className="grid">{(review.coaching_actions || []).map((action) => <article key={action.id} className="segment task-card"><div className="task-header"><strong>{action.title}</strong><StatusBadge status={action.status} label={statusLabel(action.status)} /></div><small>{t("qa.dueDate")}: {action.due_date ? new Date(action.due_date).toLocaleDateString() : "-"} · {t("call.createdBy")}: {action.created_by_email || action.agent_name || "-"}</small>{action.description ? <p>{action.description}</p> : null}<div className="actions"><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "done")}>{t("qa.markDone")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "dismissed")}>{t("qa.dismiss")}</Button><Button variant="secondary" className="button-small" onClick={() => updateCoachingStatus(action.id, "open")}>{t("qa.reopen")}</Button></div></article>)}</div>}
           {canHumanReview ? <div className="segment"><SectionHeader title={t("qa.addAction")} /><div className="grid"><Field label={t("qa.actionTitle")}><input value={coachingForm.title} onChange={(e) => setCoachingForm((f) => ({ ...f, title: e.target.value }))} /></Field><Field label={t("qa.description")}><textarea value={coachingForm.description} onChange={(e) => setCoachingForm((f) => ({ ...f, description: e.target.value }))} /></Field><Field label={t("qa.dueDate")}><input type="date" value={coachingForm.due_date} onChange={(e) => setCoachingForm((f) => ({ ...f, due_date: e.target.value }))} /></Field><div><Button onClick={addCoachingAction} disabled={savingCoaching || !coachingForm.title.trim()}>{savingCoaching ? t("call.saving") : t("qa.addAction")}</Button></div></div></div> : null}
         </div>}
       </Card>}

@@ -50,6 +50,13 @@ export function AppHeader() {
   }
 
   const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "";
+  const navItems = [
+    { href: "/dashboard", label: t("nav.dashboard") },
+    { href: "/calls", label: t("nav.calls") },
+    { href: "/qa-reviews", label: t("qa.reviewQueue") },
+    ...(user?.role === "admin" ? [{ href: "/settings", label: t("nav.settings") }] : []),
+  ];
+  const isActive = (href: string) => pathname === href || Boolean(pathname?.startsWith(`${href}/`));
 
   return (
     <header className="app-header">
@@ -57,15 +64,16 @@ export function AppHeader() {
         <Link href="/dashboard" className="brand-link" aria-label="CallQuanta dashboard">
           <h1 className="brand-title">CallQuanta</h1>
           <p className="brand-subtitle">
-            Open-source AI QA for contact centers
+            AI QA for contact centers
           </p>
         </Link>
         <div className="header-actions">
           <nav className="top-nav" aria-label="Main navigation">
-            <Link href="/dashboard">{t("nav.dashboard")}</Link>
-            <Link href="/calls">{t("nav.calls")}</Link>
-            <Link href="/qa-reviews">{t("qa.reviewQueue")}</Link>
-            {user?.role === "admin" ? <Link href="/settings">{t("nav.settings")}</Link> : null}
+            {navItems.map((item) => (
+              <Link key={item.href} href={item.href} className={isActive(item.href) ? "active" : ""}>
+                {item.label}
+              </Link>
+            ))}
           </nav>
           <LanguageSelector />
           {user ? (

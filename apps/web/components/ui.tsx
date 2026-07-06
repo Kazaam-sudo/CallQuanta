@@ -29,9 +29,9 @@ export function Badge({ children, tone = "default", className = "" }: { children
   return <span className={`badge badge-${tone} ${className}`.trim()}>{children}</span>;
 }
 
-export function StatusBadge({ status }: { status?: string | null }) {
+export function StatusBadge({ status, label }: { status?: string | null; label?: ReactNode }) {
   const normalized = status || "unknown";
-  return <span className={`badge badge-${normalized}`}>{normalized.replaceAll("_", " ")}</span>;
+  return <span className={`badge badge-${normalized}`}>{label || normalized.replaceAll("_", " ")}</span>;
 }
 
 export function Button({ children, variant = "primary", className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary"|"secondary"|"danger" }) {
