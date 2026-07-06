@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
 import { SettingsNav } from "../../../components/SettingsNav";
 import { AdminOnly } from "../../../components/AdminOnly";
+import { useI18n } from "../../../components/I18nProvider";
 
 
 export default function SystemStatusPage() {
+  const { t } = useI18n();
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
 
@@ -21,6 +23,9 @@ export default function SystemStatusPage() {
   }
 
   useEffect(() => { load(); }, []);
+  const llmReady = data?.qa?.mode !== "placeholder" && Boolean(data?.qa?.active_provider || data?.providers?.llm?.name);
+  const sttReady = Boolean(data?.providers?.stt?.name || data?.stt?.mode || data?.qa?.stt_mode);
+  const authEnabled = Boolean(data?.api?.require_auth);
 
   return (
     <AdminOnly><main className="grid" style={{ gap: 16 }}>
@@ -31,6 +36,17 @@ export default function SystemStatusPage() {
         {!data && !error && <p>Loading system status...</p>}
       </section>
       {data && <>
+        <section className="card">
+          <h3>{t("system.demoReadiness")}</h3>
+          <div className="grid grid-2">
+            <div className="segment"><strong>{t("system.authEnabled")}</strong><p><span className={`badge ${authEnabled ? "badge-transcribed" : "badge-analysis_failed"}`}>{authEnabled ? t("system.enabled") : t("system.checkRequired")}</span></p></div>
+            <div className="segment"><strong>{t("system.qaMode")}</strong><p><span className={`badge ${llmReady ? "badge-transcribed" : "badge-analysis_pending"}`}>{llmReady ? t("system.realLlmConnected") : t("system.placeholderMode")}</span></p><small>{t("system.activeProvider")}: {data.qa?.active_provider ? t("common.yes") : t("common.no")} • {t("call.model")}: {data.qa?.model || "-"}</small></div>
+            <div className="segment"><strong>{t("system.sttProvider")}</strong><p><span className={`badge ${sttReady ? "badge-transcribed" : "badge-analysis_pending"}`}>{sttReady ? t("system.sttConfigured") : t("system.sttMissing")}</span></p><small>{data.providers?.stt?.name || data.stt?.mode || t("system.checkSttSettings")}</small></div>
+            <div className="segment"><strong>{t("system.protectedAudio")}</strong><p><span className="badge badge-transcribed">{t("system.protectedEndpoint")}</span></p><small>{t("system.protectedAudioHelp")}</small></div>
+            <div className="segment"><strong>{t("system.invalidTranscriptGate")}</strong><p><span className="badge badge-transcribed">{t("system.enabled")}</span></p><small>{t("system.invalidTranscriptGateHelp")}</small></div>
+            <div className="segment"><strong>{t("system.storage")}</strong><p><span className="badge badge-uploaded">{data.storage?.files_count ?? 0} {t("system.files")}</span></p><small>{Math.round((data.storage?.total_bytes || 0) / 1024 / 1024)} MB {t("system.protectedStorage")}</small></div>
+          </div>
+        </section>
         <section className="grid grid-2">
           <article className="card"><h3>API</h3><p>{data.api?.status} • v{data.api?.version} • {data.api?.app_env}</p><p>Auth required: {String(data.api?.require_auth)}</p></article>
           <article className="card"><h3>Postgres</h3><p>{data.postgres?.ok ? "Healthy" : "Unavailable"}</p>{data.postgres?.error && <small>{data.postgres.error}</small>}</article>
