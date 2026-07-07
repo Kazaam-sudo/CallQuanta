@@ -59,15 +59,15 @@ export default function TelephonyIntegrationsPage() {
     setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/settings/telephony/integrations`);
-      if (!response.ok) throw new Error("Failed to load telephony integrations.");
+      if (!response.ok) throw new Error(t("telephony.loadFailed"));
       const data = await response.json();
       setIntegrations(data.saved || []);
       setPresets(data.presets || []);
       setEvents(data.events || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load telephony integrations.");
+      setError(err instanceof Error ? err.message : t("telephony.loadFailed"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -83,11 +83,11 @@ export default function TelephonyIntegrationsPage() {
       if (!response.ok) throw new Error(await response.text());
       const saved: Integration = await response.json();
       if (saved.token) setLatestTokens((tokens) => ({ ...tokens, [saved.id]: saved.token || "" }));
-      setMessage("Integration saved. Copy the token now; it will not be shown again.");
+      setMessage(t("telephony.integrationSaved"));
       setForm(emptyForm);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save integration.");
+      setError(err instanceof Error ? err.message : t("telephony.integrationSaveFailed"));
     } finally {
       setSaving(false);
     }
@@ -96,10 +96,10 @@ export default function TelephonyIntegrationsPage() {
   const regenerate = async (id: number) => {
     setError(null); setMessage(null);
     const response = await fetch(`${API_BASE_URL}/settings/telephony/integrations/${id}/regenerate-token`, { method: "POST" });
-    if (!response.ok) { setError("Failed to regenerate token."); return; }
+    if (!response.ok) { setError(t("telephony.tokenRegenerateFailed")); return; }
     const saved: Integration = await response.json();
     if (saved.token) setLatestTokens((tokens) => ({ ...tokens, [id]: saved.token || "" }));
-    setMessage("Token regenerated. Copy it now; it will not be shown again.");
+    setMessage(t("telephony.tokenRegenerated"));
     await load();
   };
 
@@ -132,23 +132,24 @@ export default function TelephonyIntegrationsPage() {
         <SettingsNav />
         <h2>{t("telephony.title")}</h2>
         <p className="message">{t("telephony.help")}</p>
-        {!publicAppUrl && <p className="message message-warning">Set PUBLIC_APP_URL to display a full webhook URL for tunnel testing. Until then, the browser origin is used for display.</p>}
+        {!publicAppUrl && <p className="message message-warning">{t("telephony.publicUrlWarning")}</p>}
         {message && <p className="message">{message}</p>}
         {error && <p className="message message-error">{error}</p>}
       </section>
 
       <section className="card">
-        <h3 style={{ marginTop: 0 }}>Create integration</h3>
+        <h3 style={{ marginTop: 0 }}>{t("telephony.createIntegration")}</h3>
+        <p style={{ color: "var(--text-muted)" }}>{t("telephony.fullWebhookHelp")} {t("telephony.tokenHelp")}</p>
         <form onSubmit={save} className="grid" style={{ gap: 10 }}>
-          <label>Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+          <label>{t("common.name")}<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label>{t("telephony.provider")}
             <select value={form.provider_type} onChange={(e) => setForm({ ...form, provider_type: e.target.value })}>
-              {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}{preset.implemented === false ? " (preset)" : ""}</option>)}
+              {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}{preset.implemented === false ? ` (${t("telephony.presetSuffix")})` : ""}</option>)}
             </select>
           </label>
-          <div className="telephony-boolean-fields" aria-label="Integration processing options">
+          <div className="telephony-boolean-fields" aria-label={t("telephony.processingOptions")}>
             <label className="telephony-toggle-row">
-              <span>Active</span>
+              <span>{t("common.active")}</span>
               <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
             </label>
             <label className="telephony-toggle-row">
@@ -161,42 +162,42 @@ export default function TelephonyIntegrationsPage() {
             </label>
           </div>
           <div className="grid grid-2">
-            <label>Default agent<input value={form.default_agent_name} onChange={(e) => setForm({ ...form, default_agent_name: e.target.value })} /></label>
-            <label>Default team<input value={form.default_team} onChange={(e) => setForm({ ...form, default_team: e.target.value })} /></label>
-            <label>Default campaign<input value={form.default_campaign} onChange={(e) => setForm({ ...form, default_campaign: e.target.value })} /></label>
-            <label>Default direction<input value={form.default_direction} placeholder="inbound/outbound" onChange={(e) => setForm({ ...form, default_direction: e.target.value })} /></label>
-            <label>Default language<input value={form.default_language} placeholder="auto, uz, ru, en" onChange={(e) => setForm({ ...form, default_language: e.target.value })} /></label>
+            <label>{t("telephony.defaultAgent")}<input value={form.default_agent_name} onChange={(e) => setForm({ ...form, default_agent_name: e.target.value })} /></label>
+            <label>{t("telephony.defaultTeam")}<input value={form.default_team} onChange={(e) => setForm({ ...form, default_team: e.target.value })} /></label>
+            <label>{t("telephony.defaultCampaign")}<input value={form.default_campaign} onChange={(e) => setForm({ ...form, default_campaign: e.target.value })} /></label>
+            <label>{t("telephony.defaultDirection")}<input value={form.default_direction} placeholder={t("telephony.placeholderDirection")} onChange={(e) => setForm({ ...form, default_direction: e.target.value })} /></label>
+            <label>{t("telephony.defaultLanguage")}<input value={form.default_language} placeholder={t("telephony.placeholderLanguage")} onChange={(e) => setForm({ ...form, default_language: e.target.value })} /></label>
           </div>
-          <button className="button" disabled={saving}>{saving ? "Saving..." : "Create integration and token"}</button>
+          <button className="button" disabled={saving}>{saving ? t("common.saving") : t("telephony.createAndToken")}</button>
         </form>
       </section>
 
       <section className="card">
-        <h3 style={{ marginTop: 0 }}>Saved integrations</h3>
+        <h3 style={{ marginTop: 0 }}>{t("telephony.savedIntegrations")}</h3>
         <div className="grid" style={{ gap: 12 }}>
           {integrations.map((item) => {
             const fullWebhook = `${webhookBase.replace(/\/+$/, "")}${item.webhook_path}`;
             return <article key={item.id} className="segment telephony-integration-card">
               <div className="telephony-card-header">
                 <strong>{item.name}</strong>
-                <span className={`badge ${item.is_active ? "badge-success" : "badge-warning"}`}>{item.is_active ? "active" : "inactive"}</span>
+                <span className={`badge ${item.is_active ? "badge-success" : "badge-warning"}`}>{item.is_active ? t("common.active") : t("common.inactive")}</span>
               </div>
               <div className="telephony-saved-grid">
                 <div className="meta-item"><small>{t("telephony.provider")}</small>{item.provider_type}</div>
                 <div className="meta-item telephony-wide-field"><small>{t("telephony.webhookUrl")}</small><code>{fullWebhook}</code></div>
-                <div className="meta-item"><small>{t("telephony.integrationToken")}</small>{latestTokens[item.id] ? <code>{latestTokens[item.id]}</code> : item.token_configured ? "configured" : "missing"}</div>
-                <div className="meta-item"><small>{t("telephony.autoTranscribe")}</small>{item.auto_transcribe ? "yes" : "no"}</div>
-                <div className="meta-item"><small>{t("telephony.autoAnalyze")}</small>{item.auto_analyze ? "yes" : "no"}</div>
+                <div className="meta-item"><small>{t("telephony.integrationToken")}</small>{latestTokens[item.id] ? <code>{latestTokens[item.id]}</code> : item.token_configured ? t("common.configured") : t("common.missing")}</div>
+                <div className="meta-item"><small>{t("telephony.autoTranscribe")}</small>{item.auto_transcribe ? t("common.yes") : t("common.no")}</div>
+                <div className="meta-item"><small>{t("telephony.autoAnalyze")}</small>{item.auto_analyze ? t("common.yes") : t("common.no")}</div>
               </div>
               <div className="actions telephony-card-actions">
-                <button className="button button-secondary" onClick={() => navigator.clipboard?.writeText(fullWebhook)}>Copy URL</button>
+                <button className="button button-secondary" onClick={() => navigator.clipboard?.writeText(fullWebhook)}>{t("common.copyUrl")}</button>
                 <button className="button button-secondary" onClick={() => regenerate(item.id)}>{t("telephony.regenerateToken")}</button>
-                <button className="button button-secondary" onClick={() => toggle(item.id)}>{item.is_active ? "Deactivate" : "Activate"}</button>
+                <button className="button button-secondary" onClick={() => toggle(item.id)}>{item.is_active ? t("common.deactivate") : t("common.activate")}</button>
               </div>
-              <details className="telephony-payload-details"><summary>Test payload example</summary><pre className="telephony-code-block">{testPayload}</pre></details>
+              <details className="telephony-payload-details"><summary>{t("telephony.testPayload")}</summary><pre className="telephony-code-block">{testPayload}</pre></details>
             </article>;
           })}
-          {integrations.length === 0 && <p>No telephony integrations yet.</p>}
+          {integrations.length === 0 && <p>{t("telephony.noIntegrations")}</p>}
         </div>
       </section>
 
@@ -205,10 +206,10 @@ export default function TelephonyIntegrationsPage() {
         <div className="grid" style={{ gap: 8 }}>
           {events.map((event) => <article key={event.id} className="segment">
             <div><strong>{event.created_at ? new Date(event.created_at).toLocaleString() : "-"}</strong> · {event.source_provider} · {event.event_type} · <span className={`badge badge-${event.status}`}>{event.status}</span></div>
-            <div>{t("telephony.externalCallId")}: {event.external_call_id || "-"} {event.call_id ? <>· <Link href={`/calls/${event.call_id}`}>Call #{event.call_id}</Link></> : null}</div>
+            <div>{t("telephony.externalCallId")}: {event.external_call_id || "-"} {event.call_id ? <>· <Link href={`/calls/${event.call_id}`}>{t("telephony.linkedCall").replace("{id}", String(event.call_id))}</Link></> : null}</div>
             {event.message && <small>{event.message}</small>}
           </article>)}
-          {events.length === 0 && <p>No ingestion events yet.</p>}
+          {events.length === 0 && <p>{t("telephony.noEvents")}</p>}
         </div>
       </section>
     </div></AdminOnly>

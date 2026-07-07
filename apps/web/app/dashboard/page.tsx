@@ -121,9 +121,9 @@ export default function Page() {
       filters.created_from && filters.created_to
         ? `${filters.created_from}–${filters.created_to}`
         : filters.created_from
-          ? `from ${filters.created_from}`
+          ? `${t("calls.dateFrom")} ${filters.created_from}`
           : filters.created_to
-            ? `to ${filters.created_to}`
+            ? `${t("calls.dateTo")} ${filters.created_to}`
             : "",
     ].filter(Boolean);
     return parts.length > 0
@@ -136,12 +136,43 @@ export default function Page() {
   if (!data)
     return (
       <main className="grid">
-        <section className="card empty-state">Loading dashboard…</section>
+        <section className="card empty-state">{t("dashboard.loading")}</section>
       </main>
     );
 
   return (
     <main className="grid page-stack">
+      <section className="card hero">
+        <div className="section-header">
+          <div>
+            <h1>{t("dashboard.productTitle")}</h1>
+            <p>{t("dashboard.productHelp")}</p>
+          </div>
+          <Link href="/calls" className="button">{t("dashboard.primaryAction")}</Link>
+        </div>
+      </section>
+      <section className="card">
+        <div className="section-header">
+          <div>
+            <h2>{t("dashboard.workflow")}</h2>
+            <small>{t("dashboard.workflowHelp")}</small>
+          </div>
+        </div>
+        <div className="demo-summary-grid">
+          {[
+            ["dashboard.workflow.upload.title", "dashboard.workflow.upload.text"],
+            ["dashboard.workflow.transcript.title", "dashboard.workflow.transcript.text"],
+            ["dashboard.workflow.qa.title", "dashboard.workflow.qa.text"],
+            ["dashboard.workflow.growth.title", "dashboard.workflow.growth.text"],
+          ].map(([title, text], index) => <article key={title} className="demo-summary-card"><small>{index + 1}</small><strong>{t(title)}</strong><span className="technical-detail">{t(text)}</span></article>)}
+        </div>
+      </section>
+      <section className="card">
+        <h2>{t("dashboard.outputs")}</h2>
+        <div className="kpi-grid compact">
+          {["dashboard.output.score", "dashboard.output.topic", "dashboard.output.actions", "dashboard.output.evidence", "dashboard.output.feedback"].map((key) => <article key={key} className="kpi-card"><strong>{t(key)}</strong></article>)}
+        </div>
+      </section>
       <section className="card filters-card">
         <div className="section-header filters-header">
           <div>
@@ -178,18 +209,21 @@ export default function Page() {
             value={filters.agent_name}
             onChange={(v) => updateFilter("agent_name", v)}
             options={filterOptions.agents}
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.team")}
             value={filters.team}
             onChange={(v) => updateFilter("team", v)}
             options={filterOptions.teams}
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.campaign")}
             value={filters.campaign}
             onChange={(v) => updateFilter("campaign", v)}
             options={filterOptions.campaigns}
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.direction")}
@@ -205,6 +239,7 @@ export default function Page() {
                   !["inbound", "outbound", "internal", "unknown"].includes(d),
               ),
             ]}
+            allLabel={t("common.all")}
           />
           <label>
             {t("call.audioLanguage")}
@@ -212,7 +247,7 @@ export default function Page() {
               value={filters.language}
               onChange={(e) => updateFilter("language", e.target.value)}
             >
-              <option value="">All</option>
+              <option value="">{t("common.all")}</option>
               {Array.from(
                 new Set([
                   "auto",
@@ -229,7 +264,27 @@ export default function Page() {
           </label>
         </div>
       </section>
-      <section className="card"><div className="section-header"><div><h2>Pilot Feedback</h2><small>Manager feedback loop and pilot readiness</small></div><div className="actions"><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=csv`}>Export CSV</a><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=xlsx`}>Export XLSX</a><Link className="button button-secondary" href="/pilot">Pilot checklist</Link></div></div>{pilot ? <div className="kpi-grid"><article className="kpi-card"><small>Reviews with feedback</small><strong>{pilot.reviews_with_feedback}</strong></article><article className="kpi-card"><small>Useful for coaching</small><strong>{pilot.useful_for_coaching_percent ?? "-"}%</strong></article><article className="kpi-card"><small>STT problems</small><strong>{pilot.reviews_with_stt_problems}</strong></article><article className="kpi-card"><small>QA logic problems</small><strong>{pilot.reviews_with_qa_logic_problems}</strong></article><article className="kpi-card"><small>Scorecard mismatch</small><strong>{pilot.reviews_with_scorecard_mismatch}</strong></article><article className="kpi-card"><small>Topic problems</small><strong>{pilot.reviews_with_topic_classification_problems}</strong></article><article className="kpi-card"><small>Required actions problems</small><strong>{pilot.reviews_with_required_actions_problems}</strong></article><article className="kpi-card"><small>UI / UX problems</small><strong>{pilot.reviews_with_ui_ux_problems}</strong></article><article className="kpi-card"><small>QA skipped: invalid transcript</small><strong>{pilot.reviews_not_evaluated_invalid_transcript}</strong></article><article className="kpi-card"><small>Avg AI-human delta</small><strong>{pilot.average_ai_human_delta_with_feedback ?? "-"}</strong></article></div> : <p>Loading pilot feedback…</p>}<p><strong>Top issue tags:</strong> {pilot?.top_issue_tags?.map((x:any) => `${x.tag} (${x.count})`).join(", ") || "-"}</p></section>
+      <section className="card">
+        <div className="section-header">
+          <div><h2>{t("dashboard.pilotFeedback")}</h2><small>{t("dashboard.pilotFeedbackHelp")}</small></div>
+          <div className="actions"><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=csv`}>{t("dashboard.exportCsv")}</a><a className="button button-secondary" href={`${API_BASE_URL}/qa-feedback/export?format=xlsx`}>{t("dashboard.exportXlsx")}</a><Link className="button button-secondary" href="/pilot">{t("dashboard.pilotChecklist")}</Link></div>
+        </div>
+        {pilot ? <div className="kpi-grid">
+          {[
+            [t("dashboard.reviewsWithFeedback"), pilot.reviews_with_feedback],
+            [t("dashboard.usefulForCoaching"), `${pilot.useful_for_coaching_percent ?? "-"}%`],
+            [t("dashboard.sttProblems"), pilot.reviews_with_stt_problems],
+            [t("dashboard.qaLogicProblems"), pilot.reviews_with_qa_logic_problems],
+            [t("dashboard.scorecardMismatch"), pilot.reviews_with_scorecard_mismatch],
+            [t("dashboard.topicProblems"), pilot.reviews_with_topic_classification_problems],
+            [t("dashboard.requiredActionsProblems"), pilot.reviews_with_required_actions_problems],
+            [t("dashboard.uiUxProblems"), pilot.reviews_with_ui_ux_problems],
+            [t("dashboard.qaSkippedInvalidTranscript"), pilot.reviews_not_evaluated_invalid_transcript],
+            [t("dashboard.avgAiHumanDelta"), pilot.average_ai_human_delta_with_feedback ?? "-"],
+          ].map(([label, value]) => <article className="kpi-card" key={String(label)}><small>{label}</small><strong>{value}</strong></article>)}
+        </div> : <p>{t("common.loading")}</p>}
+        <p><strong>{t("dashboard.topIssueTags")}:</strong> {pilot?.top_issue_tags?.map((x:any) => `${x.tag} (${x.count})`).join(", ") || "-"}</p>
+      </section>
       {emptyMessage ? (
         <section className="card empty-state">{emptyMessage}</section>
       ) : null}
@@ -255,7 +310,7 @@ export default function Page() {
             data.summary.analysis_failed_calls,
             t("calls.failed"),
           ],
-          [t("dashboard.totalQaReviews"), data.summary.total_qa_reviews, "QA"],
+          [t("dashboard.totalQaReviews"), data.summary.total_qa_reviews, t("call.tab.qa")],
         ].map(([label, value, helper]) => (
           <article key={String(label)} className="kpi-card">
             <small>{helper}</small>
@@ -281,7 +336,7 @@ export default function Page() {
             [t("qa.calibrationSamples"), data.qa_calibration?.calibration_samples_count ?? 0],
           ].map(([label, value]) => <article key={String(label)} className="kpi-card"><strong>{value}</strong><div>{label}</div></article>)}
         </section>
-        {(data.qa_calibration?.top_criteria_disagreement || []).length ? <div className="table-wrap" style={{ marginTop: 12 }}><table className="data-table"><thead><tr><th>{t("qa.topCriteriaDisagreement")}</th><th>Count</th></tr></thead><tbody>{data.qa_calibration?.top_criteria_disagreement.map((row:any) => <tr key={row.criterion_title}><td>{row.criterion_title}</td><td>{row.disagreements}</td></tr>)}</tbody></table></div> : <p className="empty-state">{t("qa.noDisagreements")}</p>}
+        {(data.qa_calibration?.top_criteria_disagreement || []).length ? <div className="table-wrap" style={{ marginTop: 12 }}><table className="data-table"><thead><tr><th>{t("qa.topCriteriaDisagreement")}</th><th>{t("common.count")}</th></tr></thead><tbody>{data.qa_calibration?.top_criteria_disagreement.map((row:any) => <tr key={row.criterion_title}><td>{row.criterion_title}</td><td>{row.disagreements}</td></tr>)}</tbody></table></div> : <p className="empty-state">{t("qa.noDisagreements")}</p>}
       </section>
       <section className="card">
         <div className="section-header">
@@ -294,13 +349,13 @@ export default function Page() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Date</th>
-                  <th>Call</th>
-                  <th>Agent</th>
-                  <th>Score</th>
-                  <th>Model</th>
-                  <th>Scorecard</th>
-                  <th>Link</th>
+                  <th>{t("dashboard.table.date")}</th>
+                  <th>{t("dashboard.table.call")}</th>
+                  <th>{t("dashboard.table.agent")}</th>
+                  <th>{t("dashboard.table.score")}</th>
+                  <th>{t("dashboard.table.model")}</th>
+                  <th>{t("dashboard.table.scorecard")}</th>
+                  <th>{t("common.link")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -311,7 +366,7 @@ export default function Page() {
                         ? new Date(r.created_at).toLocaleString()
                         : "-"}
                     </td>
-                    <td>{r.filename || `Call #${r.call_id}`}</td>
+                    <td>{r.filename || `${t("dashboard.table.call")} #${r.call_id}`}</td>
                     <td>{r.agent_name || "-"}</td>
                     <td>
                       <strong>{fmt(r.score)}</strong>
@@ -341,20 +396,20 @@ export default function Page() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Score</th>
-                  <th>Call</th>
-                  <th>Agent</th>
-                  <th>Team</th>
-                  <th>Campaign</th>
-                  <th>Summary</th>
-                  <th>Link</th>
+                  <th>{t("dashboard.table.score")}</th>
+                  <th>{t("dashboard.table.call")}</th>
+                  <th>{t("dashboard.table.agent")}</th>
+                  <th>{t("dashboard.table.team")}</th>
+                  <th>{t("dashboard.table.campaign")}</th>
+                  <th>{t("dashboard.table.summary")}</th>
+                  <th>{t("common.link")}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.lowest_score_reviews.map((r) => (
                   <tr key={r.review_id}>
                     <td>{fmt(r.score)}</td>
-                    <td>{r.filename || `Call #${r.call_id}`}</td>
+                    <td>{r.filename || `${t("dashboard.table.call")} #${r.call_id}`}</td>
                     <td>{r.agent_name || "-"}</td>
                     <td>{r.team || "-"}</td>
                     <td>{r.campaign || "-"}</td>
@@ -382,11 +437,11 @@ export default function Page() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Criterion</th>
-                  <th>Avg %</th>
-                  <th>Warnings</th>
-                  <th>Criticals</th>
-                  <th>Count</th>
+                  <th>{t("dashboard.table.criterion")}</th>
+                  <th>{t("dashboard.averagePercent")}</th>
+                  <th>{t("dashboard.warnings")}</th>
+                  <th>{t("dashboard.criticalFindings")}</th>
+                  <th>{t("common.count")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -410,19 +465,19 @@ export default function Page() {
         <div className="section-header">
           <h2>{t("dashboard.agentPerformance")}</h2>
         </div>
-        {renderMetricsTable(data.agent_metrics, "agent_name", true)}
+        {renderMetricsTable(data.agent_metrics, "agent_name", t, true)}
       </section>
       <section className="card">
         <div className="section-header">
           <h2>{t("dashboard.teamPerformance")}</h2>
         </div>
-        {renderMetricsTable(data.team_metrics, "team")}
+        {renderMetricsTable(data.team_metrics, "team", t)}
       </section>
       <section className="card">
         <div className="section-header">
           <h2>{t("dashboard.campaignPerformance")}</h2>
         </div>
-        {renderMetricsTable(data.campaign_metrics, "campaign")}
+        {renderMetricsTable(data.campaign_metrics, "campaign", t)}
       </section>
     </main>
   );
@@ -433,17 +488,19 @@ function FilterSelect({
   value,
   onChange,
   options,
+  allLabel,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   options: string[];
+  allLabel: string;
 }) {
   return (
     <label>
       {label}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">All</option>
+        <option value="">{allLabel}</option>
         {Array.from(new Set(options))
           .filter(Boolean)
           .map((option) => (
@@ -471,27 +528,29 @@ function ScoreBar({ value }: { value: number | null | undefined }) {
 function renderMetricsTable(
   rows: MetricRow[],
   keyName: "agent_name" | "team" | "campaign",
+  t: (key: string) => string,
   includeLatest = false,
 ) {
-  if (rows.length === 0) return <p className="empty-state">No metrics yet.</p>;
+  if (rows.length === 0) return <p className="empty-state">{t("dashboard.emptyAnalyze")}</p>;
+  const keyLabel = keyName === "agent_name" ? t("calls.agent") : keyName === "team" ? t("calls.team") : t("calls.campaign");
   return (
     <div className="table-wrap">
       <table className="data-table">
         <thead>
           <tr>
-            <th>{keyName.replace("_", " ")}</th>
-            <th>Calls</th>
-            <th>Analyzed</th>
-            <th>Average score</th>
-            <th>Lowest score</th>
-            <th>Highest score</th>
-            {includeLatest ? <th>Latest review</th> : null}
+            <th>{keyLabel}</th>
+            <th>{t("dashboard.totalCalls")}</th>
+            <th>{t("dashboard.analyzedCalls")}</th>
+            <th>{t("dashboard.averageScore")}</th>
+            <th>{t("dashboard.lowestScoreReviews")}</th>
+            <th>{t("dashboard.table.score")}</th>
+            {includeLatest ? <th>{t("dashboard.latestQaReviews")}</th> : null}
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
             <tr key={String(r[keyName])}>
-              <td>{r[keyName] || "Unassigned"}</td>
+              <td>{r[keyName] || "-"}</td>
               <td>{r.calls_count}</td>
               <td>{r.analyzed_calls_count}</td>
               <td>

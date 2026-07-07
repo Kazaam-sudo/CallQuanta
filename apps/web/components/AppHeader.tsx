@@ -49,7 +49,7 @@ export function AppHeader() {
     router.refresh();
   }
 
-  const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "";
+  const roleLabel = user?.role ? t(`role.${user.role}`) : "";
   const navItems = [
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/calls", label: t("nav.calls") },
@@ -61,14 +61,14 @@ export function AppHeader() {
   return (
     <header className="app-header">
       <div className="header-inner">
-        <Link href="/dashboard" className="brand-link" aria-label="CallQuanta dashboard">
+        <Link href="/dashboard" className="brand-link" aria-label={t("nav.dashboard")}>
           <h1 className="brand-title">CallQuanta</h1>
           <p className="brand-subtitle">
-            AI QA for contact centers
+            {t("app.subtitle")}
           </p>
         </Link>
         <div className="header-actions">
-          <nav className="top-nav" aria-label="Main navigation">
+          <nav className="top-nav" aria-label={t("nav.main")}>
             {navItems.map((item) => (
               <Link key={item.href} href={item.href} className={isActive(item.href) ? "active" : ""}>
                 {item.label}

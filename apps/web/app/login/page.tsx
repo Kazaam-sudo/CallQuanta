@@ -28,14 +28,14 @@ function LoginForm() {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.detail || "Invalid email or password");
+        throw new Error(body?.detail || t("auth.invalidCredentials"));
       }
       const body = await response.json().catch(() => ({}));
       window.dispatchEvent(new Event("callquanta-auth-changed"));
       router.push(body?.must_change_password ? "/change-password" : (searchParams.get("next") || "/dashboard"));
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(err instanceof Error ? err.message : t("auth.loginFailed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -43,15 +43,15 @@ function LoginForm() {
 
   return (
     <section className="card" style={{ maxWidth: 440, margin: "48px auto" }}>
-      <h2>Sign in</h2>
-      <p style={{ color: "var(--text-muted)" }}>Use your CallQuanta admin or viewer account to access sensitive call data.</p>
+      <h2>{t("auth.signIn")}</h2>
+      <p style={{ color: "var(--text-muted)" }}>{t("auth.loginHelp")}</p>
       <form className="grid" style={{ gap: 14 }} onSubmit={submit}>
-        <label>Email</label>
+        <label>{t("auth.email")}</label>
         <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required />
-        <label>Password</label>
+        <label>{t("auth.password")}</label>
         <div className="password-field-row"><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /><button className="button button-secondary" type="button" onClick={() => setShowPassword(!showPassword)}>{showPassword ? t("auth.hidePassword") : t("auth.showPassword")}</button></div>
         {error && <div className="notice notice-danger">{error}</div>}
-        <button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? "Signing in..." : "Sign in"}</button>
+        <button className="button" type="submit" disabled={isSubmitting}>{isSubmitting ? t("auth.signingIn") : t("auth.signIn")}</button>
       </form>
     </section>
   );
@@ -60,7 +60,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<section className="card" style={{ maxWidth: 440, margin: "48px auto" }}>Loading...</section>}>
+    <Suspense fallback={<section className="card" style={{ maxWidth: 440, margin: "48px auto" }}>...</section>}>
       <LoginForm />
     </Suspense>
   );

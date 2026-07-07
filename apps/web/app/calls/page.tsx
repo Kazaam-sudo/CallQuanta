@@ -861,7 +861,7 @@ export default function CallsPage() {
             <input
               value={filters.q}
               onChange={(e) => updateFilter("q", e.target.value)}
-              placeholder="Filename, agent, team, campaign"
+              placeholder={t("calls.searchPlaceholder")}
             />
           </label>
           <FilterSelect
@@ -869,7 +869,7 @@ export default function CallsPage() {
             value={filters.status}
             onChange={(v) => updateFilter("status", v)}
             options={filterOptions.statuses}
-            allLabel="All"
+            allLabel={t("common.all")}
             labelFor={(v) => t(statusKey(v))}
           />
           <FilterSelect
@@ -877,21 +877,21 @@ export default function CallsPage() {
             value={filters.agent_name}
             onChange={(v) => updateFilter("agent_name", v)}
             options={filterOptions.agents}
-            allLabel="All"
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.team")}
             value={filters.team}
             onChange={(v) => updateFilter("team", v)}
             options={filterOptions.teams}
-            allLabel="All"
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.campaign")}
             value={filters.campaign}
             onChange={(v) => updateFilter("campaign", v)}
             options={filterOptions.campaigns}
-            allLabel="All"
+            allLabel={t("common.all")}
           />
           <FilterSelect
             label={t("calls.direction")}
@@ -907,7 +907,7 @@ export default function CallsPage() {
                   !["inbound", "outbound", "internal", "unknown"].includes(d),
               ),
             ]}
-            allLabel="All"
+            allLabel={t("common.all")}
           />
           <LanguageFilterSelect
             label={t("call.audioLanguage")}
@@ -1324,7 +1324,7 @@ function LanguageFilterSelect({
     <label>
       {label}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">All</option>
+        <option value="">{t("common.all")}</option>
         {codes.map((code) => (
           <option key={code} value={code}>
             {code === "auto"

@@ -3,6 +3,7 @@
 import { SettingsNav } from "../../../components/SettingsNav";
 import { AdminOnly } from "../../../components/AdminOnly";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../../../components/I18nProvider";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const ALLOWED_LANGUAGES = ["workspace", "english", "russian", "same_as_transcript"] as const;
@@ -38,6 +39,7 @@ const newCriterion = (): Criterion => ({
 });
 
 export default function ScorecardPage() {
+  const { t } = useI18n();
   const [scorecard, setScorecard] = useState<Scorecard>(emptyScorecard);
   const [message, setMessage] = useState<string>("");
   const [errors, setErrors] = useState<string[]>([]);
@@ -65,20 +67,20 @@ export default function ScorecardPage() {
   const validate = (): string[] => {
     const validationErrors: string[] = [];
     if (!scorecard.name.trim()) {
-      validationErrors.push("Scorecard name must not be empty.");
+      validationErrors.push(t("settings.scorecardNameRequired"));
     }
     if (!scorecard.report_language.trim()) {
-      validationErrors.push("Report language must not be empty.");
+      validationErrors.push(t("settings.reportLanguageRequired"));
     }
     if (scorecard.criteria.length === 0) {
-      validationErrors.push("Scorecard must contain at least one criterion.");
+      validationErrors.push(t("settings.scorecardNeedsCriterion"));
     }
     scorecard.criteria.forEach((criterion, idx) => {
       if (!criterion.title.trim()) {
-        validationErrors.push(`Criterion #${idx + 1}: title must not be empty.`);
+        validationErrors.push(t("settings.criterionTitleRequired").replace("{number}", String(idx + 1)));
       }
       if (Number(criterion.max_points) <= 0) {
-        validationErrors.push(`Criterion #${idx + 1}: max_points must be greater than 0.`);
+        validationErrors.push(t("settings.criterionMaxRequired").replace("{number}", String(idx + 1)));
       }
     });
     return validationErrors;
@@ -102,13 +104,11 @@ export default function ScorecardPage() {
     if (res.ok) {
       const saved = (await res.json()) as Scorecard;
       setScorecard(saved);
-      const savedCriteriaCount = saved.criteria.length;
-      const savedTotal = saved.criteria.reduce((sum, criterion) => sum + Number(criterion.max_points || 0), 0);
-      setSuccessFlash("Scorecard saved."); setTimeout(() => setSuccessFlash(""), 2500);
+      setSuccessFlash(t("settings.scorecardSaved")); setTimeout(() => setSuccessFlash(""), 2500);
       return;
     }
 
-    let detail = "Failed to save scorecard.";
+    let detail = t("settings.scorecardSaveFailed");
     try {
       const payload = await res.json();
       if (payload?.detail) {
@@ -125,11 +125,11 @@ export default function ScorecardPage() {
     if (res.ok) {
       const payload = await res.json();
       setScorecard(payload);
-      setSuccessFlash("Scorecard reset to default."); setTimeout(() => setSuccessFlash(""), 2500);
+      setSuccessFlash(t("settings.scorecardReset")); setTimeout(() => setSuccessFlash(""), 2500);
       return;
     }
 
-    let detail = "Failed to reset scorecard.";
+    let detail = t("settings.scorecardResetFailed");
     try {
       const payload = await res.json();
       if (payload?.detail) {
@@ -143,35 +143,36 @@ export default function ScorecardPage() {
     <AdminOnly><main className="grid" style={{ gap: 16 }}>
       <SettingsNav />
       <section className="card">
-        <h2>Scorecard Settings</h2>
+        <h2>{t("settings.scorecard")}</h2>
+        <p style={{ color: "var(--text-muted)" }}>{t("settings.scorecardHelp")}</p>
 
-        <label>Scorecard name</label>
+        <label>{t("settings.scorecardName")}</label>
         <input value={scorecard.name} onChange={(e) => setScorecard({ ...scorecard, name: e.target.value })} />
 
-        <label>Report language</label>
+        <label>{t("settings.reportLanguage")}</label>
         <select
           value={scorecard.report_language}
           onChange={(e) => setScorecard({ ...scorecard, report_language: e.target.value as Scorecard["report_language"] })}
         >
-          <option value="workspace">Use workspace default</option>
-          <option value="english">English</option>
-          <option value="russian">Russian</option>
-          <option value="same_as_transcript">Same as transcript</option>
-          <option value="Uzbek">Custom: Uzbek</option>
+          <option value="workspace">{t("settings.useWorkspaceDefault")}</option>
+          <option value="english">{t("settings.english")}</option>
+          <option value="russian">{t("settings.russian")}</option>
+          <option value="same_as_transcript">{t("settings.sameAsTranscriptShort")}</option>
+          <option value="Uzbek">{t("settings.customUzbek")}</option>
         </select>
 
         <div className="actions" style={{ marginTop: 12 }}>
-          <button className="button button-secondary" onClick={() => { const created = newCriterion(); setScorecard({ ...scorecard, criteria: [created, ...scorecard.criteria] }); setTimeout(() => topCriterionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50); }}>
-            Add criterion
+          <button className="button button-secondary" onClick={() => { const created = { ...newCriterion(), title: t("settings.criterion") }; setScorecard({ ...scorecard, criteria: [created, ...scorecard.criteria] }); setTimeout(() => topCriterionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50); }}>
+            {t("settings.addCriterion")}
           </button>
         </div>
 
         <div className="grid" style={{ marginTop: 12, gap: 12 }}>
           {scorecard.criteria.map((criterion, idx) => (
             <article key={criterion.id} className="segment" ref={idx===0 ? topCriterionRef : undefined}>
-              <strong>Criterion #{idx + 1}</strong>
+              <strong>{t("settings.criterion")} #{idx + 1}</strong>
 
-              <label>Title</label>
+              <label>{t("common.title")}</label>
               <input
                 value={criterion.title}
                 onChange={(e) => {
@@ -181,7 +182,7 @@ export default function ScorecardPage() {
                 }}
               />
 
-              <label>Max points</label>
+              <label>{t("settings.maxPoints")}</label>
               <input
                 type="number"
                 min={1}
@@ -193,7 +194,7 @@ export default function ScorecardPage() {
                 }}
               />
 
-              <label>Description</label>
+              <label>{t("common.description")}</label>
               <textarea
                 value={criterion.description || ""}
                 onChange={(e) => {
@@ -203,7 +204,7 @@ export default function ScorecardPage() {
                 }}
               />
 
-              <label>Positive examples</label>
+              <label>{t("settings.positiveExamples")}</label>
               <textarea
                 value={(criterion.positive_examples || []).join("\n")}
                 onChange={(e) => {
@@ -219,7 +220,7 @@ export default function ScorecardPage() {
                 }}
               />
 
-              <label>Negative examples</label>
+              <label>{t("settings.negativeExamples")}</label>
               <textarea
                 value={(criterion.negative_examples || []).join("\n")}
                 onChange={(e) => {
@@ -240,14 +241,14 @@ export default function ScorecardPage() {
                   className="button button-secondary"
                   onClick={() => {
                     if (scorecard.criteria.length <= 1) {
-                      setErrors(["Scorecard must contain at least one criterion."]);
+                      setErrors([t("settings.scorecardNeedsCriterion")]);
                       return;
                     }
                     const criteria = scorecard.criteria.filter((_, cIdx) => cIdx !== idx);
                     setScorecard({ ...scorecard, criteria });
                   }}
                 >
-                  Delete
+                  {t("settings.removeCriterion")}
                 </button>
               </div>
             </article>
@@ -255,12 +256,15 @@ export default function ScorecardPage() {
         </div>
 
         <div className="actions" style={{ marginTop: 12 }}>
-          <button className="button" onClick={save}>Save scorecard</button>
-          <button className="button button-secondary" onClick={resetToDefault}>Reset to default</button>
+          <button className="button" onClick={save}>{t("settings.saveScorecard")}</button>
+          <button className="button button-secondary" onClick={resetToDefault}>{t("settings.resetScorecard")}</button>
         </div>
 
         <p className="message" style={{ marginTop: 8 }}>
-          Saved language: {scorecard.report_language}. Criteria count: {diagnostics.criteriaCount}. Total max score: {diagnostics.totalMax}.
+          {t("settings.scorecardDiagnostics")
+            .replace("{language}", scorecard.report_language)
+            .replace("{count}", String(diagnostics.criteriaCount))
+            .replace("{total}", String(diagnostics.totalMax))}
         </p>
 
         {errors.length > 0 && (

@@ -534,7 +534,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       <p style={{ margin: 0 }}><Link href="/calls">← {t("call.backToCalls")}</Link></p>
 
       <PageHeader
-        title={<span className="call-summary-row"><span>Call #{call?.id ?? params.id}</span>{call?.status ? <StatusBadge status={call.status} label={statusLabel(call.status)} /> : null}</span>}
+        title={<span className="call-summary-row"><span>{t("dashboard.table.call")} #{call?.id ?? params.id}</span>{call?.status ? <StatusBadge status={call.status} label={statusLabel(call.status)} /> : null}</span>}
         description={call?.filename || t("call.detailsDescription")}
         actions={<>
           <Button variant="secondary" onClick={load}>{t("call.refresh")}</Button>

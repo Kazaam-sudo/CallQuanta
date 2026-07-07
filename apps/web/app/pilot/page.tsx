@@ -1,18 +1,45 @@
-import Link from "next/link";
+"use client";
 
-const steps = [
-  "Upload 5–10 real calls",
-  "Check transcription quality",
-  "Run QA analysis",
-  "Review AI score and evidence",
-  "Add human review",
-  "Add feedback",
-  "Add coaching action if needed",
-  "Check dashboard",
-  "Export results",
-  "Share feedback summary",
-];
+import Link from "next/link";
+import { useI18n } from "../../components/I18nProvider";
 
 export default function PilotPage() {
-  return <main className="grid page-stack"><section className="card"><div className="section-header"><div><h2>Pilot testing checklist</h2><small>Use this workflow with managers before a wider rollout.</small></div><Link className="button button-secondary" href="/dashboard">Dashboard</Link></div><ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol></section><section className="card"><h3>Practical review help</h3><ul><li><strong>What should I check?</strong> Transcript accuracy, AI evidence, score fit, missed issues, false positives, and coaching usefulness.</li><li><strong>Transcript quality:</strong> mark poor/unusable when words, language, or speakers are wrong enough to affect scoring.</li><li><strong>AI QA quality:</strong> mark poor when evidence does not support the score or key criteria are missed.</li><li><strong>Disputed:</strong> use when human score or interpretation materially differs from AI.</li><li><strong>Coaching action:</strong> add one only when the review identifies a specific behavior to improve.</li></ul></section></main>;
+  const { t } = useI18n();
+  const steps = [
+    "pilot.step.upload",
+    "pilot.step.transcript",
+    "pilot.step.qa",
+    "pilot.step.evidence",
+    "pilot.step.human",
+    "pilot.step.feedback",
+    "pilot.step.coaching",
+    "pilot.step.dashboard",
+    "pilot.step.export",
+    "pilot.step.share",
+  ];
+
+  return (
+    <main className="grid page-stack">
+      <section className="card">
+        <div className="section-header">
+          <div>
+            <h2>{t("pilot.title")}</h2>
+            <small>{t("pilot.help")}</small>
+          </div>
+          <Link className="button button-secondary" href="/dashboard">{t("nav.dashboard")}</Link>
+        </div>
+        <ol>{steps.map((step) => <li key={step}>{t(step)}</li>)}</ol>
+      </section>
+      <section className="card">
+        <h3>{t("pilot.practicalHelp")}</h3>
+        <ul>
+          <li><strong>{t("pilot.help.whatCheck")}</strong> {t("pilot.help.whatCheckText")}</li>
+          <li><strong>{t("pilot.transcriptQuality")}:</strong> {t("pilot.help.transcriptText")}</li>
+          <li><strong>{t("pilot.qaAnalysisQuality")}:</strong> {t("pilot.help.qaText")}</li>
+          <li><strong>{t("qa.disputed")}:</strong> {t("pilot.help.disputedText")}</li>
+          <li><strong>{t("qa.coachingActions")}:</strong> {t("pilot.help.coachingText")}</li>
+        </ul>
+      </section>
+    </main>
+  );
 }

@@ -29,7 +29,7 @@ export default function RetentionPage() {
     setError("");
     const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention`);
     if (!response.ok) {
-      setError("Retention settings are available to admins only.");
+      setError(t("retention.adminOnly"));
       return;
     }
     const data = await response.json();
@@ -44,9 +44,9 @@ export default function RetentionPage() {
     setMessage("");
     const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toPayload(form)) });
     const data = await response.json();
-    if (!response.ok) return setError(data.detail || "Failed to save retention settings");
+    if (!response.ok) return setError(data.detail || t("retention.saveFailed"));
     setPreview(data.preview);
-    setMessage("Retention settings saved. Review the dry-run preview before cleanup.");
+    setMessage(t("retention.saved"));
   }
 
   async function runCleanup() {
@@ -54,17 +54,21 @@ export default function RetentionPage() {
     setError("");
     const response = await fetchWithCredentials(`${API_BASE_URL}/settings/retention/run-cleanup?confirm=${confirm}`, { method: "POST" });
     const data = await response.json().catch(() => null);
-    if (!response.ok) return setError(data?.detail || "Cleanup failed");
-    setMessage(`Cleanup complete. Audio files: ${data.deleted?.audio?.count || 0}, transcripts: ${data.deleted?.transcripts?.count || 0}, QA reviews: ${data.deleted?.qa_reviews?.count || 0}, ingestion events: ${data.deleted?.ingestion_events?.count || 0}.`);
+    if (!response.ok) return setError(data?.detail || t("retention.cleanupFailed"));
+    setMessage(t("retention.cleanupComplete")
+      .replace("{audio}", String(data.deleted?.audio?.count || 0))
+      .replace("{transcripts}", String(data.deleted?.transcripts?.count || 0))
+      .replace("{reviews}", String(data.deleted?.qa_reviews?.count || 0))
+      .replace("{events}", String(data.deleted?.ingestion_events?.count || 0)));
     setConfirm(false);
     load();
   }
 
   const fields = [
-    ["audio_days", "Audio files"],
-    ["transcripts_days", "Transcripts"],
-    ["qa_reviews_days", "QA reviews"],
-    ["ingestion_events_days", "Ingestion events"],
+    ["audio_days", t("retention.audioFiles")],
+    ["transcripts_days", t("retention.transcripts")],
+    ["qa_reviews_days", t("retention.qaReviews")],
+    ["ingestion_events_days", t("retention.ingestionEvents")],
   ];
 
   return (
@@ -74,8 +78,8 @@ export default function RetentionPage() {
         <h2>{t("settings.retention")} <HelpTooltip text={t("help.retention")} /></h2>
         <p style={{ color: "var(--text-muted)" }}>{t("settings.retentionHelp")}</p>
         <form className="grid grid-2" onSubmit={save}>
-          {fields.map(([key, label]) => <label key={key}>{label}<input type="number" min={1} placeholder="Forever" value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} /></label>)}
-          <div className="actions"><button className="button" type="submit">Save and preview</button></div>
+          {fields.map(([key, label]) => <label key={key}>{label}<input type="number" min={1} placeholder={t("retention.forever")} value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} /></label>)}
+          <div className="actions"><button className="button" type="submit">{t("retention.savePreview")}</button></div>
         </form>
         {message && <p className="message message-success">{message}</p>}
         {error && <p className="message message-error">{error}</p>}
@@ -83,13 +87,13 @@ export default function RetentionPage() {
       <section className="card">
         <h3>{t("settings.retentionPreview")}</h3>
         <div className="grid grid-2">
-          <div className="segment"><strong>Audio</strong><p>{preview?.audio?.count || 0} files / {Math.round((preview?.audio?.bytes || 0) / 1024 / 1024)} MB</p></div>
-          <div className="segment"><strong>Transcripts</strong><p>{preview?.transcripts?.count || 0} segments</p></div>
-          <div className="segment"><strong>QA reviews</strong><p>{preview?.qa_reviews?.count || 0} reviews</p></div>
-          <div className="segment"><strong>Ingestion events</strong><p>{preview?.ingestion_events?.count || 0} events</p></div>
+          <div className="segment"><strong>{t("retention.audio")}</strong><p>{preview?.audio?.count || 0} {t("retention.files")} / {Math.round((preview?.audio?.bytes || 0) / 1024 / 1024)} MB</p></div>
+          <div className="segment"><strong>{t("retention.transcripts")}</strong><p>{preview?.transcripts?.count || 0} {t("retention.segments")}</p></div>
+          <div className="segment"><strong>{t("retention.qaReviews")}</strong><p>{preview?.qa_reviews?.count || 0} {t("retention.reviews")}</p></div>
+          <div className="segment"><strong>{t("retention.ingestionEvents")}</strong><p>{preview?.ingestion_events?.count || 0} {t("retention.events")}</p></div>
         </div>
-        <label style={{ display: "block", marginTop: 16 }}><input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} /> I understand cleanup deletes configured old data.</label>
-        <button className="button button-secondary" onClick={runCleanup} disabled={!confirm} style={{ marginTop: 12 }}>Run cleanup now</button>
+        <label style={{ display: "block", marginTop: 16 }}><input type="checkbox" checked={confirm} onChange={(event) => setConfirm(event.target.checked)} /> {t("retention.confirm")}</label>
+        <button className="button button-secondary" onClick={runCleanup} disabled={!confirm} style={{ marginTop: 12 }}>{t("retention.runCleanup")}</button>
       </section>
     </main></AdminOnly>
   );
