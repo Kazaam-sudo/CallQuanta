@@ -37,12 +37,12 @@ export default function ChangePasswordPage() {
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.detail || "Failed to change password");
+      if (!response.ok) throw new Error(body.detail || t("auth.changePasswordFailed"));
       window.dispatchEvent(new Event("callquanta-auth-changed"));
       router.push("/dashboard");
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to change password");
+      setError(err instanceof Error ? err.message : t("auth.changePasswordFailed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -58,7 +58,7 @@ export default function ChangePasswordPage() {
       <PasswordInput label={t("auth.confirmPassword")} value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
       {confirmPassword && !passwordsMatch ? <small className="field-error">{t("auth.passwordsDoNotMatch")}</small> : null}
       {error ? <div className="notice notice-danger message-error">{error}</div> : null}
-      <button className="button" type="submit" disabled={isSubmitting || !passwordValid || !passwordsMatch}>{isSubmitting ? "Saving..." : t("users.changePassword")}</button>
+      <button className="button" type="submit" disabled={isSubmitting || !passwordValid || !passwordsMatch}>{isSubmitting ? t("common.saving") : t("users.changePassword")}</button>
     </form>
   </section>;
 }

@@ -2,6 +2,7 @@
 import { SettingsNav } from "../../../components/SettingsNav";
 import { AdminOnly } from "../../../components/AdminOnly";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../../../components/I18nProvider";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -11,6 +12,7 @@ type Provider = { id: number; name: string; provider_type: string; preset: strin
 const BASE_FORM = { id: undefined, name: "", preset: "ollama", provider_type: "openai_compatible", base_url: "", model: "", api_key: "", timeout_seconds: 180, is_active: false };
 
 export default function Page() {
+  const { t } = useI18n();
   const [presets, setPresets] = useState<Preset[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [form, setForm] = useState<any>(BASE_FORM);
@@ -48,8 +50,8 @@ export default function Page() {
     const payload: any = { ...form };
     if (!payload.api_key) delete payload.api_key;
     const res = await fetch(`${API_BASE_URL}/settings/llm/providers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (!res.ok) return setMessage({ kind: "error", text: "Failed to save provider." });
-    setMessage({ kind: "success", text: form.id ? "Provider updated." : "Provider saved." });
+    if (!res.ok) return setMessage({ kind: "error", text: t("settings.providerSaveFailed") });
+    setMessage({ kind: "success", text: form.id ? t("settings.providerUpdated") : t("settings.providerSaved") });
     setForm((f: any) => ({ ...f, api_key: "" }));
     load();
   };
@@ -66,10 +68,10 @@ export default function Page() {
       }
       const res = await fetch(endpoint, opts);
       const data = await res.json();
-      if (data.ok) setMessage({ kind: "success", text: `Test passed in ${data.latency_ms}ms using model ${data.model}.` });
+      if (data.ok) setMessage({ kind: "success", text: `OK: ${data.latency_ms}ms · ${data.model}` });
       else {
-        const detail = data.provider_error ? JSON.stringify(data.provider_error).slice(0, 300) : "Unknown error";
-        setMessage({ kind: "error", text: `Test failed${data.status_code ? ` (HTTP ${data.status_code})` : ""} in ${data.latency_ms}ms. ${detail}` });
+        const detail = data.provider_error ? JSON.stringify(data.provider_error).slice(0, 300) : t("settings.unknownError");
+        setMessage({ kind: "error", text: `${t("settings.providerSaveFailed")} ${data.status_code ? `HTTP ${data.status_code}. ` : ""}${detail}` });
       }
     } finally { setIsTesting(false); }
   };
@@ -77,25 +79,26 @@ export default function Page() {
   return <AdminOnly><main className="grid" style={{ gap: 16 }}>
     <SettingsNav />
     <section className="card">
-      <h2>LLM Provider Settings</h2>
-      {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>Editing provider: {editingProvider.name}</p>}
-      <p className="message" style={{ background: "#fff8e6", color: "#7c4a03" }}>Hosted providers may process call transcripts outside your server. Use local Ollama for privacy-sensitive data.</p>
+      <h2>{t("settings.llmProviders")}</h2>
+      <p style={{ color: "var(--text-muted)" }}>{t("settings.llmProviderHelp")}</p>
+      {editingProvider && <p className="message" style={{ background: "#eff6ff", color: "#1d4ed8" }}>{t("settings.editingProvider")}: {editingProvider.name}</p>}
+      <p className="message" style={{ background: "#fff8e6", color: "#7c4a03" }}>{t("settings.hostedLlmWarning")}</p>
       <form ref={formRef} onSubmit={save} className="grid" style={{ gap: 12 }}>
         <div className="grid" style={{ gap: 10 }}>
-          <label>Preset</label><select value={form.preset} onChange={(e) => applyPresetDefaults(e.target.value, true)}>{presets.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
-          <label>Name</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-          <label>Base URL</label><input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} required />
-          <label>Model</label><input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} required />
-          <small>Use exact API model IDs like gpt-5.4-nano, gpt-5.4-mini, or gpt-5.5. Do not use display names like GPT-5 nano.</small>
-          <label>API key</label><input type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder="Enter to set/update" />
-          <small>Saved API keys are never shown. Leave empty to keep existing key.</small>
-          <label>Timeout seconds</label><input type="number" value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} min={10} />
+          <label>{t("settings.preset")}</label><select value={form.preset} onChange={(e) => applyPresetDefaults(e.target.value, true)}>{presets.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
+          <label>{t("settings.providerName")}</label><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+          <label>{t("settings.baseUrl")}</label><input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} required />
+          <label>{t("settings.model")}</label><input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} required />
+          <small>{t("settings.modelIdHelp")}</small>
+          <label>{t("settings.apiKey")}</label><input type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
+          <small>{t("settings.apiKeyHelp")}</small>
+          <label>{t("settings.timeoutSeconds")}</label><input type="number" value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} min={10} />
         </div>
-        <label><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} /> Set as active provider</label>
-        <div className="actions"><button className="button" type="submit">{form.id ? "Update provider" : "Save provider"}</button><button className="button button-secondary" type="button" onClick={() => testProvider(form)} disabled={isTesting}>{isTesting ? "Testing..." : "Test provider"}</button></div>
+        <label><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} /> {t("settings.setActiveProvider")}</label>
+        <div className="actions"><button className="button" type="submit">{form.id ? t("settings.updateProvider") : t("settings.saveProvider")}</button><button className="button button-secondary" type="button" onClick={() => testProvider(form)} disabled={isTesting}>{isTesting ? t("calls.working") : t("settings.testProvider")}</button></div>
       </form>
       {message && <p className={`message ${message.kind === "success" ? "message-success" : "message-error"}`}>{message.text}</p>}
     </section>
-    <section className="card"><h3>Saved providers</h3><div className="grid" style={{ gap: 10 }}>{providers.map((p) => <article key={p.id} className="segment"><div className="actions" style={{ justifyContent: "space-between" }}><strong>{p.name}</strong><div className="actions">{p.is_active && <span className="badge badge-transcribed">Active</span>}{p.api_key_configured && <span className="badge badge-uploaded">API key configured</span>}</div></div><p style={{ marginBottom: 6 }}>{p.preset} • {p.model}</p><p style={{ marginTop: 0, color: "#4b5563" }}>{p.base_url}</p><div className="actions"><button className="button button-secondary" onClick={() => {setForm({ ...p, api_key: "" }); setTimeout(()=>formRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),0);}}>Edit</button><button className="button button-secondary" onClick={() => fetch(`${API_BASE_URL}/settings/llm/providers/${p.id}/activate`, { method: "POST" }).then(load)}>Activate</button><button className="button button-secondary" onClick={() => testProvider(p)} disabled={isTesting}>{isTesting ? "Testing..." : "Test"}</button></div></article>)}</div></section>
+    <section className="card"><h3>{t("settings.savedProviders")}</h3><div className="grid" style={{ gap: 10 }}>{providers.map((p) => <article key={p.id} className="segment"><div className="actions" style={{ justifyContent: "space-between" }}><strong>{p.name}</strong><div className="actions">{p.is_active && <span className="badge badge-transcribed">{t("common.active")}</span>}{p.api_key_configured && <span className="badge badge-uploaded">{t("settings.apiKeyConfigured")}</span>}</div></div><p style={{ marginBottom: 6 }}>{p.preset} • {p.model}</p><p style={{ marginTop: 0, color: "#4b5563" }}>{p.base_url}</p><div className="actions"><button className="button button-secondary" onClick={() => {setForm({ ...p, api_key: "" }); setTimeout(()=>formRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),0);}}>{t("common.edit")}</button><button className="button button-secondary" onClick={() => fetch(`${API_BASE_URL}/settings/llm/providers/${p.id}/activate`, { method: "POST" }).then(load)}>{t("common.activate")}</button><button className="button button-secondary" onClick={() => testProvider(p)} disabled={isTesting}>{isTesting ? t("calls.working") : t("settings.testProvider")}</button></div></article>)}</div></section>
   </main></AdminOnly>;
 }

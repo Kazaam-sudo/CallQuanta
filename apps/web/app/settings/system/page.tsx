@@ -16,7 +16,7 @@ export default function SystemStatusPage() {
     setError("");
     const response = await fetchWithCredentials(`${API_BASE_URL}/system/status`);
     if (!response.ok) {
-      setError("System status is available to admins only.");
+      setError(t("system.adminOnly"));
       return;
     }
     setData(await response.json());

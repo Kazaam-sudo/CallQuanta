@@ -1,39 +1,64 @@
-import Link from "next/link";
+"use client";
 
-const cards = [
-  "Upload calls",
-  "Transcribe audio",
-  "Review transcripts",
-  "QA scoring coming soon",
-];
+import Link from "next/link";
+import { useI18n } from "../components/I18nProvider";
 
 export default function Home() {
+  const { t } = useI18n();
+  const workflow = [
+    ["dashboard.workflow.upload.title", "dashboard.workflow.upload.text"],
+    ["dashboard.workflow.transcript.title", "dashboard.workflow.transcript.text"],
+    ["dashboard.workflow.qa.title", "dashboard.workflow.qa.text"],
+    ["dashboard.workflow.growth.title", "dashboard.workflow.growth.text"],
+  ];
+  const outputs = [
+    "dashboard.output.score",
+    "dashboard.output.topic",
+    "dashboard.output.actions",
+    "dashboard.output.evidence",
+    "dashboard.output.feedback",
+  ];
+
   return (
-    <div className="grid" style={{ gap: 20 }}>
+    <main className="grid page-stack">
       <section className="card hero">
-        <h1>Conversation QA starts here</h1>
-        <p>
-          Upload real call recordings, run transcription, and inspect segments in one clean workflow.
-        </p>
+        <h1>{t("dashboard.productTitle")}</h1>
+        <p>{t("dashboard.productHelp")}</p>
         <p style={{ marginTop: 18 }}>
           <Link href="/calls" className="button">
-            Go to Calls
+            {t("dashboard.primaryAction")}
           </Link>
         </p>
       </section>
 
-      <section className="grid grid-2">
-        {cards.map((item) => (
-          <article key={item} className="card">
-            <h3 style={{ marginTop: 0 }}>{item}</h3>
-            <p style={{ marginBottom: 0, color: "var(--text-muted)" }}>
-              {item === "QA scoring coming soon"
-                ? "Scoring and rubric automation are planned for a future release."
-                : "Available in the current CallQuanta MVP workflow."}
-            </p>
-          </article>
-        ))}
+      <section className="card">
+        <div className="section-header">
+          <div>
+            <h2>{t("dashboard.workflow")}</h2>
+            <small>{t("dashboard.workflowHelp")}</small>
+          </div>
+        </div>
+        <div className="demo-summary-grid">
+          {workflow.map(([title, text], index) => (
+            <article key={title} className="demo-summary-card">
+              <small>{index + 1}</small>
+              <strong>{t(title)}</strong>
+              <span className="technical-detail">{t(text)}</span>
+            </article>
+          ))}
+        </div>
       </section>
-    </div>
+
+      <section className="card">
+        <h2>{t("dashboard.outputs")}</h2>
+        <div className="kpi-grid compact">
+          {outputs.map((key) => (
+            <article key={key} className="kpi-card">
+              <strong>{t(key)}</strong>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
   );
 }
