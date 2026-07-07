@@ -48,13 +48,14 @@ export default function SettingsPage() {
 
   return (
     <main className="grid" style={{ gap: 18 }}>
-      <section className="card">
+      <section className="card hero-card settings-hero">
         <h2>{t("nav.settings")}</h2>
         <p style={{ color: "var(--text-muted)" }}>{t("settings.description")}</p>
       </section>
-      <section className="grid grid-2">
-        {cards.map((card) => (
-          <Link key={card.href} className="card" href={card.href} style={{ textDecoration: "none", color: "inherit" }}>
+      <section className="grid grid-2 settings-card-grid">
+        {cards.map((card, index) => (
+          <Link key={card.href} className={`card settings-card settings-card-${(index % 5) + 1}`} href={card.href} style={{ textDecoration: "none", color: "inherit" }}>
+            <span className="settings-card-marker" aria-hidden="true" />
             <h3>{t(card.titleKey || "")}</h3>
             <p style={{ color: "var(--text-muted)" }}>{t(card.textKey || "")}</p>
           </Link>

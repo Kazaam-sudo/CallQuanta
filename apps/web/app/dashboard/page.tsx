@@ -142,7 +142,7 @@ export default function Page() {
 
   return (
     <main className="grid page-stack">
-      <section className="card hero">
+      <section className="card hero dashboard-hero">
         <div className="section-header">
           <div>
             <h1>{t("dashboard.productTitle")}</h1>
@@ -150,27 +150,40 @@ export default function Page() {
           </div>
           <Link href="/calls" className="button">{t("dashboard.primaryAction")}</Link>
         </div>
+        <div className="hero-signal-row" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
       </section>
-      <section className="card">
+      <section className="card workflow-panel">
         <div className="section-header">
           <div>
             <h2>{t("dashboard.workflow")}</h2>
             <small>{t("dashboard.workflowHelp")}</small>
           </div>
         </div>
-        <div className="demo-summary-grid">
+        <div className="demo-summary-grid workflow-grid">
           {[
             ["dashboard.workflow.upload.title", "dashboard.workflow.upload.text"],
             ["dashboard.workflow.transcript.title", "dashboard.workflow.transcript.text"],
             ["dashboard.workflow.qa.title", "dashboard.workflow.qa.text"],
             ["dashboard.workflow.growth.title", "dashboard.workflow.growth.text"],
-          ].map(([title, text], index) => <article key={title} className="demo-summary-card"><small>{index + 1}</small><strong>{t(title)}</strong><span className="technical-detail">{t(text)}</span></article>)}
+          ].map(([title, text], index) => <article key={title} className="demo-summary-card workflow-card"><small>{index + 1}</small><strong>{t(title)}</strong><span className="technical-detail">{t(text)}</span></article>)}
         </div>
       </section>
-      <section className="card">
-        <h2>{t("dashboard.outputs")}</h2>
-        <div className="kpi-grid compact">
-          {["dashboard.output.score", "dashboard.output.topic", "dashboard.output.actions", "dashboard.output.evidence", "dashboard.output.feedback"].map((key) => <article key={key} className="kpi-card"><strong>{t(key)}</strong></article>)}
+      <section className="card benefits-panel">
+        <div className="section-header compact-section-header">
+          <h2>{t("dashboard.outputs")}</h2>
+        </div>
+        <div className="benefit-grid">
+          {[
+            ["dashboard.output.score", "dashboard.output.scoreText"],
+            ["dashboard.output.topic", "dashboard.output.topicText"],
+            ["dashboard.output.actions", "dashboard.output.actionsText"],
+            ["dashboard.output.evidence", "dashboard.output.evidenceText"],
+            ["dashboard.output.feedback", "dashboard.output.feedbackText"],
+          ].map(([title, text], index) => <article key={title} className={`benefit-card benefit-card-${index + 1}`}><span className="benefit-icon" aria-hidden="true" /><div><strong>{t(title)}</strong><p>{t(text)}</p></div></article>)}
         </div>
       </section>
       <section className="card filters-card">
