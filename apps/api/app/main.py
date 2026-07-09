@@ -75,6 +75,7 @@ MAX_UPLOAD_BYTES_PER_FILE = int(
     or "0"
 )
 MAX_BULK_UPLOAD_BYTES = int(os.environ.get("MAX_BULK_UPLOAD_BYTES", str(DEFAULT_MAX_BULK_UPLOAD_BYTES)) or "0")
+DEMO_CALL_LIMIT = int(os.environ.get("DEMO_CALL_LIMIT", "50") or "0")
 
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() in {"1", "true", "yes", "on"}
@@ -111,6 +112,7 @@ DEFAULT_WORKSPACE_SETTINGS = {
     "qa_report_language_mode": "workspace",
     "qa_report_language": "English",
 }
+DEMO_LIMIT_DETAIL = "demo_limit_reached"
 
 
 TELEPHONY_PROVIDER_TYPES = {"generic_webhook", "voximplant", "asterisk", "twilio", "zadarma", "custom"}
@@ -719,6 +721,30 @@ def _upsert_workspace_settings(db: Session, payload: WorkspaceSettingsPayload) -
         setting.value = current
     db.commit()
     return current
+
+
+def _demo_quota_status(db: Session) -> dict:
+    limit = max(0, DEMO_CALL_LIMIT)
+    used = db.execute(
+        select(func.count(func.distinct(QAReview.call_id))).where(QAReview.status == "success")
+    ).scalar() or 0
+    remaining = max(0, limit - int(used)) if limit else None
+    return {
+        "mode": "demo",
+        "enabled": limit > 0,
+        "limit": limit,
+        "used": int(used),
+        "remaining": remaining,
+        "exceeded": bool(limit and int(used) >= limit),
+    }
+
+
+def _ensure_demo_quota_available(db: Session) -> dict:
+    quota = _demo_quota_status(db)
+    if quota["enabled"] and quota["exceeded"]:
+        raise HTTPException(status_code=429, detail=DEMO_LIMIT_DETAIL)
+    return quota
+
 
 def _provider_test_request(provider_type: str, base_url: str, model: str, api_key: str | None, timeout_seconds: float) -> dict:
     headers = {"Content-Type": "application/json"}
@@ -2646,6 +2672,11 @@ def jobs_summary(db: Session = Depends(get_db), user: User = Depends(get_current
     return payload
 
 
+@app.get("/demo/status")
+def demo_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    return _demo_quota_status(db)
+
+
 def _unique_call_ids(call_ids: list[int]) -> list[int]:
     seen: set[int] = set()
     unique: list[int] = []
@@ -2696,6 +2727,8 @@ def batch_transcribe_calls(payload: BatchCallsPayload, db: Session = Depends(get
 @app.post("/calls/batch/analyze")
 def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     results: list[dict] = []
+    quota = _demo_quota_status(db)
+    queued_for_demo_quota = 0
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
         if not call:
@@ -2713,6 +2746,10 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
         if not has_segments:
             results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
             continue
+        remaining = quota.get("remaining")
+        if quota["enabled"] and remaining is not None and queued_for_demo_quota >= int(remaining):
+            results.append({"call_id": call_id, "status": "demo_limit_reached", "reason": DEMO_LIMIT_DETAIL})
+            continue
         call.status = "analysis_pending"
         call.last_error_type = None
         call.last_error_message = None
@@ -2720,13 +2757,14 @@ def batch_analyze_calls(payload: BatchCallsPayload, db: Session = Depends(get_db
         queued, warning = _enqueue_job(QA_QUEUE, {"call_id": call_id})
         if queued:
             results.append({"call_id": call_id, "status": "analysis_queued"})
+            queued_for_demo_quota += 1
         else:
             call.status = "analysis_failed"
             call.last_error_type = "queue_unavailable"
             call.last_error_message = warning
             db.commit()
             results.append({"call_id": call_id, "status": "failed", "reason": warning})
-    return {"results": results}
+    return {"results": results, "demo_quota": _demo_quota_status(db)}
 
 
 @app.post("/calls/batch/classify-topics")
@@ -2823,6 +2861,8 @@ def batch_delete_calls(payload: BatchDeletePayload, db: Session = Depends(get_db
 @app.post("/calls/batch/retry-failed")
 def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     results: list[dict] = []
+    quota = _demo_quota_status(db)
+    queued_for_demo_quota = 0
     for call_id in _unique_call_ids(payload.call_ids):
         call = db.get(Call, call_id)
         if not call:
@@ -2854,6 +2894,10 @@ def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(g
             if not has_segments:
                 results.append({"call_id": call_id, "status": "skipped", "reason": "Call has no transcript segments"})
                 continue
+            remaining = quota.get("remaining")
+            if quota["enabled"] and remaining is not None and queued_for_demo_quota >= int(remaining):
+                results.append({"call_id": call_id, "status": "demo_limit_reached", "reason": DEMO_LIMIT_DETAIL})
+                continue
             call.status = "analysis_pending"
             call.last_error_type = None
             call.last_error_message = None
@@ -2861,6 +2905,7 @@ def batch_retry_failed_calls(payload: BatchCallsPayload, db: Session = Depends(g
             queued, warning = _enqueue_job(QA_QUEUE, {"call_id": call_id})
             if queued:
                 results.append({"call_id": call_id, "status": "analysis_queued"})
+                queued_for_demo_quota += 1
             else:
                 call.status = "analysis_failed"
                 call.last_error_type = "queue_unavailable"
@@ -2942,6 +2987,8 @@ def analyze_call(call_id: int, db: Session = Depends(get_db), user: User = Depen
     has_segments = db.execute(select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)).first()
     if not has_segments:
         raise HTTPException(status_code=400, detail="Call has no transcript segments")
+
+    _ensure_demo_quota_available(db)
 
     call.status = "analysis_pending"
     call.last_error_type = None
@@ -3599,6 +3646,7 @@ def _system_status(db: Session) -> dict:
             "model": (active_llm.config or {}).get("model") if active_llm else os.environ.get("LLM_MODEL", ""),
         },
         "upload_limits": upload_limits(),
+        "demo": _demo_quota_status(db),
         "storage": _upload_dir_usage(),
     }
 

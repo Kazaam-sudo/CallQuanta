@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DemoModeNotice, DemoQuota } from "../../../components/DemoModeNotice";
 import { useI18n } from "../../../components/I18nProvider";
 import { SttLanguageSelect } from "../../../components/SttLanguageSelect";
 import { Badge, Button, Card, EmptyState, Field, HelpTooltip, PageHeader, SectionHeader, StatusBadge, Tabs } from "../../../components/ui";
@@ -76,6 +77,8 @@ type QAReviewCompact = { id:number; created_at?:string; status:string; score?:nu
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 const msToSeconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+const callErrorLabel = (message: string | null | undefined, t: (key: string) => string) =>
+  message === "demo_limit_reached" ? t("demo.limitReached") : message || "";
 
 export default function CallDetailsPage({ params }: { params: { id: string } }) {
   const { t, sttLanguages } = useI18n();
@@ -97,6 +100,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({ agent_name: "", team: "", campaign: "", direction: "unknown", language: "" });
   const [sttSettings, setSttSettings] = useState<{ mode: string; model: string; provider?: { name?: string; provider_type?: string; model?: string } | null } | null>(null);
+  const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [humanForm, setHumanForm] = useState({ review_status: "approved", human_total_score: "", human_summary: "", human_notes: "", calibration_flag: false, calibration_notes: "" });
   const [criterionReviews, setCriterionReviews] = useState<Record<string, { human_score: string; human_comment: string; human_agrees: string; human_severity: string }>>({});
@@ -141,6 +145,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
       }
       if (qaResponse.ok) { const qaData = await qaResponse.json(); setReview(qaData.review || null); setViewingReviewId(qaData.review?.id ?? null); setTopic(qaData.topic || null); }
       if (historyResponse.ok) { const hist = await historyResponse.json(); setHistory(hist.reviews || []); }
+      fetch(`${API_BASE_URL}/demo/status`).then((res) => res.ok ? res.json() : null).then((data) => { if (data) setDemoQuota(data); }).catch(() => {});
       fetch(`${API_BASE_URL}/settings/stt`).then((res) => res.ok ? res.json() : null).then((data) => { if (data) setSttSettings(data); }).catch(() => {});
       fetch(`${API_BASE_URL}/auth/me`).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setUser(data.user); }).catch(() => {});
     } catch {
@@ -245,6 +250,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
           const data = await response.json();
           if (typeof data?.detail === "string" && data.detail) detail = data.detail;
         } catch {}
+        if (detail === "demo_limit_reached") detail = t("demo.limitReached");
         setError(`Analyze request failed: ${detail}`);
         return;
       }
@@ -526,7 +532,7 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
     : transcriptInvalid
       ? { label: t("pilot.retranscribe"), run: transcribe, disabled: !call || transcribing }
       : !review
-        ? { label: t("call.analyze"), run: analyze, disabled: !call || analyzing }
+        ? { label: t("call.analyze"), run: analyze, disabled: !call || analyzing || Boolean(demoQuota?.enabled && demoQuota.exceeded) }
         : { label: t("call.openQa"), run: () => setActiveTab("qa"), disabled: false };
 
   return (
@@ -539,15 +545,17 @@ export default function CallDetailsPage({ params }: { params: { id: string } }) 
         actions={<>
           <Button variant="secondary" onClick={load}>{t("call.refresh")}</Button>
           <Button onClick={transcribe} disabled={!call || loading || transcribing}>{transcribing ? t("call.transcribing") : t("call.transcribe")}</Button>
-          <Button onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending"}>{analysisPendingState ? t("call.analyzing") : canAnalyzeAgain ? t("call.analyzeAgain") : t("call.analyze")}</Button>
+          <Button onClick={analyze} disabled={!call || loading || analyzing || segments.length === 0 || call.status === "analysis_pending" || Boolean(demoQuota?.enabled && demoQuota.exceeded)}>{analysisPendingState ? t("call.analyzing") : canAnalyzeAgain ? t("call.analyzeAgain") : t("call.analyze")}</Button>
         </>}
       />
+      <DemoModeNotice quota={demoQuota} compact />
+      {demoQuota?.enabled && demoQuota.exceeded ? <p className="message message-warning">{t("demo.limitReached")}</p> : null}
 
       <Card>
         <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
         {pendingState && <p className="message">{t("call.transcriptionProgress")}</p>}
         {analysisPendingState && <p className="message">{t("call.analysisProgress")}</p>}
-        {call?.last_error_message && <p className="message message-error"><strong>{t("calls.lastError")}:</strong> {call.last_error_message}{latestFailureHint ? ` ${t("call.latestHint")}: ${latestFailureHint}` : ""}</p>}
+        {call?.last_error_message && <p className="message message-error"><strong>{t("calls.lastError")}:</strong> {callErrorLabel(call.last_error_message, t)}{latestFailureHint ? ` ${t("call.latestHint")}: ${latestFailureHint}` : ""}</p>}
         {call?.ingestion_error && <p className="message message-error"><strong>{t("telephony.ingestionStatus")}:</strong> {call.ingestion_error}</p>}
         {error && <p className="message message-error">{error}</p>}
         {loading && <p>{t("call.loading")}</p>}

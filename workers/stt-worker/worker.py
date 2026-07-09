@@ -11,11 +11,11 @@ from pathlib import Path
 
 import redis
 import requests
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from audio_normalization import convert_audio_to_wav, is_decode_error, should_try_ffmpeg_fallback
-from db import Call, IngestionEvent, SttProviderConfig, TranscriptSegment
+from db import Call, IngestionEvent, QAReview, SttProviderConfig, TranscriptSegment
 from stt_language import normalize_stt_language, stt_initial_prompt
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
@@ -28,6 +28,7 @@ FASTER_WHISPER_DEVICE = os.environ.get("FASTER_WHISPER_DEVICE", "cpu")
 FASTER_WHISPER_COMPUTE_TYPE = os.environ.get("FASTER_WHISPER_COMPUTE_TYPE", "int8")
 STT_PROVIDER_STARTUP_WAIT_SECONDS = int(os.environ.get("STT_PROVIDER_STARTUP_WAIT_SECONDS", "60"))
 STT_PROVIDER_STARTUP_RETRY_SECONDS = float(os.environ.get("STT_PROVIDER_STARTUP_RETRY_SECONDS", "2"))
+DEMO_CALL_LIMIT = int(os.environ.get("DEMO_CALL_LIMIT", "50") or "0")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -78,6 +79,15 @@ def safe_error(exc: Exception, limit: int = 2000) -> str:
         if value:
             message = message.replace(value, "[redacted]")
     return message[:limit]
+
+
+def demo_quota_exceeded(db: Session) -> bool:
+    if DEMO_CALL_LIMIT <= 0:
+        return False
+    used = db.execute(
+        select(func.count(func.distinct(QAReview.call_id))).where(QAReview.status == "success")
+    ).scalar() or 0
+    return int(used) >= DEMO_CALL_LIMIT
 
 
 
@@ -360,7 +370,13 @@ def process_transcription_job(call_id: int) -> None:
                 call.stt_language_used = result.stt_language_used
                 call.detected_language = result.detected_language
 
-            if call.auto_analyze_after_transcription:
+            if call.auto_analyze_after_transcription and demo_quota_exceeded(db):
+                call.status = "transcribed"
+                call.last_error_type = "demo_limit_reached"
+                call.last_error_message = "demo_limit_reached"
+                db.add(IngestionEvent(source_provider=call.source_provider or "generic_webhook", external_call_id=call.external_call_id, event_type="analysis_queued", status="skipped", message="demo_limit_reached", call_id=call.id))
+                print(f"call {call_id} QA auto analysis skipped: demo limit reached")
+            elif call.auto_analyze_after_transcription:
                 call.status = "analysis_pending"
                 try:
                     redis_client.lpush(QA_QUEUE, json.dumps({"call_id": call_id}))
@@ -374,8 +390,9 @@ def process_transcription_job(call_id: int) -> None:
                     print(f"failed to enqueue QA for call {call_id}: {safe_error(exc)}")
             else:
                 call.status = "transcribed"
-            call.last_error_type = None if call.status != "analysis_failed" else call.last_error_type
-            call.last_error_message = None if call.status != "analysis_failed" else call.last_error_message
+            keep_status_message = call.status == "analysis_failed" or call.last_error_type == "demo_limit_reached"
+            call.last_error_type = call.last_error_type if keep_status_message else None
+            call.last_error_message = call.last_error_message if keep_status_message else None
             call.last_processed_at = datetime.now(UTC)
             db.commit()
         except Exception as exc:

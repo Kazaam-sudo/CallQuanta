@@ -10,7 +10,7 @@ from typing import Any
 import redis
 import requests
 import yaml
-from sqlalchemy import create_engine, select, delete
+from sqlalchemy import create_engine, select, delete, func
 from sqlalchemy.orm import sessionmaker
 
 from db import AppSetting, Call, CallTopic, CallTopicClassification, ProviderConfig, QAReview, ScorecardConfig, TopicActionResult, TranscriptSegment
@@ -26,6 +26,7 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("
 LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
+DEMO_CALL_LIMIT = int(os.environ.get("DEMO_CALL_LIMIT", "50") or "0")
 
 
 def safe_error(exc: Exception, limit: int = 2000) -> str:
@@ -35,6 +36,15 @@ def safe_error(exc: Exception, limit: int = 2000) -> str:
         if value:
             message = message.replace(value, "[redacted]")
     return message[:limit]
+
+
+def demo_quota_exceeded(db) -> bool:
+    if DEMO_CALL_LIMIT <= 0:
+        return False
+    used = db.execute(
+        select(func.count(func.distinct(QAReview.call_id))).where(QAReview.status == "success")
+    ).scalar() or 0
+    return int(used) >= DEMO_CALL_LIMIT
 
 
 def get_llm_timeout_seconds() -> float:
@@ -604,6 +614,14 @@ def process_qa_job(call_id: int) -> None:
         call = db.get(Call, call_id)
         if not call:
             print(f"call {call_id} not found, skipping job")
+            return
+        if demo_quota_exceeded(db):
+            call.status = "analysis_failed"
+            call.last_error_type = "demo_limit_reached"
+            call.last_error_message = "demo_limit_reached"
+            call.last_processed_at = datetime.now(UTC)
+            db.commit()
+            print(f"call {call_id} QA skipped: demo limit reached")
             return
 
         segments = db.execute(

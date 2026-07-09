@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { DemoModeNotice } from "../../components/DemoModeNotice";
 import { API_BASE_URL, fetchWithCredentials } from "../../lib/api";
 import { useI18n } from "../../components/I18nProvider";
 
@@ -52,6 +53,7 @@ export default function SettingsPage() {
         <h2>{t("nav.settings")}</h2>
         <p style={{ color: "var(--text-muted)" }}>{t("settings.description")}</p>
       </section>
+      <DemoModeNotice />
       <section className="grid grid-2 settings-card-grid">
         {cards.map((card, index) => (
           <Link key={card.href} className={`card settings-card settings-card-${(index % 5) + 1}`} href={card.href} style={{ textDecoration: "none", color: "inherit" }}>
