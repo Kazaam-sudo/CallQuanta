@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DemoModeNotice } from "../../components/DemoModeNotice";
 import { useI18n } from "../../components/I18nProvider";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -69,6 +70,7 @@ export default function QAReviewsPage() {
         <article className="demo-summary-card"><strong>{t("qa.queueWhatReview")}</strong><span className="technical-detail">{t("qa.queueWhatReviewHelp")}</span></article>
         <article className="demo-summary-card"><strong>{t("qa.queueCompleteAction")}</strong><span className="technical-detail">{t("qa.queueCompleteActionHelp")}</span></article>
       </div>
+      <DemoModeNotice compact />
       <div className="filters-grid">
         <label>{t("qa.view")}<select value={filters.view} onChange={(e) => update("view", e.target.value)}><option value="">{t("qa.view.all")}</option><option value="my_assigned">{t("qa.view.myAssigned")}</option><option value="ai_unreviewed">{t("qa.view.aiUnreviewed")}</option><option value="disputed">{t("qa.view.disputed")}</option><option value="needs_rework">{t("qa.view.needsRework")}</option><option value="calibration">{t("qa.view.calibration")}</option><option value="low_score">{t("qa.view.lowScore")}</option></select></label>
         <label>{t("qa.reviewStatus")}<select value={filters.review_status} onChange={(e) => update("review_status", e.target.value)}>

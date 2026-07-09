@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DemoModeNotice } from "../../components/DemoModeNotice";
 import { useI18n } from "../../components/I18nProvider";
 import { sttLanguageLabel } from "../../lib/i18n";
 
@@ -156,6 +157,7 @@ export default function Page() {
           <span />
         </div>
       </section>
+      <DemoModeNotice />
       <section className="card workflow-panel">
         <div className="section-header">
           <div>

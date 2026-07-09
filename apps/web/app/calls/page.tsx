@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { DemoModeNotice, DemoQuota, demoQuotaLabel } from "../../components/DemoModeNotice";
 import { useI18n } from "../../components/I18nProvider";
 import { SttLanguageSelect } from "../../components/SttLanguageSelect";
 import { normalizeSttLanguageCode, sttLanguageLabel } from "../../lib/i18n";
@@ -195,6 +196,8 @@ const formatBytes = (value?: number | null) => {
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[index]}`;
 };
 const statusKey = (status: string) => `status.${status}`;
+const callErrorLabel = (message: string | null | undefined, t: (key: string) => string) =>
+  message === "demo_limit_reached" ? t("demo.limitReached") : message || "-";
 
 export default function CallsPage() {
   const { t, sttLanguages, settings } = useI18n();
@@ -214,6 +217,7 @@ export default function CallsPage() {
     statuses: [],
   });
   const [jobSummary, setJobSummary] = useState<JobSummary | null>(null);
+  const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -304,11 +308,12 @@ export default function CallsPage() {
       if (showSpinner) setLoading(true);
       setLoadError(null);
       try {
-        const [callsResponse, jobsResponse, optionsResponse] =
+        const [callsResponse, jobsResponse, optionsResponse, demoResponse] =
           await Promise.all([
             fetch(`${API_BASE_URL}/calls?${buildQuery()}`),
             fetch(`${API_BASE_URL}/jobs/summary`),
             fetch(`${API_BASE_URL}/calls/filter-options`),
+            fetch(`${API_BASE_URL}/demo/status`),
           ]);
         const callsData = await callsResponse.json().catch(() => null);
         if (!callsResponse.ok)
@@ -330,6 +335,7 @@ export default function CallsPage() {
         );
         if (jobsResponse.ok) setJobSummary(await jobsResponse.json());
         if (optionsResponse.ok) setFilterOptions(await optionsResponse.json());
+        if (demoResponse.ok) setDemoQuota(await demoResponse.json());
         return true;
       } catch (error) {
         setLoadError(
@@ -675,6 +681,7 @@ export default function CallsPage() {
           {loading ? t("calls.refreshing") : t("calls.refresh")}
         </button>
       </section>
+      <DemoModeNotice quota={demoQuota} />
       <section className="card">
         <div className="section-header">
           <div>
@@ -941,6 +948,7 @@ export default function CallsPage() {
           <strong>
             {t("calls.selectedCalls")}: {selectedCallCount}
           </strong>
+          {demoQuota?.enabled ? <span>{demoQuotaLabel(t, demoQuota)}</span> : null}
           <div className="selection-actions">
             <button
               className="button button-secondary button-small"
@@ -956,7 +964,7 @@ export default function CallsPage() {
               className="button button-secondary button-small"
               type="button"
               onClick={() => runBatchAction("analyze")}
-              disabled={!!batchLoading}
+              disabled={!!batchLoading || Boolean(demoQuota?.enabled && demoQuota.exceeded)}
             >
               {batchLoading === "analyze"
                 ? t("calls.working")
@@ -1033,6 +1041,10 @@ export default function CallsPage() {
           </small>
         </section>
       )}
+      {batchResults.some((result) => result.status === "demo_limit_reached") ||
+      (demoQuota?.enabled && demoQuota.exceeded) ? (
+        <p className="message message-warning">{t("demo.limitReached")}</p>
+      ) : null}
       <section className="card">
         <div className="table-topbar">
           <h2>
@@ -1146,7 +1158,7 @@ export default function CallsPage() {
                     <td>{sttLanguageLabel(call.language, sttLanguages, t)}</td>
                     <td>{formatBytes(call.file_size_bytes)}</td>
                     <td className="error-cell">
-                      {call.last_error_message || "-"}
+                      {callErrorLabel(call.last_error_message, t)}
                     </td>
                     <td>
                       {call.last_processed_at

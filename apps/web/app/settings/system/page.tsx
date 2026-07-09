@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { API_BASE_URL, fetchWithCredentials } from "../../../lib/api";
 import { SettingsNav } from "../../../components/SettingsNav";
 import { AdminOnly } from "../../../components/AdminOnly";
+import { DemoModeNotice } from "../../../components/DemoModeNotice";
 import { useI18n } from "../../../components/I18nProvider";
 
 
@@ -41,6 +42,7 @@ export default function SystemStatusPage() {
         {!data && !error && <p>{t("system.loading")}</p>}
       </section>
       {data && <>
+        <DemoModeNotice quota={data.demo} />
         <section className="card">
           <h3>{t("system.demoEnvironmentStatus")}</h3>
           <p style={{ color: "var(--text-muted)" }}>{t("system.demoEnvironmentStatusHelp")}</p>
