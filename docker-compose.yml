@@ -57,7 +57,7 @@ services:
       start_period: 10s
     restart: on-failure
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       UPLOAD_DIR: /app/uploads
       APP_ENV: ${APP_ENV:-development}
@@ -79,7 +79,7 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-callquanta_session}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
 
   stt-worker:
     build:
