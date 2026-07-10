@@ -82,7 +82,9 @@ services:
       - "${WEB_PORT:-3000}:3000"
 
   stt-worker:
-    build: ./workers/stt-worker
+    build:
+      context: .
+      dockerfile: workers/stt-worker/Dockerfile
     env_file: .env
     depends_on:
       redis:
