@@ -12,7 +12,8 @@ services:
 
   api:
     environment:
-      APP_ENV: ${APP_ENV:-pilot}
+      # Public HTTPS pilots need production security semantics, including Secure cookies.
+      APP_ENV: ${APP_ENV:-production}
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
       MAX_UPLOAD_BYTES_PER_FILE: ${MAX_UPLOAD_BYTES_PER_FILE:-104857600}
       MAX_BULK_UPLOAD_BYTES: ${MAX_BULK_UPLOAD_BYTES:-524288000}
