@@ -12,10 +12,17 @@ UNSAFE_SESSION_SECRETS = {
     "",
     "dev-session-secret-change-me",
     "change-me-random-secret",
+    "replace-with-at-least-32-random-characters",
     "changeme",
     "secret",
 }
-UNSAFE_ADMIN_PASSWORDS = {"", "admin-password", "admin-password-change-me", "changeme"}
+UNSAFE_ADMIN_PASSWORDS = {
+    "",
+    "admin-password",
+    "admin-password-change-me",
+    "replace-with-unique-password-2026",
+    "changeme",
+}
 
 
 def validate_api_environment(environ: dict[str, str] | None = None) -> None:
