@@ -21,6 +21,18 @@ class ValidateApiEnvironmentTests(unittest.TestCase):
     def test_production_valid_configuration_passes(self):
         validate_api_environment(dict(VALID_PRODUCTION_ENV))
 
+    def test_production_allows_bootstrap_credentials_to_be_removed_together(self):
+        env = dict(VALID_PRODUCTION_ENV)
+        env.pop("ADMIN_EMAIL")
+        env.pop("ADMIN_PASSWORD")
+        validate_api_environment(env)
+
+    def test_production_rejects_partial_bootstrap_credentials(self):
+        env = dict(VALID_PRODUCTION_ENV)
+        env.pop("ADMIN_PASSWORD")
+        with self.assertRaisesRegex(RuntimeError, "configured together"):
+            validate_api_environment(env)
+
     def test_pilot_env_is_rejected_because_cookie_would_not_be_secure(self):
         with self.assertRaisesRegex(RuntimeError, "Secure session cookies"):
             validate_api_environment({"APP_ENV": "pilot"})
