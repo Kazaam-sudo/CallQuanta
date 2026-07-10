@@ -2,293 +2,427 @@
 
 Baseline: `2f242887f63ab3315d65891b028cefcaccbef9dd` (`main`, merge of PR #70).
 
+Audit branch: `audit/pre-launch-full-system-review`.
+
 ## 1. Executive summary
 
-CallQuanta has a coherent early-beta workflow and several good security foundations: authenticated recording playback, scoped-access helpers, write-only provider secrets, bounded upload sizes, transcript validation, provider timeouts, and explicit failed/blocked statuses. It is not yet ready for an unattended public production launch.
+CallQuanta has a coherent early-beta workflow and several solid foundations: authenticated call access, role/scope helpers, bounded uploads, generated storage names, transcript validation, explicit blocked/failed statuses, provider timeouts, audit events, and write-only provider-secret behavior in the product API.
 
-The highest confirmed launch risk is the demo quota implementation. It counts only successful QA reviews and performs non-atomic check-then-enqueue checks in both API and worker code. Concurrent analysis requests can exceed the configured limit, queued work is not reserved, and duplicate jobs can create duplicate successful reviews. The worker also defaults to `QA_MODE=placeholder`; a missing environment variable can therefore produce deterministic fake QA while marking the call as successfully analyzed.
+The application is suitable for a controlled, invite-only, single-buyer pilot after the manual verification in `docs/production-launch-checklist.md`. It is not yet suitable for unattended public self-service signup or multi-tenant production.
 
-This PR intentionally avoids a broad rewrite. It documents confirmed findings, hardens local service exposure and Redis persistence in Compose, improves safe environment documentation, and supplies an executable launch checklist. Business-logic changes that require schema-level idempotency/quota reservations are deferred rather than patched with another race-prone counter.
+The highest remaining confirmed launch risk is demo quota enforcement. Capacity is checked with a non-atomic count of successful QA reviews, queued work is not reserved, and concurrent requests/workers can exceed the limit. The second major business-logic risk is the absence of job identity/transcript revisions: duplicate or delayed jobs can produce duplicate cost and stale results.
+
+This PR intentionally avoids a speculative rewrite. It fixes concrete deployment and ingestion vulnerabilities, adds fail-closed runtime guards, restores a missed telephony schema migration in the container startup path, adds focused tests, and documents the remaining schema/business-logic work.
 
 ## 2. Architecture map
 
-- Web: Next.js app-router application in `apps/web` with same-origin proxy routes.
-- API: FastAPI application concentrated in `apps/api/app/main.py`.
-- Database: PostgreSQL through SQLAlchemy models in `apps/api/app/db.py`, plus Alembic/runtime migration helpers.
-- Queues: Redis lists for transcription, QA, topic classification, and recording download.
+- Web: Next.js 14 app-router application in `apps/web`, including same-origin proxy routes and RU/EN message catalogs.
+- API: FastAPI application concentrated in `apps/api/app/main.py` (more than 4,000 lines).
+- Data: PostgreSQL through SQLAlchemy models in `apps/api/app/db.py`.
+- Schema updates: `Base.metadata.create_all()` plus hand-written runtime migration helpers. No Alembic configuration/history was found at the expected repository paths.
+- Queues: Redis lists for transcription, QA, topic classification, and recording downloads.
 - Workers: `workers/stt-worker`, `workers/qa-worker`, and `workers/recording-worker`.
-- Storage: mounted local upload volume shared by API/workers.
-- AI configuration: database-backed LLM/STT provider configuration with environment fallback.
+- Storage: a named upload volume shared by API and workers.
+- AI configuration: database-backed LLM/STT providers with environment fallbacks.
 
 Primary flow:
 
 ```text
-Upload/import
-  -> durable audio path + Call row
+Upload or telephony webhook
+  -> Call row + durable recording path
   -> transcription queue
-  -> transcript segments + transcript validation
-  -> topic classification
+  -> transcript segment replacement
+  -> transcript validation
+  -> topic classification + required-action checks
   -> QA queue
-  -> QAReview + topic action results
-  -> manager feedback/human review
-  -> dashboard and exports
+  -> QAReview
+  -> manager feedback / human review / coaching
+  -> dashboard and CSV/XLSX exports
 ```
 
-Transition controls observed:
+Transition assessment:
 
-- API sets user-visible pending/failed states around enqueue operations.
-- STT/QA workers persist failure details on permanent processing errors.
-- Transcript validation blocks QA and records a failed QA review.
-- Authorization is centralized but concentrated in one large API module, increasing regression risk.
-- Queue delivery uses Redis list pop semantics; no durable job identity, lease, or dead-letter queue is evident.
+- API code generally sets pending state before enqueue and failed state when enqueue fails.
+- Transcript validation correctly blocks obvious placeholders/invalid content before QA.
+- Queue payloads contain only `call_id`; they do not identify an analysis attempt or transcript revision.
+- Redis `BRPOP` removes a job before durable completion; a crash after pop can lose the job.
+- No bounded retry/dead-letter/reconciliation mechanism is evident.
+- Authorization is centralized through scope helpers, but the large route module makes endpoint-by-endpoint regression testing essential.
 
 ## 3. Critical findings
 
 ### CQ-001 — Demo quota can be exceeded concurrently
 
-- Area: Demo quota / QA processing
+- Area: Demo quota / QA lifecycle
 - Severity: Critical
-- Evidence: `_demo_quota_status()` counts distinct successful `QAReview.call_id`; `_ensure_demo_quota_available()` performs a separate read before status update/enqueue. Batch operations keep only an in-request counter. `qa-worker` repeats the same non-locking count before execution.
-- User impact: A public free demo configured for 50 calls can process more than 50 calls when users click concurrently, use batch and single endpoints together, or when multiple workers consume queued jobs.
-- Root cause: Check-then-act logic without a database reservation row, unique job identity, transaction lock, or quota ledger.
-- Recommended fix: Add a database-backed analysis reservation/usage ledger with a unique constraint per call and an atomic transaction that reserves capacity before enqueue. Release or finalize according to the explicit failed/blocked quota policy.
-- Status: Deferred — requires a migration and coordinated API/worker change; a counter-only patch would remain bypassable.
+- Evidence: `_demo_quota_status()` counts distinct `QAReview.call_id` where status is `success`; API single/batch endpoints perform a separate check before status update/enqueue, and QA worker performs another non-locking count before execution.
+- User impact: Concurrent single requests, mixed batch/single operations, or multiple workers can process more calls than `DEMO_CALL_LIMIT`. Queued work is invisible to the counter.
+- Root cause: Check-then-act logic without a database reservation/usage ledger, row lock, unique job key, or transactionally reserved capacity.
+- Recommended fix: Add an analysis reservation table keyed by call + transcript revision. Reserve quota atomically before enqueue and finalize/release it according to an explicit failed/invalid/degraded policy.
+- Status: Deferred. A counter-only patch would still be bypassable.
 
-### CQ-002 — Missing `QA_MODE` enables fake successful QA
+### CQ-002 — Placeholder AI can be shown as completed buyer-facing analysis
 
-- Area: AI output / deployment configuration
+- Area: AI output / deployment
 - Severity: Critical
-- Evidence: `workers/qa-worker/worker.py` defaults `QA_MODE` to `placeholder`; placeholder reviews are saved with `status="success"` and calls become `analyzed`.
-- User impact: A production/demo deployment with a missing or misspelled environment value can display fabricated deterministic scoring as completed AI analysis to buyers.
-- Root cause: Test-safe default is also the runtime default and no production startup guard distinguishes CI/test from buyer-facing environments.
-- Recommended fix: In non-test environments, fail worker startup unless `QA_MODE` is explicitly set to an approved real mode; clearly label placeholder output in UI and exclude it from buyer-facing demo quota/metrics unless intentionally enabled.
-- Status: Deferred — startup guard and UI behavior require worker tests and coordinated product decision. Environment documentation is hardened in this PR.
+- Evidence: QA and STT workers default to `placeholder`; QA placeholder output is stored as successful and moves calls to `analyzed`.
+- User impact: Missing/misspelled configuration can present fabricated deterministic scoring/transcripts as real AI output.
+- Root cause: Test-safe defaults were also runtime defaults without protected-environment startup validation.
+- Recommended fix: Fail worker startup in buyer-facing environments when placeholder mode is active; require an explicit diagnostic override.
+- Status: Fixed for Docker deployments in this PR. `scripts/validate_worker_mode.py` is executed by QA/STT container entrypoints and is covered by focused tests. Direct non-container worker invocation must call the same validator or set explicit real modes.
+
+### CQ-003 — Telephony recording download allowed webhook-driven SSRF
+
+- Area: Telephony ingestion / network security
+- Severity: Critical
+- Evidence: Recording worker called `requests.get(recording_url, allow_redirects=True)` without scheme, credential, DNS/IP, redirect-target, or proxy-environment restrictions.
+- User impact: A valid ingestion token could be abused to request localhost, Compose services, cloud metadata, private network services, or token-bearing redirect targets from the worker network.
+- Root cause: Remote recording URLs were treated as trusted provider input.
+- Recommended fix: Permit HTTP(S) only, reject embedded credentials, resolve/block private/local/link-local/reserved targets, validate every redirect, disable environment proxies, and allow private PBX hosts only through an exact allowlist.
+- Status: Fixed in this PR. Added `url_safety.py`, redirect-by-redirect validation, explicit allowlist controls, partial-file cleanup, and tests.
 
 ## 4. High-priority findings
 
-### CQ-003 — Duplicate or stale QA jobs are not idempotent
+### CQ-004 — Duplicate and stale QA jobs are not idempotent
 
 - Area: Queue / QA worker / data integrity
 - Severity: High
-- Evidence: `process_qa_job(call_id)` does not carry or verify a job/version ID and always inserts a new `QAReview`. A delayed duplicate can run after a newer analysis and set the call back to `analyzed` with another review.
-- User impact: Duplicate review history, double provider cost, stale results becoming the apparent latest review, and inconsistent exports/dashboard values.
-- Root cause: Queue payload contains only `call_id`; no uniqueness constraint or expected transcript/revision token is checked.
-- Recommended fix: Add analysis job IDs plus transcript revision/version. Enforce unique successful completion per job and reject stale jobs before provider invocation and before commit.
+- Evidence: Queue payload carries only `call_id`; `process_qa_job()` always invokes the provider and inserts a new `QAReview` without checking an analysis job ID or transcript revision.
+- User impact: Duplicate provider cost, duplicate review history, stale results becoming latest, and incorrect dashboards/exports.
+- Root cause: No durable job identity, expected revision, or unique completion constraint.
+- Recommended fix: Add analysis job IDs and transcript revision tokens; reject stale work before provider invocation and before commit; enforce unique completion per logical job.
 - Status: Deferred.
 
-### CQ-004 — Topic classification can overwrite a manual correction
+### CQ-005 — Automated topic classification can overwrite a manual correction
 
 - Area: Topic classification
 - Severity: High
-- Evidence: Worker selects the latest classification row or creates one, then overwrites primary/secondary topic, confidence, rationale, evidence, and `classified_by`; no manual-lock/revision check is visible.
-- User impact: A manager’s correction can disappear when a delayed classification or QA job runs.
-- Root cause: Automated and manual topic states share a mutable row without provenance/locking semantics.
-- Recommended fix: Preserve manual overrides and store automated suggestions separately, or refuse automated overwrite when `classified_by` is manual unless explicitly reclassified.
+- Evidence: API and QA worker reuse the latest `CallTopicClassification` row and overwrite primary topic, confidence, rationale, evidence, and action results. The model contains `manually_overridden`, but automatic classification does not protect it.
+- User impact: A manager correction can disappear after delayed QA/classification or re-delivery.
+- Root cause: Automated suggestion and manual decision share mutable state without a lock/provenance rule.
+- Recommended fix: Preserve manual overrides; store automated suggestion separately or require an explicit audited reclassification command to replace manual state.
 - Status: Deferred.
 
-### CQ-005 — Invalid LLM output is converted into successful zero-score QA
+### CQ-006 — Invalid LLM JSON is converted into successful zero-score QA
 
-- Area: AI validation / reliability
+- Area: AI validation / buyer-facing reliability
 - Severity: High
-- Evidence: JSON/value parsing errors call `fallback_review()`, after which the worker inserts `QAReview(status="success")` and marks the call `analyzed`.
-- User impact: Provider/model failures can look like a legitimate 0 score rather than a technical failure requiring retry, damaging trust and dashboard accuracy.
-- Root cause: Recovery output and valid model output share the same success state.
-- Recommended fix: Store a distinct `degraded`/`invalid_model_output` state, exclude it from successful analytics/quota, retain the raw provider correlation ID in logs, and expose retry.
+- Evidence: JSON/value errors call `fallback_review()`, after which the worker stores `QAReview(status="success")` and marks the call `analyzed`.
+- User impact: A provider/model integration error looks like catastrophic agent performance rather than a technical failure; it enters quota, dashboard, and export calculations.
+- Root cause: Recovered/degraded output and valid model output share one success state.
+- Recommended fix: Introduce `degraded`/`invalid_model_output`, exclude it from successful analytics/quota, show retryable buyer-facing copy, and retain only safe correlation metadata in logs.
 - Status: Deferred.
 
-### CQ-006 — Raw model response may leak transcript content into logs
+### CQ-007 — Raw LLM response can leak transcript content to logs
 
 - Area: Privacy / logging
 - Severity: High
-- Evidence: On parse failure the QA worker prints the complete raw LLM response. Responses can repeat transcript excerpts and sensitive customer data.
-- User impact: Sensitive call data may be retained in container/platform logs beyond configured transcript retention.
-- Root cause: Debug logging is unbounded and not privacy-aware.
-- Recommended fix: Log only length, hash/correlation ID, provider/model, and a short redacted structural excerpt; never the complete response in production.
+- Evidence: On parse failure QA worker prints the complete raw model content. Model responses may reproduce sensitive call text.
+- User impact: Personal/customer data can persist in platform logs beyond product retention settings.
+- Root cause: Debug logging is not privacy-bounded.
+- Recommended fix: Log provider/model, call/job ID, response length/hash, parse error, and a short redacted structural excerpt; never full content in production.
 - Status: Deferred.
 
-### CQ-007 — Infrastructure services are exposed on all host interfaces by default
+### CQ-008 — CSV/XLSX exports are vulnerable to spreadsheet formula injection
 
-- Area: Deployment security
+- Area: Exports
 - Severity: High
-- Evidence: Compose publishes PostgreSQL, Redis, and Ollama using bare host ports (`5432`, `6379`, `11434`).
-- User impact: On a public VPS or permissive Codespace port configuration, unauthenticated Redis/Ollama and password-protected PostgreSQL may be reachable externally.
-- Root cause: Development convenience defaults are unsafe when reused for deployment.
-- Recommended fix: Bind development-only ports to `127.0.0.1`, keep service-to-service traffic on the Compose network, and use a production override that publishes only the reverse proxy.
-- Status: Fixed in this PR.
+- Evidence: `_calls_csv_rows()` and topic export write user/provider-controlled strings such as filename, agent, campaign, external ID, topic text, rationale, and evidence directly to CSV/XLSX cells.
+- User impact: Opening an export in Excel/LibreOffice can evaluate cells beginning with `=`, `+`, `-`, or `@`, enabling malicious formulas or external-data prompts.
+- Root cause: No spreadsheet-cell escaping/sanitization layer.
+- Recommended fix: Prefix dangerous string cells with an apostrophe (or use a centrally tested safe-cell function) for both CSV and XLSX; add UTF-8/formula-injection tests.
+- Status: Deferred because the export implementation is embedded in the monolithic API module; must be fixed before accepting untrusted public filenames/metadata.
+
+### CQ-009 — Public pilot session cookie lacked `Secure`
+
+- Area: Authentication / deployment
+- Severity: High
+- Evidence: Login sets `secure=True` only for `APP_ENV in {"production", "prod"}`, while pilot examples/defaults previously used `APP_ENV=pilot`.
+- User impact: A buyer-facing HTTPS pilot could issue a session cookie without the Secure attribute.
+- Root cause: Pilot deployment label did not inherit production cookie semantics.
+- Recommended fix: Run public pilots with `APP_ENV=production` and fail startup for `APP_ENV=pilot` until the application supports a separate explicit cookie-security setting.
+- Status: Fixed in this PR. Pilot Compose/example now use production security semantics; API container validates auth, strong secrets, admin credentials, and HTTPS-only explicit CORS.
+
+### CQ-010 — Telephony migration helper was referenced but not invoked
+
+- Area: Database migration / telephony idempotency
+- Severity: High
+- Evidence: API startup contained `migrate_telephony_ingestion_tables, migrate_topic_tables(engine)`, which evaluates the telephony function object instead of calling it, then invokes topic migration twice.
+- User impact: Upgraded databases can miss `uq_calls_source_provider_external_call_id`; concurrent/repeated webhook imports may create duplicate calls or fail later on missing schema.
+- Root cause: Comma typo in a hand-written runtime migration sequence; no migration-order test.
+- Recommended fix: Invoke migrations in one deterministic pre-start sequence and test empty plus upgraded schemas.
+- Status: Fixed for Docker deployments in this PR through `scripts/prestart_api.py`, which explicitly calls all runtime helpers including telephony before Uvicorn starts. The duplicate/incorrect line remains technical debt in `main.py` for non-container startup.
+
+### CQ-011 — Login and expensive actions have no confirmed rate limiting
+
+- Area: Authentication / abuse protection
+- Severity: High
+- Evidence: Login verifies password and audits failures but no application/proxy rate limiter is present; upload, analyze, retry, provider-test, export, and audio download endpoints also lack confirmed request limits.
+- User impact: Password guessing, resource exhaustion, provider-cost abuse, and demo quota contention.
+- Root cause: MVP deployment assumes trusted pilot access.
+- Recommended fix: Apply reverse-proxy and/or application rate limits keyed by IP/user/action, with stricter limits on login and provider-cost operations.
+- Status: Deferred. Required before broad public exposure.
+
+### CQ-012 — No reproducible Alembic migration history
+
+- Area: Database lifecycle
+- Severity: High
+- Evidence: Schema management relies on `create_all()` and imperative migration helpers; expected Alembic configuration/history was not found.
+- User impact: Upgrade order, rollback, drift detection, destructive changes, and clean-to-head reproducibility are difficult to prove.
+- Root cause: Incremental MVP migration helpers replaced a versioned migration system.
+- Recommended fix: Baseline the current schema in Alembic, add versioned forward migrations, and test empty-to-head plus last-release-to-head in CI.
+- Status: Deferred. Pre-start helper improves current safety but is not a substitute for versioned migrations.
 
 ## 5. Medium-priority findings
 
-### CQ-008 — Redis queue data has no persistence configuration
+### CQ-013 — Redis queue state was ephemeral
 
 - Area: Reliability
 - Severity: Medium
-- Evidence: Redis had no volume and no explicit append-only persistence.
-- User impact: Host/container replacement can lose queued transcription/QA/download jobs, leaving calls pending until manually retried.
-- Root cause: Redis was treated as ephemeral despite being the sole queue.
-- Recommended fix: Enable AOF persistence with a named volume, or move to a queue with explicit durable delivery semantics.
+- Evidence: Redis had no data volume or AOF configuration.
+- User impact: Container/host replacement could lose queued work and leave calls pending.
+- Root cause: Redis was configured as a cache despite being the queue of record.
+- Recommended fix: Enable AOF and persistent volume; still add DB reconciliation because popped jobs can be lost.
 - Status: Fixed in this PR for Compose.
 
-### CQ-009 — API/provider request models have weak bounds
+### CQ-014 — Internal services and direct API/web ports were broadly published
+
+- Area: Deployment security
+- Severity: High
+- Evidence: Base Compose published PostgreSQL, Redis, Ollama, API, and web without loopback host binding.
+- User impact: A public VPS/Codespace port policy could expose internal services or permit direct HTTP API access that bypasses reverse-proxy controls.
+- Root cause: Development convenience settings reused as launch defaults.
+- Recommended fix: Bind development ports to `127.0.0.1`; publish only the production reverse proxy externally.
+- Status: Fixed in this PR.
+
+### CQ-015 — Queue retry/dead-letter/reconciliation behavior is incomplete
+
+- Area: Reliability
+- Severity: Medium
+- Evidence: Workers use Redis `BRPOP`; no lease, attempt count, exponential backoff, dead-letter queue, or stale-state reconciler is evident.
+- User impact: Crash-after-pop loses work; transient/permanent failures are treated inconsistently; calls can remain pending.
+- Root cause: Minimal MVP queue semantics.
+- Recommended fix: Add durable job rows, bounded retries, dead-letter status, and a scheduled stale-pending reconciler.
+- Status: Deferred.
+
+### CQ-016 — API request models have weak bounds
 
 - Area: API validation
 - Severity: Medium
-- Evidence: Provider names, URLs, models, and timeout values use unconstrained primitive Pydantic fields in the API module; invalid/negative/very large values are normalized later or can reach runtime code.
-- User impact: Misconfiguration, long hangs, oversized payloads, and inconsistent HTTP errors.
-- Root cause: Validation is distributed in endpoint code rather than request schemas.
-- Recommended fix: Add length/range/URL constraints and centralized validators without changing accepted legitimate presets.
+- Evidence: Several provider/settings/review payloads use unconstrained primitive Pydantic fields; string lengths, timeout ranges, scores, and list sizes are often checked later or not capped.
+- User impact: Misconfiguration, oversized DB/log values, long timeouts, and inconsistent validation errors.
+- Root cause: Validation is distributed in route code.
+- Recommended fix: Add conservative schema bounds and enums while preserving current legitimate inputs.
 - Status: Deferred.
 
-### CQ-010 — Monolithic API module increases security regression risk
+### CQ-017 — Product is single-workspace, not multi-tenant
+
+- Area: Product isolation
+- Severity: Medium
+- Evidence: Calls/settings/reviews do not carry a workspace/tenant foreign key; demo quota is global.
+- User impact: Multiple independent buyers cannot be safely isolated in one public deployment.
+- Root cause: Current architecture targets one pilot workspace per deployment.
+- Recommended fix: Keep deployments single-buyer or add tenant ownership to every user, call, file, review, topic, setting, event, export, and quota query before self-service signup.
+- Status: Deferred by product scope.
+
+### CQ-018 — Large exports and analytics are memory/query intensive
+
+- Area: Performance
+- Severity: Medium
+- Evidence: Calls are loaded into memory for exports; XLSX is generated in memory; dashboard/topic code loads broad collections and includes per-item lookups.
+- User impact: Slow requests and API memory pressure with large datasets.
+- Root cause: Pilot-scale synchronous reporting implementation.
+- Recommended fix: Set export caps, stream CSV, use write-only XLSX/background jobs, and add query-count/performance tests for representative volume.
+- Status: Deferred.
+
+### CQ-019 — Foreign keys lack explicit cascade/orphan policy
+
+- Area: Data integrity / retention
+- Severity: Medium
+- Evidence: Dependent models reference calls/reviews without ORM relationships or `ondelete` behavior; cleanup is implemented manually.
+- User impact: Partial deletion can leave orphan records or fail mid-retention run; file/database state can diverge.
+- Root cause: Retention/deletion semantics are procedural rather than schema-enforced.
+- Recommended fix: Define and test deletion policy per entity, add safe cascades where appropriate, and reconcile orphan files/rows.
+- Status: Deferred.
+
+### CQ-020 — Monolithic API increases authorization regression risk
 
 - Area: Maintainability / security
 - Severity: Medium
-- Evidence: `apps/api/app/main.py` contains authentication, access control, calls, exports, providers, retention, telemetry, and system endpoints in more than 4,000 lines.
-- User impact: Small feature changes can accidentally bypass shared authorization or mutate unrelated behavior.
-- Root cause: Routing and domain logic are co-located.
-- Recommended fix: Split only after endpoint-level authorization and lifecycle tests exist; do not perform a speculative rewrite before launch.
-- Status: Deferred.
-
-### CQ-011 — Queue retry/dead-letter behavior is incomplete
-
-- Area: Reliability
-- Severity: Medium
-- Evidence: Redis list workers pop jobs and handle processing exceptions locally; no explicit attempt counter, backoff schedule, dead-letter queue, or lease/reclaim mechanism is documented.
-- User impact: A worker crash after pop can lose a job; permanent and transient failures are not consistently differentiated.
-- Root cause: Minimal queue implementation optimized for MVP simplicity.
-- Recommended fix: Add job IDs, attempts, bounded exponential retry, dead-letter storage, and a reconciliation task for stale pending calls.
-- Status: Deferred.
+- Evidence: Authentication, calls, providers, users, exports, telephony, retention, audit, and analytics share one route module.
+- User impact: Small changes can accidentally skip scope checks or alter unrelated flows.
+- Root cause: MVP growth in a single module.
+- Recommended fix: First add endpoint authorization/lifecycle tests, then split by domain without changing behavior.
+- Status: Deferred; no speculative rewrite performed.
 
 ## 6. UX and product findings
 
-### CQ-012 — Technical fallback can be presented as business score
-
-- Area: Call details/dashboard
-- Severity: High
-- Evidence: Fallback invalid-model output is stored as successful QA with a computed zero score.
-- User impact: Buyers may interpret an integration error as catastrophic agent performance.
-- Root cause: Missing degraded state and buyer-facing error copy.
-- Recommended fix: Separate “analysis unavailable” from score, offer retry, and exclude degraded records from aggregates.
-- Status: Deferred.
-
-### CQ-013 — Demo semantics are global rather than workspace-specific
-
-- Area: Product/demo isolation
-- Severity: Medium
-- Evidence: The quota query has no workspace/team condition and the data model references a single global workspace setting.
-- User impact: Multiple buyers sharing one environment consume one global quota and may affect each other’s demo availability; this architecture is unsuitable for multi-tenant public signup.
-- Root cause: Current product is a single-workspace pilot application, not a multi-tenant SaaS.
-- Recommended fix: Keep public demo single-tenant and invite-only, or introduce explicit tenant/workspace ownership throughout calls, users, settings, reviews, files, and exports before self-service launch.
-- Status: Deferred.
+- Technical provider/parse failure can currently appear as a real zero score (CQ-006). This is the most serious buyer-facing UX defect.
+- Raw queue states are translated in many places, but every newly introduced status must have RU/EN labels and retry guidance.
+- Long Russian text, filenames, topics, empty demo state, mobile tables, focus states, and keyboard operation still require browser-level verification in a running build.
+- Green accent consistency was implemented in recent PRs; red/orange should remain reserved for warning/error states and be verified route-by-route.
+- No large visual redesign was made in this PR.
 
 ## 7. Security findings
 
 Confirmed positive controls:
 
-- Recording playback is authenticated and scoped to call visibility.
-- Upload extensions/content types and size limits exist.
-- Filenames use sanitization and generated storage names.
-- Provider keys are documented as write-only.
-- CORS defaults to local origins rather than wildcard.
+- Auth middleware protects non-exempt routes; telephony webhook is token-authenticated separately.
+- Call visibility helpers support all/team/own scopes and are reused by call/export paths inspected.
+- Provider/integration settings require admin role.
+- Upload extension, declared MIME, size, basename, generated storage filename, and cleanup controls exist.
+- Recording playback was previously hardened with authenticated scoped access and Range handling.
+- Ingestion tokens are hashed at rest and returned only at generation/regeneration.
 
-Remaining launch risks:
+Fixed here:
 
-- CQ-006 sensitive LLM output logging.
-- CQ-007 unsafe default host-port exposure (fixed).
-- No rate limiting/brute-force control was confirmed for login, uploads, provider tests, exports, or analysis actions.
-- A public demo should not expose settings/provider mutation to demo users; this needs role-by-role endpoint verification in a running stack.
-- Single-workspace architecture must not be advertised as isolated multi-tenant SaaS.
+- Recording URL SSRF and redirect validation.
+- Partial recording-file cleanup and safer URL logging.
+- Placeholder worker startup in protected environments.
+- Weak public API environment startup.
+- Direct host exposure of internal/application ports.
+- Secure-cookie semantics for public pilot.
+
+Remaining:
+
+- CQ-007 raw LLM response logging.
+- CQ-008 spreadsheet injection.
+- CQ-011 rate limiting/brute-force/resource abuse.
+- Full endpoint role/scope matrix must be executed against a running stack.
 
 ## 8. Reliability findings
 
-- Redis persistence was absent and is fixed for Compose.
-- Worker crash-after-pop can lose jobs.
-- Duplicate/stale delivery is not idempotent.
-- Invalid provider output is incorrectly converted into business success.
-- Pending-call reconciliation is not evident; add an operational query/command for calls stuck beyond an SLA.
-- API and workers use `pool_pre_ping`, which is a useful database reconnect control.
+- Redis AOF/volume and health-gated service dependencies are added.
+- API container now runs deterministic pre-start schema preparation.
+- Recording downloads validate every redirect and remove partial files on network/content/DB failure.
+- Crash-after-pop, duplicate delivery, stale jobs, and absence of dead-letter/reconciliation remain.
+- Database engines use `pool_pre_ping`, which helps reconnect after stale connections.
 
 ## 9. Data integrity findings
 
-- Successful QA reviews are append-only but duplicate jobs can create duplicate logical analyses.
-- Latest-review selection must be based on a stable created timestamp/ID and should ignore failed/degraded reviews unless explicitly requested.
-- Automated topic classification can overwrite manual state.
-- Transcript replacement needs a revision token so stale QA/topic jobs cannot commit against prior segments.
-- Retention must delete associated files and dependent rows transactionally or record partial cleanup failures.
+- Latest successful QA ordering uses created timestamp and ID, which is deterministic, but duplicate logical analyses remain possible.
+- Topic dashboards contain code paths that may select an arbitrary review per call unless all such maps explicitly order latest review; add regression tests.
+- Manual topic overrides are not protected from automation.
+- Transcript replacement has no revision guard against stale QA/topic completion.
+- Telephony uniqueness migration is restored in container pre-start.
+- Deletion/retention lacks schema-enforced cascade policy.
 
 ## 10. Performance findings
 
-- Counting distinct successful calls on every demo status/check becomes increasingly expensive without a supporting partial/indexed strategy.
-- Large dashboard/export queries require explicit pagination or streaming; verify all list endpoints cap page size.
-- Excel export is built in memory; large exports can consume API memory. Set export limits or move generation to a background job for production volume.
-- The monolithic API increases the chance of N+1 query patterns; use SQL logging/query-count tests on calls, dashboard, review history, and topic analytics.
+- Demo status performs a distinct successful-review count on every check.
+- Dashboard/report routes load broad result sets and some nested data per review.
+- CSV/XLSX exports are synchronous and XLSX is memory-backed.
+- Redis/worker concurrency and provider rate limits are not capacity-planned in repository configuration.
 
 ## 11. Test coverage gaps
 
-Required before public launch:
+Added in this PR:
 
-1. Atomic demo quota reservation: under/exact/over limit, concurrent single requests, mixed batch/single, retry, failed/degraded/invalid transcript policy, and non-demo mode.
-2. QA idempotency: duplicate delivery, stale transcript revision, provider timeout, malformed JSON, worker crash after provider response and before commit.
-3. Topic override: manual correction survives delayed automatic jobs; explicit reclassification is audited.
-4. Authorization matrix: every read/write endpoint for admin, manager, supervisor, agent, viewer, cross-team, and cross-call IDs.
-5. Audio: valid/invalid Range, suffix/open-ended Range, missing file, unauthorized/forbidden, content type, download audit.
-6. Exports: UTF-8 Russian text, nulls, current review selection, topic fields, transcript validity, and CSV formula injection.
-7. Migration: empty database to head and upgrade from the last public-demo schema.
+- Protected-environment QA/STT placeholder guard.
+- Production API environment guard: auth, strong secret, admin credentials, HTTPS CORS, pilot-cookie safety.
+- Recording URL policy: schemes, embedded credentials, private/loopback DNS, public targets, explicit private-host allowlist, unresolved host.
+- Compose rendering assertions for loopback bindings, Redis persistence, demo limit, and obsolete banner removal.
+
+Still required:
+
+1. Atomic demo quota: under/exact/over, concurrent single, mixed batch, retry, invalid/degraded policy, and disabled/non-demo mode.
+2. QA idempotency: duplicate delivery, stale transcript revision, timeout, malformed output, crash after provider response.
+3. Topic manual override/reclassification and required-action integrity.
+4. Complete role/scope matrix for calls, audio, transcript, QA, topic, users, integrations, settings, exports, audit, and retention.
+5. Audio full/Range/invalid Range/missing file/download/unauthorized/forbidden.
+6. CSV/XLSX UTF-8, nulls, latest review, topic/transcript fields, and formula injection.
+7. Empty schema and recent deployed schema migration tests.
+8. Browser route smoke in RU/EN and responsive/accessibility checks.
 
 ## 12. Deployment readiness
 
-Not ready for public production until Critical/High deferred items are addressed or operationally constrained.
+Current verdict:
 
-Acceptable interim scope:
+- Controlled single-buyer pilot: conditionally ready after CI and manual Codespaces smoke succeed, real providers are verified, and the Critical demo-quota race is operationally constrained.
+- Public self-service/multi-tenant launch: not ready.
 
-- Invite-only, single-buyer demo.
-- Explicit real-provider configuration and manual verification that placeholder mode is disabled.
-- Reverse proxy publishes only HTTPS web traffic.
-- Database/Redis/Ollama remain private.
-- Daily PostgreSQL and upload-volume backups.
-- Monitoring for queue depth, worker heartbeat, stuck calls, disk usage, provider failures, and authentication abuse.
+Required interim constraints:
+
+- Invite-only users.
+- One buyer/workspace per deployment.
+- `APP_ENV=production`, HTTPS, strong secrets, explicit CORS.
+- Real STT/QA provider modes; no placeholder override.
+- Reverse proxy is the only externally published service.
+- Daily PostgreSQL/upload backups and restore drill.
+- Queue depth, worker heartbeat, stuck-call, disk, auth-failure, and provider-error monitoring.
+- Manual demo usage monitoring until atomic reservations exist.
 
 ## 13. Fixes implemented in this PR
 
-- Bound PostgreSQL, Redis, and Ollama host ports to loopback by default.
-- Enabled Redis AOF persistence and a named volume.
-- Added a Redis health check and made dependent services wait for Redis health.
-- Added safer environment guidance for demo quota and explicit placeholder-mode warnings.
-- Added `docs/production-launch-checklist.md`.
+1. Added evidence-based audit and production launch checklist.
+2. Added fail-closed QA/STT worker mode guard for production/pilot containers.
+3. Added fail-closed API environment guard for public deployment.
+4. Changed public pilot to production cookie/security semantics.
+5. Bound PostgreSQL, Redis, Ollama, API, and web host ports to loopback by default.
+6. Enabled Redis AOF, persistent volume, health check, and health-gated dependencies.
+7. Added deterministic API pre-start schema preparation and restored telephony migration invocation.
+8. Blocked recording-download SSRF, unsafe redirects, embedded credentials, and private/local targets by default.
+9. Added explicit private PBX hostname allowlist controls.
+10. Removed partial downloaded files after failure and stopped logging full invalid job payloads/URL query tokens.
+11. Removed obsolete pilot banner default.
+12. Expanded `.gitignore` for OS/editor/local-data/generated artifacts.
+13. Added focused unit and Compose hardening CI checks.
 
 ## 14. Remaining risks
 
 Critical:
 
-- Atomic demo quota reservation.
-- Placeholder QA runtime default/startup guard.
+- Non-atomic demo quota reservation.
 
 High:
 
-- QA job idempotency and stale-job protection.
-- Manual topic override protection.
-- Invalid LLM response represented as success.
-- Sensitive raw LLM response logging.
-- Full endpoint authorization verification.
+- Duplicate/stale QA and transcript jobs.
+- Manual topic override can be overwritten.
+- Malformed LLM output is stored as successful zero-score QA.
+- Full raw LLM response may enter logs.
+- Spreadsheet formula injection in CSV/XLSX exports.
+- No confirmed login/provider-cost rate limiting.
+- No versioned Alembic migration history.
+- Full endpoint authorization matrix not yet executed in this environment.
 
 Medium:
 
-- Durable retry/dead-letter/reconciliation flow.
-- API schema bounds and rate limits.
-- Large export memory usage.
-- Migration-from-zero and recent-upgrade verification.
-- Multi-tenant isolation is not implemented.
+- No durable retry/dead-letter/stale-job reconciliation.
+- Weak schema bounds on several API payloads.
+- Single-workspace architecture only.
+- Synchronous large exports and broad analytics queries.
+- Manual cascade/orphan cleanup policy.
+- Browser/mobile/accessibility validation remains manual.
 
 ## 15. Recommended post-launch backlog
 
-1. Introduce `analysis_jobs`/quota reservations with unique call+revision keys and transactional capacity reservation.
-2. Add transcript revision and expected-revision fields to QA/topic queue payloads.
-3. Add explicit `degraded` analysis state and remove raw model output from production logs.
-4. Protect manual topic overrides and audit explicit reclassification.
-5. Add endpoint authorization matrix tests before splitting the API module.
-6. Add bounded retry/dead-letter queues and stale-pending reconciliation.
-7. Add production Compose/Helm deployment that exposes only a reverse proxy and uses managed PostgreSQL/Redis where appropriate.
-8. Decide explicitly between single-workspace deployments and true multi-tenant SaaS before public signup.
+1. Add `analysis_jobs` plus transactional quota reservations and transcript revisions.
+2. Add degraded AI state; never convert provider/schema errors into business score.
+3. Remove full raw model response logging and add privacy-safe structured logs.
+4. Preserve manual topic decisions and audit explicit reclassification.
+5. Add central spreadsheet-safe cell serialization and export tests.
+6. Baseline schema in Alembic and test empty/recent upgrades.
+7. Add endpoint authorization matrix and rate limiting before module split.
+8. Add bounded retries, dead-letter state, and stale-pending reconciliation.
+9. Add export limits/background generation and query-count tests.
+10. Decide explicitly between isolated single-buyer deployments and true multi-tenant SaaS.
 
-## Validation notes
+## Validation record and environment limitations
 
-Repository inspection was performed against GitHub `main` at the baseline SHA. The execution environment used for this audit did not have outbound DNS access to clone the repository or start Docker, so Python tests, frontend build, Compose rendering, migrations, and end-to-end provider flows were not claimed as executed. Exact Codespaces commands are included in the launch checklist and PR description for final verification.
+Confirmed through repository inspection:
+
+- Baseline is latest `origin/main` at audit start; PRs #68, #69, and #70 are present.
+- Branch is based directly on baseline and was not behind at comparison time.
+- Existing CI already compiles Python, builds Next.js, renders Compose, and runs authenticated upload/transcript/QA smoke flows.
+- Web package exposes `build` only; no repository `lint`, `typecheck`, or frontend `test` script was found.
+
+Executed for this PR through added CI configuration when the draft PR runs:
+
+- Python unit discovery for API/worker guards and recording URL safety.
+- Base and pilot Compose rendering assertions.
+- Protected-environment rejection checks.
+- Existing full repository CI workflow.
+
+Not claimed as locally executed by the audit agent:
+
+- Docker stack, PostgreSQL migrations, Next.js build, browser smoke, real STT/LLM provider flow, and 51st-call quota test. The available shell could not resolve GitHub to clone the repository. These are explicit Codespaces verification items in `docs/production-launch-checklist.md`.
