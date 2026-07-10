@@ -45,9 +45,11 @@ def validate_api_environment(environ: dict[str, str] | None = None) -> None:
 
     admin_email = env.get("ADMIN_EMAIL", "").strip()
     admin_password = env.get("ADMIN_PASSWORD", "").strip()
-    if not admin_email or "@" not in admin_email:
-        raise RuntimeError("ADMIN_EMAIL must be configured before production startup")
-    if admin_password.lower() in UNSAFE_ADMIN_PASSWORDS or len(admin_password) < 12:
+    if bool(admin_email) != bool(admin_password):
+        raise RuntimeError("ADMIN_EMAIL and ADMIN_PASSWORD must be configured together")
+    if admin_email and "@" not in admin_email:
+        raise RuntimeError("ADMIN_EMAIL must be a valid email address")
+    if admin_password and (admin_password.lower() in UNSAFE_ADMIN_PASSWORDS or len(admin_password) < 12):
         raise RuntimeError("ADMIN_PASSWORD must be a unique value of at least 12 characters")
 
     cors_origins = [item.strip() for item in env.get("CORS_ORIGINS", "").split(",") if item.strip()]
