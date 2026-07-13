@@ -1,8 +1,9 @@
 "use client";
 
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL, fetchWithCredentials } from "../lib/api";
 import { defaultInterfaceLanguages, defaultWorkspaceSettings, LanguageCatalogItem, makeTranslator, SttLanguageItem, WorkspaceSettings } from "../lib/i18n";
+import { useAuth } from "./AuthProvider";
 
 type I18nContextValue = {
   settings: WorkspaceSettings;
@@ -41,29 +42,42 @@ function persistInterfaceLanguage(code: string) {
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
   const [settings, setSettings] = useState<WorkspaceSettings>(defaultWorkspaceSettings);
   const [languages, setLanguages] = useState<LanguageCatalogItem[]>(defaultInterfaceLanguages);
   const [sttLanguages, setSttLanguages] = useState<SttLanguageItem[]>([]);
+  const loadedForAuthenticatedSessionRef = useRef(false);
 
   useEffect(() => {
     const persistedLanguage = readPersistedInterfaceLanguage();
     if (persistedLanguage) {
       setSettings((current) => ({ ...current, interface_language: persistedLanguage }));
     }
+  }, []);
 
+  useEffect(() => {
+    if (status !== "authenticated") {
+      loadedForAuthenticatedSessionRef.current = false;
+      return;
+    }
+    if (loadedForAuthenticatedSessionRef.current) return;
+    loadedForAuthenticatedSessionRef.current = true;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
     const load = async () => {
       try {
         const [settingsRes, languagesRes, sttLanguagesRes] = await Promise.all([
-          fetchWithCredentials(`${API_BASE_URL}/settings/workspace`),
-          fetchWithCredentials(`${API_BASE_URL}/settings/languages`),
-          fetchWithCredentials(`${API_BASE_URL}/settings/stt-languages`),
+          fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, { signal: controller.signal }),
+          fetchWithCredentials(`${API_BASE_URL}/settings/languages`, { signal: controller.signal }),
+          fetchWithCredentials(`${API_BASE_URL}/settings/stt-languages`, { signal: controller.signal }),
         ]);
         if (settingsRes.ok) {
           const apiSettings = (await settingsRes.json()) as WorkspaceSettings;
           const preferredLanguage = readPersistedInterfaceLanguage() || apiSettings.interface_language;
           setSettings({ ...apiSettings, interface_language: preferredLanguage });
           if (preferredLanguage !== apiSettings.interface_language) {
-            fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
+            void fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ interface_language: preferredLanguage }),
@@ -72,19 +86,30 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         }
         if (languagesRes.ok) {
           const catalog = (await languagesRes.json()) as LanguageCatalogItem[];
-          const supportedInterfaceLanguages = catalog.filter((language) => isSupportedInterfaceLanguage(language.code));
-          setLanguages(supportedInterfaceLanguages.length ? supportedInterfaceLanguages : defaultInterfaceLanguages);
+          const supported = catalog.filter((language) => isSupportedInterfaceLanguage(language.code));
+          setLanguages(supported.length ? supported : defaultInterfaceLanguages);
         }
         if (sttLanguagesRes.ok) setSttLanguages(await sttLanguagesRes.json());
       } catch {
-        // Keep same-origin persisted language or English fallback if API is unavailable during local development.
+        // Bundled catalogs remain available; optional settings never block rendering.
+      } finally {
+        window.clearTimeout(timeout);
       }
     };
-    load();
-  }, []);
+    void load();
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [status]);
 
   const updateWorkspaceSettings = useCallback(async (updates: Partial<WorkspaceSettings>) => {
-    if (updates.interface_language) persistInterfaceLanguage(updates.interface_language);
+    if (updates.interface_language) {
+      persistInterfaceLanguage(updates.interface_language);
+      setSettings((current) => ({ ...current, ...updates }));
+    }
+    if (status !== "authenticated") return { ...settings, ...updates };
+
     const response = await fetchWithCredentials(`${API_BASE_URL}/settings/workspace`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -95,18 +120,20 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     setSettings(saved);
     if (saved.interface_language) persistInterfaceLanguage(saved.interface_language);
     return saved;
-  }, []);
+  }, [settings, status]);
 
   const setInterfaceLanguage = useCallback(async (code: string) => {
     if (!isSupportedInterfaceLanguage(code)) return;
     persistInterfaceLanguage(code);
     setSettings((current) => ({ ...current, interface_language: code }));
-    try {
-      await updateWorkspaceSettings({ interface_language: code });
-    } catch {
-      // Local same-origin persistence keeps the selector working through pilot gateways even before login.
+    if (status === "authenticated") {
+      try {
+        await updateWorkspaceSettings({ interface_language: code });
+      } catch {
+        // Local persistence keeps public and auth routes usable if settings are unavailable.
+      }
     }
-  }, [updateWorkspaceSettings]);
+  }, [status, updateWorkspaceSettings]);
 
   const value = useMemo(() => ({
     settings,
