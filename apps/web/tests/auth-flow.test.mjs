@@ -1,64 +1,87 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 import {
   authStatusFromResponse,
   canRenderProtectedRoute,
   loginFormIsAvailable,
   shouldLoadProtectedSettings,
+  shouldRedirectLogin,
 } from "../lib/auth-policy.mjs";
 import { isPublicPath, loginUrlFor, safeNextPath } from "../lib/auth-routing.mjs";
 
-test("public homepage renders without protected route gating", () => {
-  assert.equal(isPublicPath("/"), true);
+const testsDir = path.dirname(fileURLToPath(import.meta.url));
+const webRoot = path.resolve(testsDir, "..");
+const repoRoot = path.resolve(webRoot, "../..");
+
+test("no cookie: login remains visible after auth/me 401", () => {
+  const status = authStatusFromResponse(401, false);
+  assert.equal(status, "unauthenticated");
+  assert.equal(isPublicPath("/login"), true);
+  assert.equal(loginFormIsAvailable(status), true);
+  assert.equal(shouldRedirectLogin(status, false), false);
 });
 
-test("login route remains public when auth/me returns 401", () => {
-  assert.equal(authStatusFromResponse(401, false), "unauthenticated");
-  assert.equal(isPublicPath("/login"), true);
-  assert.equal(loginFormIsAvailable("unauthenticated"), true);
+test("valid API-accepted cookie redirects login to dashboard", () => {
+  const status = authStatusFromResponse(200, true);
+  assert.equal(status, "authenticated");
+  assert.equal(shouldRedirectLogin(status, true), true);
+});
+
+test("stale cookie signed with an old secret remains on login", () => {
+  const status = authStatusFromResponse(401, false);
+  assert.equal(loginFormIsAvailable(status), true);
+  assert.equal(shouldRedirectLogin(status, false), false);
+});
+
+test("malformed cookie remains on login", () => {
+  const status = authStatusFromResponse(401, false);
+  assert.equal(loginFormIsAvailable(status), true);
+  assert.equal(shouldRedirectLogin(status, false), false);
+});
+
+test("valid-looking cookie rejected by auth/me never redirects to dashboard", () => {
+  assert.equal(shouldRedirectLogin(authStatusFromResponse(401, false), false), false);
+});
+
+test("dashboard without a valid API session redirects once to login", () => {
+  assert.equal(isPublicPath("/dashboard"), false);
+  assert.equal(canRenderProtectedRoute("unauthenticated"), false);
+  assert.equal(loginUrlFor("/dashboard"), "/login?next=%2Fdashboard");
+});
+
+test("Next middleware no longer performs cookie-presence authentication", () => {
+  assert.equal(existsSync(path.join(webRoot, "middleware.ts")), false);
+});
+
+test("logout clears the same API cookie name and path used by login", () => {
+  const source = readFileSync(path.join(repoRoot, "apps/api/app/main.py"), "utf8");
+  assert.match(source, /response\.set_cookie\(\s*SESSION_COOKIE_NAME,/s);
+  assert.match(source, /response\.delete_cookie\(SESSION_COOKIE_NAME, path="\/"\)/);
+  assert.match(source, /samesite="lax"/);
+  assert.match(source, /httponly=True/);
+});
+
+test("login refresh dashboard flow depends on auth/me 200 with a user", () => {
+  const status = authStatusFromResponse(200, true);
+  assert.equal(canRenderProtectedRoute(status), true);
+  assert.equal(shouldLoadProtectedSettings(status), true);
+});
+
+test("public homepage renders without protected route gating", () => {
+  assert.equal(isPublicPath("/"), true);
 });
 
 test("public calls action preserves calls as next URL", () => {
   assert.equal(loginUrlFor("/calls"), "/login?next=%2Fcalls");
 });
 
-test("auth/me 401 leaves checking and becomes unauthenticated", () => {
-  assert.equal(authStatusFromResponse(401, false), "unauthenticated");
-});
-
-test("login form remains available after auth/me 401 or auth network error", () => {
-  assert.equal(loginFormIsAvailable("unauthenticated"), true);
-  assert.equal(loginFormIsAvailable("error"), true);
-});
-
-test("protected dashboard redirects once to a safe login URL", () => {
-  assert.equal(isPublicPath("/dashboard"), false);
-  assert.equal(canRenderProtectedRoute("unauthenticated"), false);
-  assert.equal(loginUrlFor("/dashboard"), "/login?next=%2Fdashboard");
-});
-
-test("I18n protected settings are deferred until authenticated", () => {
-  assert.equal(shouldLoadProtectedSettings("checking"), false);
-  assert.equal(shouldLoadProtectedSettings("unauthenticated"), false);
-  assert.equal(shouldLoadProtectedSettings("error"), false);
-  assert.equal(shouldLoadProtectedSettings("authenticated"), true);
-});
-
-test("only authenticated state enables protected data requests", () => {
-  assert.equal(canRenderProtectedRoute("checking"), false);
-  assert.equal(canRenderProtectedRoute("unauthenticated"), false);
-  assert.equal(canRenderProtectedRoute("authenticated"), true);
-});
-
 test("network failures exit checking through explicit error state", () => {
   assert.equal(authStatusFromResponse(503, false), "error");
-});
-
-test("successful login enables dashboard and protected settings", () => {
-  assert.equal(authStatusFromResponse(200, true), "authenticated");
-  assert.equal(canRenderProtectedRoute("authenticated"), true);
-  assert.equal(shouldLoadProtectedSettings("authenticated"), true);
+  assert.equal(loginFormIsAvailable("error"), true);
 });
 
 test("successful response without a user is unauthenticated", () => {
