@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useAuth } from "../components/AuthProvider";
 import { useI18n } from "../components/I18nProvider";
 
 export default function Home() {
   const { t } = useI18n();
+  const { status } = useAuth();
+  const callsHref = status === "authenticated" ? "/calls" : "/login?next=%2Fcalls";
   const workflow = [
     ["dashboard.workflow.upload.title", "dashboard.workflow.upload.text"],
     ["dashboard.workflow.transcript.title", "dashboard.workflow.transcript.text"],
@@ -25,7 +28,7 @@ export default function Home() {
         <h1>{t("dashboard.productTitle")}</h1>
         <p>{t("dashboard.productHelp")}</p>
         <p style={{ marginTop: 18 }}>
-          <Link href="/calls" className="button">
+          <Link href={callsHref} className="button">
             {t("dashboard.primaryAction")}
           </Link>
         </p>
