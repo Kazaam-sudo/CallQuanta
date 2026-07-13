@@ -1,0 +1,40 @@
+name: Auth regression checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  web-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm install
+
+      - name: Run auth flow tests
+        working-directory: apps/web
+        run: npm test
+
+      - name: Build web application
+        working-directory: apps/web
+        run: npm run build
+
+      - name: Validate Compose configurations
+        run: |
+          cp .env.example .env
+          docker compose config >/tmp/base-compose.yml
+          cp .env.pilot.example .env
+          docker compose -f docker-compose.yml -f docker-compose.pilot.yml config >/tmp/pilot-compose.yml
