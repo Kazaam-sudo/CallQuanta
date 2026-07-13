@@ -12,19 +12,28 @@ services:
       retries: 10
       start_period: 5s
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
 
   ollama:
     image: ollama/ollama:latest
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
 
@@ -37,7 +46,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       ollama:
         condition: service_started
     healthcheck:
@@ -48,7 +57,7 @@ services:
       start_period: 10s
     restart: on-failure
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       UPLOAD_DIR: /app/uploads
       APP_ENV: ${APP_ENV:-development}
@@ -70,14 +79,16 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-callquanta_session}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
 
   stt-worker:
-    build: ./workers/stt-worker
+    build:
+      context: .
+      dockerfile: workers/stt-worker/Dockerfile
     env_file: .env
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       api:
         condition: service_healthy
     restart: on-failure
@@ -86,13 +97,12 @@ services:
     volumes:
       - api_uploads:/app/uploads:ro
 
-
   recording-worker:
     build: ./workers/recording-worker
     env_file: .env
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       api:
         condition: service_healthy
     restart: on-failure
@@ -102,6 +112,10 @@ services:
       UPLOAD_DIR: /app/uploads
       RECORDING_DOWNLOAD_MAX_BYTES: ${RECORDING_DOWNLOAD_MAX_BYTES:-104857600}
       RECORDING_DOWNLOAD_TIMEOUT_SECONDS: ${RECORDING_DOWNLOAD_TIMEOUT_SECONDS:-120}
+      RECORDING_DOWNLOAD_CONNECT_TIMEOUT_SECONDS: ${RECORDING_DOWNLOAD_CONNECT_TIMEOUT_SECONDS:-10}
+      RECORDING_DOWNLOAD_MAX_REDIRECTS: ${RECORDING_DOWNLOAD_MAX_REDIRECTS:-5}
+      RECORDING_DOWNLOAD_ALLOW_PRIVATE_HOSTS: ${RECORDING_DOWNLOAD_ALLOW_PRIVATE_HOSTS:-false}
+      RECORDING_DOWNLOAD_ALLOWED_HOSTS: ${RECORDING_DOWNLOAD_ALLOWED_HOSTS:-}
       WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
     volumes:
       - api_uploads:/app/uploads
@@ -113,7 +127,7 @@ services:
     env_file: .env
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       api:
         condition: service_healthy
     restart: on-failure
@@ -122,5 +136,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   ollama_data:
   api_uploads:

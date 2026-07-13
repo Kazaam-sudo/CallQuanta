@@ -3,5 +3,6 @@ WORKDIR /app
 COPY workers/qa-worker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY workers/qa-worker/worker.py workers/qa-worker/db.py workers/qa-worker/transcript_validation.py ./
+COPY scripts/validate_worker_mode.py ./validate_worker_mode.py
 COPY packages/scorecards/default_sales_qa.yaml /app/packages/scorecards/default_sales_qa.yaml
-CMD ["python", "worker.py"]
+CMD ["sh", "-c", "python /app/validate_worker_mode.py qa && exec python worker.py"]

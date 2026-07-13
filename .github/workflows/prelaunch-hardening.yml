@@ -1,0 +1,45 @@
+name: Pre-launch hardening checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  safety-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test worker runtime safety guard
+        run: python -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Validate base Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config >/tmp/base-compose.yml
+          grep -q 'host_ip: 127.0.0.1' /tmp/base-compose.yml
+          grep -q 'redis_data:' /tmp/base-compose.yml
+
+      - name: Validate pilot Compose configuration
+        run: |
+          cp .env.pilot.example .env
+          docker compose -f docker-compose.yml -f docker-compose.pilot.yml config >/tmp/pilot-compose.yml
+          grep -q 'DEMO_CALL_LIMIT: "50"' /tmp/pilot-compose.yml
+          ! grep -q 'Pilot environment. Use only approved test recordings.' /tmp/pilot-compose.yml
+
+      - name: Reject placeholder workers in protected environments
+        run: |
+          APP_ENV=pilot QA_MODE=placeholder python scripts/validate_worker_mode.py qa >/tmp/qa.out 2>&1 && exit 1 || true
+          grep -q 'Refusing to start qa-worker' /tmp/qa.out
+          APP_ENV=production STT_MODE=placeholder python scripts/validate_worker_mode.py stt >/tmp/stt.out 2>&1 && exit 1 || true
+          grep -q 'Refusing to start stt-worker' /tmp/stt.out
