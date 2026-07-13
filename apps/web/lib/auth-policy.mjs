@@ -16,3 +16,7 @@ export function canRenderProtectedRoute(status) {
 export function loginFormIsAvailable(status) {
   return status !== "authenticated";
 }
+
+export function shouldRedirectLogin(status, hasValidatedUser) {
+  return status === "authenticated" && hasValidatedUser === true;
+}
