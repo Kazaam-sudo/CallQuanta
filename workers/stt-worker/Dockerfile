@@ -6,5 +6,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 COPY workers/stt-worker/ ./
+COPY packages/reliable_queue.py packages/demo_quota.py ./packages/
 COPY scripts/validate_worker_mode.py ./validate_worker_mode.py
-CMD ["sh", "-c", "python /app/validate_worker_mode.py stt && exec python worker.py"]
+CMD ["sh", "-c", "python /app/validate_worker_mode.py stt && exec python release_worker.py"]
