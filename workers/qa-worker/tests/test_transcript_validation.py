@@ -25,3 +25,11 @@ def test_too_short_transcript_is_invalid_for_duration():
     result = validation.validate_transcript_for_qa(call, [segment("hello customer")])
     assert result["is_valid"] is False
     assert "too_short" in result["flags"]
+
+
+def test_substantive_transcript_is_valid_for_qa():
+    call = SimpleNamespace(duration_seconds=60, language="en")
+    text = " ".join(["The customer confirmed the delivery address and the agent explained the available service options."] * 8)
+    result = validation.validate_transcript_for_qa(call, [segment(text)])
+    assert result["is_valid"] is True
+    assert result["flags"] == []

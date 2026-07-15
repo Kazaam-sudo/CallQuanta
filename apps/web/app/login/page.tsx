@@ -62,13 +62,13 @@ function LoginForm() {
     <section className="card" style={{ maxWidth: 440, margin: "48px auto" }}>
       <h2>{t("auth.signIn")}</h2>
       <p style={{ color: "var(--text-muted)" }}>{t("auth.loginHelp")}</p>
-      {status === "error" && authError ? <div className="notice">Проверка текущей сессии не удалась. Вы всё равно можете войти.</div> : null}
+      {status === "error" && authError ? <div className="notice">{t("auth.sessionCheckFailed")}</div> : null}
       <form className="grid" style={{ gap: 14 }} onSubmit={submit}>
-        <label>{t("auth.email")}</label>
-        <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required />
-        <label>{t("auth.password")}</label>
+        <label htmlFor="login-email">{t("auth.email")}</label>
+        <input id="login-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required />
+        <label htmlFor="login-password">{t("auth.password")}</label>
         <div className="password-field-row">
-          <input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
+          <input id="login-password" type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
           <button className="button button-secondary" type="button" onClick={() => setShowPassword(!showPassword)}>{showPassword ? t("auth.hidePassword") : t("auth.showPassword")}</button>
         </div>
         {error && <div className="notice notice-danger" role="alert">{error}</div>}

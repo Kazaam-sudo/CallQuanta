@@ -129,6 +129,7 @@ activemq-data/
 # Environments
 .env
 .env.*.local
+.env.backup*
 .envrc
 .venv
 env/
@@ -191,6 +192,10 @@ __marimo__/
 # JavaScript build/dependency artifacts
 node_modules/
 .next/
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+.release-check/
 
 # Operating-system metadata
 .DS_Store
