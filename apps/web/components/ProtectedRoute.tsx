@@ -5,11 +5,13 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { isPublicPath, loginUrlFor } from "../lib/auth-routing.mjs";
 import { useAuth } from "./AuthProvider";
+import { useI18n } from "./I18nProvider";
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "/";
   const router = useRouter();
   const { status, error, refreshAuth } = useAuth();
+  const { t } = useI18n();
   const redirectedPathRef = useRef<string | null>(null);
   const isPublic = isPublicPath(pathname);
 
@@ -30,15 +32,15 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (status === "error") {
     return (
       <section className="card empty-state" aria-live="polite">
-        <p>Не удалось проверить сессию{error ? `: ${error}` : "."}</p>
-        <button className="button" type="button" onClick={() => void refreshAuth()}>Повторить</button>
+        <p>{t("auth.sessionCheckFailed")}{error ? `: ${error}` : "."}</p>
+        <button className="button" type="button" onClick={() => void refreshAuth()}>{t("auth.retry")}</button>
       </section>
     );
   }
 
   return (
     <section className="card empty-state" aria-live="polite">
-      <p>{status === "unauthenticated" ? "Переход к странице входа..." : "Проверка сессии..."}</p>
+      <p>{status === "unauthenticated" ? t("auth.redirectingToLogin") : t("auth.checkingSession")}</p>
     </section>
   );
 }
