@@ -29,6 +29,9 @@ docker compose -f docker-compose.yml -f docker-compose.pilot.yml config | wc -c
 ```
 
 The release script itself uses `config --no-interpolate` and discards its output.
+When Docker Compose is unavailable, both Compose checks are reported as
+`BLOCKED`, not `FAIL`. This keeps a missing local prerequisite distinct from an
+invalid Compose configuration.
 
 ## Existing live stack checks
 
@@ -83,3 +86,20 @@ On `agent/release-polish-recovery` before committing the recovery changes:
 - Playwright did run, but the existing web container predates this branch's label
   fix. Its rendered login fields had no associated labels, so candidate browser
   evidence is blocked until candidate images are deployed.
+
+## Final-polish execution — 2026-07-17 UTC
+
+Baseline: `1ebfb5a0c844edc1904985ec718aa194b45bc3a3` on
+`agent/release-candidate-final-polish`.
+
+- Python syntax, transcript validation, and deterministic fixture checks passed
+  with the bundled Python 3.12 runtime.
+- Frontend unit tests (16 tests) and the production build passed with the
+  bundled Node runtime after a frozen-lockfile install.
+- The release gate passed with 10 checks, 0 failures, and 7 blocked
+  prerequisites. The Docker Compose checks are now correctly blocked when
+  Docker is not installed.
+- Current-candidate Docker, authenticated browser, real STT/LLM, exports,
+  role-boundary, and mutable quota evidence remain required before public-demo
+  approval. Playwright was invoked, but its Chromium headless-shell executable
+  is not installed in this workspace, so no browser assertion was evaluated.

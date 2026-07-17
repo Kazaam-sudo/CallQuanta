@@ -41,3 +41,30 @@ Candidate: `agent/release-polish-recovery` based on `764ac29e`.
   settings, including during initial authenticated settings load.
 - Release checks now default to non-mutating operation and require explicit
   opt-in for image builds, live checks, and disposable-data probes.
+
+## Final-polish follow-up — 2026-07-17 UTC
+
+Baseline: `1ebfb5a0c844edc1904985ec718aa194b45bc3a3`.
+
+### ARQ-FINAL-001 — Missing Docker was reported as a product failure
+
+- **Severity:** Medium release-tooling defect
+- **Status:** Fixed
+- **Evidence:** `./scripts/release-check.sh` reported two `FAIL` results when
+  the host had no `docker` executable, despite the gate definition treating a
+  missing prerequisite as `BLOCKED`.
+- **Fix:** Detect Docker Compose availability before parsing either Compose
+  configuration and emit two explicit `BLOCKED` results when it is absent.
+- **Regression check:** `scripts/test_release_check_docker_availability.py`
+  runs the gate with no Docker command and verifies its zero-failure outcome.
+
+### Remaining release blockers
+
+- **Critical:** Build and run current-candidate images, then capture public and
+  authenticated Playwright evidence against the local gateway.
+- **Critical:** Run an approved synthetic recording through local
+  faster-whisper and an active real LLM provider; do not use placeholder output.
+- **High:** Run API, hardening, and worker test suites in a provisioned Python
+  environment with their declared dependencies.
+- **High:** Validate role boundaries, exports, and atomic quota handling only
+  against disposable data.

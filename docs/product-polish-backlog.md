@@ -50,3 +50,18 @@ Candidate: `agent/release-polish-recovery` based on `764ac29e`.
 - **Next step:** Collect screenshots and buyer feedback, then change only labels
   tied to a reproducible comprehension issue.
 - **Status:** Open.
+
+## PP-006 — Current-candidate visual audit is awaiting a runnable stack
+
+- **Severity:** High release-validation blocker
+- **Evidence:** On 2026-07-17, frontend unit tests (16) and the production build
+  passed, but this workspace has no Docker executable, so the candidate web UI
+  could not be inspected at the local gateway on desktop or mobile.
+- **Recommended minimal fix:** No speculative UI change. Build the candidate
+  images, then review the documented public, login, dashboard, calls, QA queue,
+  and settings routes in Russian, English, and Uzbek where supported.
+- **Regression check:** Run Playwright against the current candidate with
+  disposable credentials, installed Chromium, and retain only non-sensitive
+  screenshots/traces.
+- **Status:** Open; this does not invalidate the completed localized auth and
+  accessibility fixes above.
