@@ -45,3 +45,29 @@ browser gate is **BLOCKED**, not accepted as a candidate regression.
 
 Playwright traces, reports, and test results are ignored by Git. No credentials,
 request payloads, raw logs, or Compose-rendered secrets are included here.
+
+## Final-polish execution — 2026-07-17 UTC
+
+Baseline SHA: `1ebfb5a0c844edc1904985ec718aa194b45bc3a3`
+Branch: `agent/release-candidate-final-polish`
+Environment: local macOS Codex workspace, bundled Python 3.12 and Node 24;
+Docker unavailable.
+
+| Check | Result |
+| --- | --- |
+| Python compileall (`apps/api`, `workers`, `packages`, `scripts`) | PASS |
+| Transcript validation and synthetic fixture tests | PASS |
+| Docker-unavailable release-gate regression test | PASS |
+| `apps/web && pnpm test` | PASS — 16 tests |
+| `apps/web && pnpm run build` | PASS |
+| `./scripts/release-check.sh` | PASS — 10 pass, 0 fail, 7 blocked |
+| Base and pilot Compose parse | BLOCKED — `docker: command not found` |
+| Playwright release smoke | BLOCKED — Chromium headless-shell executable is not installed; 10 tests stopped before navigation |
+| Candidate stack, auth, worker pipeline, exports, real LLM | BLOCKED — Docker and approved disposable credentials/provider evidence unavailable |
+
+The release gate was run with the bundled runtimes and a temporary Python bytecode
+cache. It did not start or restart services, alter `.env`, print secret values,
+or create test users.
+
+Release verdict: **NOT READY** for a public demo until the critical live-stack
+and real-provider evidence is collected.

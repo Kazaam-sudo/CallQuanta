@@ -55,8 +55,13 @@ fi
 
 run 'frontend unit tests' bash -lc 'cd apps/web && pnpm test'
 run 'frontend production build' bash -lc 'cd apps/web && pnpm run build'
-if "${BASE_COMPOSE[@]}" config --no-interpolate >/dev/null; then pass 'base Compose validation without interpolation'; else fail 'base Compose validation without interpolation'; fi
-if "${COMPOSE[@]}" config --no-interpolate >/dev/null; then pass 'pilot Compose validation without interpolation'; else fail 'pilot Compose validation without interpolation'; fi
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  if "${BASE_COMPOSE[@]}" config --no-interpolate >/dev/null; then pass 'base Compose validation without interpolation'; else fail 'base Compose validation without interpolation'; fi
+  if "${COMPOSE[@]}" config --no-interpolate >/dev/null; then pass 'pilot Compose validation without interpolation'; else fail 'pilot Compose validation without interpolation'; fi
+else
+  block 'base Compose validation without interpolation (Docker Compose is unavailable)'
+  block 'pilot Compose validation without interpolation (Docker Compose is unavailable)'
+fi
 
 if [[ "${RELEASE_CHECK_BUILD_IMAGES:-false}" == "true" ]]; then
   run 'exact workspace image build' "${COMPOSE[@]}" build api web recording-worker stt-worker qa-worker
