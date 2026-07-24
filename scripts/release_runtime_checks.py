@@ -12,6 +12,7 @@ import urllib.request
 
 BASE_URL = os.environ.get("RELEASE_CHECK_BASE_URL", "http://localhost:8080/api").rstrip("/")
 PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
+XLSX_SIGNATURE = b"PK\x03\x04"
 
 
 def request(path: str, *, method: str = "GET", payload: dict | None = None, cookie: str = "") -> tuple[int, bytes, str]:
@@ -35,9 +36,28 @@ def report(state: str, name: str, detail: str = "") -> None:
     print(f"{state} {name}{suffix}")
 
 
+def update_cookie_jar(cookie: str, set_cookie: str) -> str:
+    """Apply one Set-Cookie header to the small, single-domain test cookie jar."""
+    if not set_cookie or "=" not in set_cookie.split(";", 1)[0]:
+        return cookie
+
+    name, value = set_cookie.split(";", 1)[0].split("=", 1)
+    jar = {
+        item_name.strip(): item_value
+        for item in cookie.split(";")
+        if "=" in item
+        for item_name, item_value in [item.split("=", 1)]
+    }
+    if not value or "max-age=0" in set_cookie.lower():
+        jar.pop(name.strip(), None)
+    else:
+        jar[name.strip()] = value
+    return "; ".join(f"{item_name}={item_value}" for item_name, item_value in jar.items())
+
+
 def login(email: str, password: str) -> tuple[int, str]:
     status, _, set_cookie = request("/auth/login", method="POST", payload={"email": email, "password": password})
-    return status, set_cookie.split(";", 1)[0] if set_cookie else ""
+    return status, update_cookie_jar("", set_cookie)
 
 
 def main() -> int:
@@ -76,7 +96,8 @@ def main() -> int:
         failures += 1
     else:
         report(PASS, "session refresh")
-    logout, _, _ = request("/auth/logout", method="POST", cookie=cookie)
+    logout, _, logout_set_cookie = request("/auth/logout", method="POST", cookie=cookie)
+    cookie = update_cookie_jar(cookie, logout_set_cookie)
     after_logout, _, _ = request("/auth/me", cookie=cookie)
     if logout == 200 and after_logout == 401:
         report(PASS, "logout")
@@ -90,7 +111,7 @@ def main() -> int:
         return 1
     for name, path, signature in (
         ("CSV export", "/calls/export?format=csv", b"ID,Filename"),
-        ("XLSX export", "/calls/export?format=xlsx", b"PK\\x03\\x04"),
+        ("XLSX export", "/calls/export?format=xlsx", XLSX_SIGNATURE),
     ):
         export_status, body, _ = request(path, cookie=cookie)
         if export_status == 200 and signature in body[:4096]:
