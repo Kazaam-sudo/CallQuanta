@@ -26,7 +26,7 @@ test("invalid login shows an actionable error", async ({ page }) => {
   await page.getByLabel("Email").fill("invalid@example.invalid");
   await page.getByLabel("Password").fill("invalid");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator(".notice-danger")).toBeVisible();
 });
 
 test("protected route redirects once to login", async ({ page }) => {
@@ -47,6 +47,6 @@ test("successful login persists after refresh and logout clears the session", as
   await page.reload();
   await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
   await page.getByRole("button", { name: "Logout" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login(?:\?next=%2Fdashboard)?$/);
   await expect(page.getByLabel("Email")).toBeVisible();
 });

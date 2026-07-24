@@ -46,14 +46,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef<Promise<AuthUser | null> | null>(null);
   const initialCheckStartedRef = useRef(false);
+  // A response that started before a login/logout must not overwrite the newer
+  // local auth state when it completes later.
+  const authStateVersionRef = useRef(0);
 
   const markAuthenticated = useCallback((nextUser: AuthUser) => {
+    authStateVersionRef.current += 1;
     setUser(nextUser);
     setError(null);
     setStatus("authenticated");
   }, []);
 
   const markUnauthenticated = useCallback(() => {
+    authStateVersionRef.current += 1;
     setUser(null);
     setError(null);
     setStatus("unauthenticated");
@@ -62,10 +67,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshAuth = useCallback(async () => {
     if (requestRef.current) return requestRef.current;
 
+    const requestAuthStateVersion = authStateVersionRef.current;
     setStatus("checking");
     setError(null);
     const request = checkSession()
       .then((nextUser) => {
+        if (authStateVersionRef.current !== requestAuthStateVersion) return nextUser;
         if (nextUser) {
           markAuthenticated(nextUser);
           return nextUser;
@@ -74,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       })
       .catch((reason) => {
+        if (authStateVersionRef.current !== requestAuthStateVersion) return null;
         setUser(null);
         setError(reason instanceof Error ? reason.message : "Unable to verify session");
         setStatus("error");
