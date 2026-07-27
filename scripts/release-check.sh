@@ -71,7 +71,8 @@ fi
 if [[ "${RELEASE_CHECK_RUN_LIVE:-false}" != "true" ]]; then
   block 'live checks disabled (set RELEASE_CHECK_RUN_LIVE=true; this script never starts or restarts services)'
 else
-  if "${COMPOSE[@]}" ps --status running | grep -Eq 'api|web'; then
+  live_services="$("${COMPOSE[@]}" ps --status running 2>/dev/null || true)"
+  if grep -Eq 'api' <<<"$live_services" && grep -Eq 'web' <<<"$live_services"; then
     pass 'required live services are running'
     wait_for 'API health' 'http://localhost:8080/api/health'
     wait_for 'web health' 'http://localhost:3000/'
