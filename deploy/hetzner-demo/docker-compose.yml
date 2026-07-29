@@ -1,0 +1,129 @@
+name: callquanta-demo
+
+# A single-workspace, domain-backed demo deployment for a small VPS.
+# It deliberately excludes Ollama and the recording worker: use an external
+# OpenAI-compatible QA provider and manual, approved audio uploads instead.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    env_file: ${HETZNER_DEMO_ENV_FILE:-.env}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      UPLOAD_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - api_uploads:/app/uploads
+
+  web:
+    build:
+      context: ../../apps/web
+      args:
+        PUBLIC_APP_URL: ${PUBLIC_APP_URL}
+        NEXT_PUBLIC_PUBLIC_APP_URL: ${PUBLIC_APP_URL}
+        NEXT_PUBLIC_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_INTERNAL_BASE_URL: http://api:8000
+      INTERNAL_API_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: /api
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-callquanta_session}
+
+  stt-worker:
+    build:
+      context: ../..
+      dockerfile: workers/stt-worker/Dockerfile
+    env_file: ${HETZNER_DEMO_ENV_FILE:-.env}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      FASTER_WHISPER_MODEL: /models/faster-whisper
+      FASTER_WHISPER_DEVICE: cpu
+      FASTER_WHISPER_COMPUTE_TYPE: int8
+    volumes:
+      - api_uploads:/app/uploads:ro
+      - ${HOST_FASTER_WHISPER_MODEL_DIR}:/models/faster-whisper:ro
+
+  qa-worker:
+    build:
+      context: ../..
+      dockerfile: workers/qa-worker/Dockerfile
+    env_file: ${HETZNER_DEMO_ENV_FILE:-.env}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      PUBLIC_APP_HOST: ${PUBLIC_APP_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_uploads:
+  caddy_data:
+  caddy_config:

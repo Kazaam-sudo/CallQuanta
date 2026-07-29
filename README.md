@@ -164,6 +164,7 @@ docker compose up --build
 - [Providers](docs/providers.md)
 - [Scorecards](docs/scorecards.md)
 - [Production deployment](docs/deploy-production.md)
+- [Hetzner domain-backed demo deployment](docs/hetzner-demo-deployment.md)
 
 ## Pilot testing workflow (v0.23.0)
 
