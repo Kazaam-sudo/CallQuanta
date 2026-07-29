@@ -72,6 +72,11 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config
 
+      - name: Validate Hetzner demo Compose
+        env:
+          HETZNER_DEMO_ENV_FILE: .env.example
+        run: docker compose --env-file deploy/hetzner-demo/.env.example -f deploy/hetzner-demo/docker-compose.yml config
+
       - name: Start local stack
         run: |
           docker compose pull postgres redis ollama || docker compose pull postgres redis ollama || true
