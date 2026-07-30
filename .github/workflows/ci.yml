@@ -83,6 +83,9 @@ jobs:
           HOST_FASTER_WHISPER_MODEL_DIR: ''
         run: docker compose --env-file deploy/hetzner-demo/.env.example -f deploy/hetzner-demo/docker-compose.yml -f deploy/hetzner-demo/docker-compose.low-memory.yml config
 
+      - name: Validate Hetzner demo Caddy routes
+        run: python -m unittest scripts/test_hetzner_demo_caddyfile.py
+
       - name: Start local stack
         run: |
           docker compose pull postgres redis ollama || docker compose pull postgres redis ollama || true

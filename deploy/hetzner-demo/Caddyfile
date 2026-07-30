@@ -1,8 +1,12 @@
 {$PUBLIC_APP_HOST} {
   encode gzip zstd
 
-  @apiHealth path /health
-  reverse_proxy @apiHealth api:8000
+  # Keep API routes inside `handle` blocks. A bare reverse_proxy directive is
+  # ordered after the catch-all `handle` by Caddy, which would send /health to
+  # the Next.js app instead of the API.
+  handle /health {
+    reverse_proxy api:8000
+  }
 
   handle_path /api/* {
     reverse_proxy api:8000
@@ -12,7 +16,9 @@
     not header Accept *text/html*
     path /auth/* /calls* /dashboard* /settings* /system* /integrations* /qa-reviews* /exports* /feedback* /pilot-feedback* /scorecards* /jobs* /qa-feedback*
   }
-  reverse_proxy @apiBackend api:8000
+  handle @apiBackend {
+    reverse_proxy api:8000
+  }
 
   handle {
     reverse_proxy web:3000
