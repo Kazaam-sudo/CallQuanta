@@ -84,12 +84,15 @@ services:
       api:
         condition: service_healthy
     environment:
-      FASTER_WHISPER_MODEL: /models/faster-whisper
+      FASTER_WHISPER_MODEL: ${FASTER_WHISPER_MODEL:-/models/faster-whisper}
       FASTER_WHISPER_DEVICE: cpu
       FASTER_WHISPER_COMPUTE_TYPE: int8
     volumes:
       - api_uploads:/app/uploads:ro
-      - ${HOST_FASTER_WHISPER_MODEL_DIR}:/models/faster-whisper:ro
+      # A configured host model directory avoids a download. When it is empty,
+      # the named cache is used instead; this enables the low-memory overlay.
+      - ${HOST_FASTER_WHISPER_MODEL_DIR:-stt_model_cache}:/models/faster-whisper:ro
+      - stt_model_cache:/root/.cache/huggingface
 
   qa-worker:
     build:
@@ -127,3 +130,4 @@ volumes:
   api_uploads:
   caddy_data:
   caddy_config:
+  stt_model_cache:
