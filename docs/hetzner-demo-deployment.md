@@ -73,6 +73,34 @@ Sign in through the browser, upload one short approved test recording, wait for
 the transcript and QA review, then confirm no raw recording or credential value
 appears in container logs before sharing the link.
 
+## 4 GB functional-test mode
+
+The normal profile requires at least 8 GB RAM. If the VPS has only 4 GB and is
+also running OpenClaw, use the following overlay **only** for a brief,
+single-user functional test. It is not a 24/7 production profile and it must
+not process more than one short recording at a time.
+
+The overlay applies hard container memory limits, reduces uploads to 25 MB,
+limits successful demo calls to three, and uses `tiny` rather than
+`faster-whisper-small`. The existing OpenAI Whisper `.pt` cache is not usable
+by `faster-whisper`; on its first transcription, `tiny` is downloaded in the
+worker's persistent Docker volume. Leave `HOST_FASTER_WHISPER_MODEL_DIR` empty
+in the server `.env` for this mode.
+
+```sh
+docker compose --env-file deploy/hetzner-demo/.env \
+  -f deploy/hetzner-demo/docker-compose.yml \
+  -f deploy/hetzner-demo/docker-compose.low-memory.yml config >/dev/null
+
+docker compose --env-file deploy/hetzner-demo/.env \
+  -f deploy/hetzner-demo/docker-compose.yml \
+  -f deploy/hetzner-demo/docker-compose.low-memory.yml up -d --build
+```
+
+Do not start a transcription while the VM is under memory pressure. If any
+service is killed, swap grows continuously, or the host reports an OOM event,
+stop this overlay and move to the 8 GB profile rather than raising limits.
+
 ## Updating from GitHub
 
 Before every update, create a database and uploads backup. From the repository

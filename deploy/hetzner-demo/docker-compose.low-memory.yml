@@ -1,0 +1,44 @@
+# Temporary functional-test overlay for a 4 GB VPS shared with OpenClaw.
+# Do not use it for unattended production traffic or more than one short
+# transcription at a time. It intentionally downloads and uses the smaller
+# CTranslate2 tiny model in the persistent stt_model_cache volume.
+services:
+  postgres:
+    mem_limit: 384m
+    cpus: 0.50
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "work_mem=2MB"]
+
+  redis:
+    mem_limit: 128m
+    cpus: 0.25
+
+  api:
+    mem_limit: 384m
+    cpus: 0.50
+    environment:
+      MAX_UPLOAD_BYTES_PER_FILE: 26214400
+      MAX_BULK_UPLOAD_BYTES: 26214400
+      DEMO_CALL_LIMIT: 3
+
+  web:
+    mem_limit: 384m
+    cpus: 0.50
+
+  stt-worker:
+    mem_limit: 768m
+    cpus: 1.00
+    environment:
+      FASTER_WHISPER_MODEL: tiny
+      FASTER_WHISPER_DEVICE: cpu
+      FASTER_WHISPER_COMPUTE_TYPE: int8
+      DEMO_CALL_LIMIT: 3
+
+  qa-worker:
+    mem_limit: 384m
+    cpus: 0.50
+    environment:
+      DEMO_CALL_LIMIT: 3
+
+  gateway:
+    mem_limit: 128m
+    cpus: 0.25
