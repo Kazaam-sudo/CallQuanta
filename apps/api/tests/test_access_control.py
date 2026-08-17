@@ -69,6 +69,28 @@ class AccessControlTests(unittest.TestCase):
             main.require_admin(self.viewer)
         self.assertEqual(ctx.exception.status_code, 403)
 
+    def test_bootstrap_guest_demo_user_is_read_only_and_team_scoped(self):
+        original = (main.GUEST_DEMO_EMAIL, main.GUEST_DEMO_PASSWORD, main.GUEST_DEMO_TEAM)
+        try:
+            main.GUEST_DEMO_EMAIL = "guest-demo@example.com"
+            main.GUEST_DEMO_PASSWORD = "GuestDemo2026"
+            main.GUEST_DEMO_TEAM = "demo"
+            self.db.add(Call(filename="demo.wav", status="uploaded", team="demo"))
+            self.db.commit()
+
+            main._bootstrap_guest_demo_user(self.db)
+
+            guest = self.db.execute(main.select(User).where(User.email == "guest-demo@example.com")).scalar_one()
+            self.assertEqual(guest.role, "viewer")
+            self.assertEqual(guest.visibility_scope, "team")
+            self.assertEqual(guest.team, "demo")
+            self.assertEqual(main.list_calls(limit=50, offset=0, db=self.db, user=guest)["total"], 1)
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_can_modify_call(self.call_a, guest)
+            self.assertEqual(ctx.exception.status_code, 403)
+        finally:
+            main.GUEST_DEMO_EMAIL, main.GUEST_DEMO_PASSWORD, main.GUEST_DEMO_TEAM = original
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,9 @@ SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "callquanta_session"
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+GUEST_DEMO_EMAIL = os.environ.get("GUEST_DEMO_EMAIL", "").strip().lower()
+GUEST_DEMO_PASSWORD = os.environ.get("GUEST_DEMO_PASSWORD", "")
+GUEST_DEMO_TEAM = os.environ.get("GUEST_DEMO_TEAM", "demo").strip() or "demo"
 WORKER_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
 RETENTION_SETTINGS_KEY = "retention"
 DEFAULT_RETENTION_SETTINGS = {
@@ -672,6 +675,39 @@ def _bootstrap_admin_user(db: Session) -> None:
     logger.info("Created first admin user from ADMIN_EMAIL: %s", ADMIN_EMAIL)
 
 
+def _bootstrap_guest_demo_user(db: Session) -> None:
+    """Create a read-only demo user once, without changing an existing account.
+
+    The account is intentionally scoped to a dedicated `demo` team. Production
+    call data must never use that team name; only synthetic or de-identified
+    examples belong there.
+    """
+    if not GUEST_DEMO_EMAIL and not GUEST_DEMO_PASSWORD:
+        return
+    if not GUEST_DEMO_EMAIL or not GUEST_DEMO_PASSWORD:
+        logger.warning("Guest demo account was not created: set both GUEST_DEMO_EMAIL and GUEST_DEMO_PASSWORD.")
+        return
+    if db.execute(select(User.id).where(User.email == GUEST_DEMO_EMAIL)).first():
+        return
+    try:
+        email = _validate_email(GUEST_DEMO_EMAIL)
+        password = _validate_password_policy(GUEST_DEMO_PASSWORD, "GUEST_DEMO_PASSWORD")
+    except HTTPException as exc:
+        logger.warning("Guest demo account was not created: %s", exc.detail)
+        return
+    db.add(User(
+        email=email,
+        password_hash=_hash_password(password),
+        role="viewer",
+        team=GUEST_DEMO_TEAM,
+        visibility_scope="team",
+        is_active=True,
+        must_change_password=False,
+    ))
+    db.commit()
+    logger.info("Created read-only guest demo user for team: %s", GUEST_DEMO_TEAM)
+
+
 def _normalize_workspace_settings(value: dict | None) -> dict:
     settings = dict(DEFAULT_WORKSPACE_SETTINGS)
     if isinstance(value, dict):
@@ -883,6 +919,7 @@ def on_startup() -> None:
     migrate_topic_tables(engine)
     with SessionLocal() as db:
         _bootstrap_admin_user(db)
+        _bootstrap_guest_demo_user(db)
         _seed_default_topics(db)
         db.execute(text("UPDATE users SET visibility_scope = 'all' WHERE role = 'admin' AND (visibility_scope IS NULL OR visibility_scope = '' OR visibility_scope = 'team')"))
         db.commit()
