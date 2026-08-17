@@ -45,6 +45,9 @@ Set these before exposing the app:
 - `REQUIRE_AUTH=true`
 - `ADMIN_EMAIL=admin@example.com`
 - `ADMIN_PASSWORD=<strong one-time bootstrap password>`
+- `GUEST_DEMO_EMAIL=<optional external-demo login>`
+- `GUEST_DEMO_PASSWORD=<strong demo password, stored only in the server secret store>`
+- `GUEST_DEMO_TEAM=demo` — this account is a read-only viewer and sees only this team.
 - `SESSION_SECRET=<long random value>`
 - `POSTGRES_PASSWORD=<strong database password>`
 - `DATABASE_URL=postgresql+psycopg://...`
@@ -54,6 +57,10 @@ Set these before exposing the app:
 - Retention defaults if desired: `RETENTION_AUDIO_DAYS`, `RETENTION_TRANSCRIPTS_DAYS`, `RETENTION_QA_REVIEWS_DAYS`, `RETENTION_INGESTION_EVENTS_DAYS`.
 
 If no users exist, the API creates the first active admin from `ADMIN_EMAIL` and `ADMIN_PASSWORD` during startup. In production mode, a missing `ADMIN_PASSWORD` emits a clear warning and login will not be available until credentials are configured and the API is restarted.
+
+## External demo login
+
+Set both `GUEST_DEMO_EMAIL` and `GUEST_DEMO_PASSWORD` to create one read-only guest account at startup. It is limited to `GUEST_DEMO_TEAM` (default: `demo`) and cannot open settings, provider keys, integrations, users, or calls from other teams. Do not put any real customer call in that team: load only synthetic or properly de-identified demo calls. The account is created once; changing its password later is done by an admin in **Settings → Users & Access**.
 
 ## Storage volume notes
 
