@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stt_language import normalize_stt_language
+from stt_language import normalize_stt_language, stt_initial_prompt
 
 
 def test_normalize_stt_language_locales_and_auto_values():
@@ -23,6 +23,12 @@ def test_normalize_stt_language_locales_and_auto_values():
     }
     for value, expected in cases.items():
         assert normalize_stt_language(value) == expected
+
+
+def test_russian_uses_language_code_without_instruction_prompt():
+    # The language code is enough; an English instruction as initial_prompt
+    # made the base model stop after the greeting in our Russian audio smoke test.
+    assert stt_initial_prompt("ru") is None
 
 
 def test_ffmpeg_wav_command_uses_safe_audio_normalization_flags():

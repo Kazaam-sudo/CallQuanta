@@ -14,7 +14,6 @@ SUPPORTED_STT_LANGUAGE_CODES = {item["code"] for item in SUPPORTED_STT_LANGUAGES
 
 INITIAL_PROMPTS = {
     "uz": "Transcribe the audio in Uzbek. Prefer Latin Uzbek script. Do not use Arabic script.",
-    "ru": "Transcribe the audio in Russian.",
     "en": "Transcribe the audio in English.",
 }
 

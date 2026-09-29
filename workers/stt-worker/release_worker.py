@@ -4,6 +4,7 @@ import os
 import signal
 from datetime import UTC, datetime
 
+import requests
 from sqlalchemy import delete, func, select
 
 import worker
@@ -12,6 +13,23 @@ from packages.demo_quota import release_demo_call, reserve_demo_call
 from packages.reliable_queue import acknowledge_job, claim_job, enqueue_job, fail_job, recover_processing_jobs
 
 MAX_JOB_ATTEMPTS = int(os.environ.get("WORKER_MAX_JOB_ATTEMPTS", "3"))
+LITE_API_BASE_URL = os.environ.get("LITE_API_BASE_URL", "http://api:8000").strip().rstrip("/")
+LITE_SERVICE_TOKEN = os.environ.get("LITE_SERVICE_TOKEN", "").strip()
+
+
+def _request_lite_audio_cleanup(call_id: int) -> None:
+    if not LITE_SERVICE_TOKEN:
+        raise RuntimeError("Lite service token is missing for source-audio cleanup")
+    try:
+        response = requests.post(
+            f"{LITE_API_BASE_URL}/internal/lite/calls/{call_id}/audio-cleanup",
+            headers={"X-CallQuanta-Service-Token": LITE_SERVICE_TOKEN},
+            timeout=(10, 30),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Lite source-audio cleanup request failed") from exc
+    if response.status_code != 200:
+        raise RuntimeError(f"Lite source-audio cleanup failed with HTTP {response.status_code}")
 
 
 def _completed_demo_calls(db) -> int:
@@ -25,7 +43,10 @@ def _completed_demo_calls(db) -> int:
 
 def _enqueue_auto_qa(db, call: Call) -> tuple[bool, str | None]:
     reserved = False
-    if worker.DEMO_CALL_LIMIT > 0:
+    # Telegram Lite has its own per-user quota. Do not consume the legacy
+    # deployment-wide demo pool for those calls as well.
+    uses_legacy_demo_quota = call.source != "telegram_lite"
+    if worker.DEMO_CALL_LIMIT > 0 and uses_legacy_demo_quota:
         accepted, already_reserved = reserve_demo_call(
             worker.redis_client,
             call_id=call.id,
@@ -39,7 +60,7 @@ def _enqueue_auto_qa(db, call: Call) -> tuple[bool, str | None]:
     ok, duplicate, _ = enqueue_job(
         worker.redis_client,
         worker.QA_QUEUE,
-        {"call_id": call.id, "demo_reservation": worker.DEMO_CALL_LIMIT > 0},
+        {"call_id": call.id, "demo_reservation": worker.DEMO_CALL_LIMIT > 0 and uses_legacy_demo_quota},
     )
     if not ok:
         if reserved:
@@ -61,37 +82,57 @@ def process_transcription_job(call_id: int) -> None:
             call.last_error_message = None
             db.commit()
 
-            db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
-            config = worker.active_stt_provider_config_or_fallback(db, f"call {call_id} provider lookup")
-            if config is None and worker.STT_MODE == "placeholder":
-                db.add_all(worker.placeholder_segments(call_id))
-                call.stt_provider_name = "Env placeholder"
-                call.stt_provider_type = "placeholder"
-                call.stt_model = "placeholder"
-                call.stt_language_used = worker.normalize_stt_language(call.language)
-                call.detected_language = None
-            else:
-                config = config or worker.fallback_stt_provider_config()
-                if config is None:
-                    raise ValueError(f"unsupported STT_MODE: {worker.STT_MODE}")
-                result = worker.transcribe_with_provider(call, config)
-                db.add_all(
-                    [
-                        TranscriptSegment(
-                            call_id=call_id,
-                            speaker=segment.speaker or "unknown",
-                            start_ms=int(segment.start_seconds * 1000),
-                            end_ms=int(segment.end_seconds * 1000),
-                            text=segment.text,
-                        )
-                        for segment in result.segments
-                    ]
-                )
-                call.stt_provider_name = result.provider_name
-                call.stt_provider_type = result.provider_type
-                call.stt_model = result.model
-                call.stt_language_used = result.stt_language_used
-                call.detected_language = result.detected_language
+            should_transcribe = True
+            if call.source == "telegram_lite":
+                has_lite_transcript = db.execute(
+                    select(TranscriptSegment.id).where(TranscriptSegment.call_id == call_id).limit(1)
+                ).first() is not None
+                if call.audio_deleted and not call.stt_model:
+                    raise ValueError("Telegram Lite audio was deleted before speech transcription completed")
+                if call.audio_deleted or has_lite_transcript:
+                    should_transcribe = False
+
+            if should_transcribe:
+                db.execute(delete(TranscriptSegment).where(TranscriptSegment.call_id == call_id))
+                config = worker.active_stt_provider_config_or_fallback(db, f"call {call_id} provider lookup")
+                if config is None and worker.STT_MODE == "placeholder":
+                    db.add_all(worker.placeholder_segments(call_id))
+                    call.stt_provider_name = "Env placeholder"
+                    call.stt_provider_type = "placeholder"
+                    call.stt_model = "placeholder"
+                    call.stt_language_used = worker.normalize_stt_language(call.language)
+                    call.detected_language = None
+                else:
+                    config = config or worker.fallback_stt_provider_config()
+                    if config is None:
+                        raise ValueError(f"unsupported STT_MODE: {worker.STT_MODE}")
+                    result = worker.transcribe_with_provider(call, config)
+                    db.add_all(
+                        [
+                            TranscriptSegment(
+                                call_id=call_id,
+                                speaker=segment.speaker or "unknown",
+                                start_ms=int(segment.start_seconds * 1000),
+                                end_ms=int(segment.end_seconds * 1000),
+                                text=segment.text,
+                            )
+                            for segment in result.segments
+                        ]
+                    )
+                    call.stt_provider_name = result.provider_name
+                    call.stt_provider_type = result.provider_type
+                    call.stt_model = result.model
+                    call.stt_language_used = result.stt_language_used
+                    call.detected_language = result.detected_language
+
+            if call.source == "telegram_lite" and not call.audio_deleted:
+                if should_transcribe:
+                    db.flush()
+                    # Persist STT output before asking the API to delete the source file.
+                    db.commit()
+                    db.refresh(call)
+                _request_lite_audio_cleanup(call_id)
+                db.refresh(call)
 
             if call.auto_analyze_after_transcription:
                 queued, reason = _enqueue_auto_qa(db, call)
@@ -158,6 +199,11 @@ def _mark_terminal_failure(call_id: int, error: str) -> None:
             call.last_error_message = f"Transcription failed after retries: {error[:500]}"
             call.last_processed_at = datetime.now(UTC)
             db.commit()
+            if call.source == "telegram_lite" and not call.audio_deleted:
+                try:
+                    _request_lite_audio_cleanup(call_id)
+                except RuntimeError as cleanup_error:
+                    print(f"call {call_id} Lite audio cleanup failed: {cleanup_error}")
 
 
 def run_worker() -> None:
