@@ -58,6 +58,15 @@ jobs:
       - name: Validate Python syntax
         run: python -m compileall apps/api workers packages
 
+      - name: Install Lite test dependencies
+        run: python -m pip install -r apps/api/requirements.txt -r apps/lite-bot/requirements.txt
+
+      - name: Test Lite billing, audio cleanup, and Telegram flows
+        run: |
+          python -m unittest discover -s apps/api/tests -p 'test_lite_stars_payments.py' -v
+          python -m unittest discover -s apps/api/tests -p 'test_lite_audio_cleanup.py' -v
+          python -m unittest discover -s apps/lite-bot -p 'test_stars_payments.py' -v
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
