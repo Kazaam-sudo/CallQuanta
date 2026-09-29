@@ -2,6 +2,7 @@ import asyncio
 import sys
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -96,6 +97,16 @@ class LiteStarsPaymentTests(unittest.TestCase):
         self.assertEqual(self.db.execute(select(func.count(LiteStarsPayment.id))).scalar_one(), 1)
         self.assertEqual(self.db.execute(select(func.count(LiteCreditLot.id))).scalar_one(), 1)
 
+    def test_separate_purchases_add_paid_credits_to_current_balance(self):
+        first = self._order("analysis_1")
+        self._confirm(first, "test-charge-repurchase-one")
+        second = self._order("analysis_5")
+        result = self._confirm(second, "test-charge-repurchase-five")
+
+        self.assertNotEqual(first["invoice_payload"], second["invoice_payload"])
+        self.assertEqual(result["paid_remaining"], 6)
+        self.assertEqual(self.db.execute(select(func.count(LiteCreditLot.id))).scalar_one(), 2)
+
     def test_paid_credit_refund_is_once_only(self):
         order = self._order("analysis_1")
         self._confirm(order, "test-charge-single")
@@ -146,16 +157,14 @@ class LiteStarsPaymentTests(unittest.TestCase):
         allocation = self.db.execute(select(LiteQuotaAllocation).where(LiteQuotaAllocation.lite_job_id == result["job_id"])).scalar_one()
         self.assertEqual(allocation.source, "paid")
 
-    def test_subscription_credits_expire_and_cancellation_keeps_period_record(self):
+    def test_subscription_credits_stack_then_expire_by_paid_period(self):
         order = self._order("monthly_10")
-        expires_at = int(time.time()) + 30 * 24 * 60 * 60
-        self._confirm(order, "test-charge-monthly", recurring=True, first=True, expiration=expires_at)
-        subscription = main.get_lite_subscription(self.user_id, self.db, _token=None)
-        self.assertTrue(subscription["active"])
-        self.assertEqual(main._lite_paid_remaining(
-            self.db,
-            self.db.execute(select(LiteUser).where(LiteUser.telegram_user_id == self.user_id)).scalar_one(),
-        ), 10)
+        first_expiration = int(time.time()) + 30 * 24 * 60 * 60
+        second_expiration = first_expiration + 30 * 24 * 60 * 60
+        self._confirm(order, "test-charge-monthly-first", recurring=True, first=True, expiration=first_expiration)
+        self._confirm(order, "test-charge-monthly-renewal", recurring=True, expiration=second_expiration)
+        user = self.db.execute(select(LiteUser).where(LiteUser.telegram_user_id == self.user_id)).scalar_one()
+        self.assertEqual(main._lite_paid_remaining(self.db, user), 20)
 
         canceled = main.update_lite_subscription_event(
             main.LiteSubscriptionEventRequest(
@@ -167,9 +176,23 @@ class LiteStarsPaymentTests(unittest.TestCase):
             _token=None,
         )
         self.assertEqual(canceled["state"], "canceled")
-        subscription = main.get_lite_subscription(self.user_id, self.db, _token=None)
-        self.assertFalse(subscription["active"])
-        self.assertEqual(subscription["status"], "canceled")
+        subscription_status = main.get_lite_subscription(self.user_id, self.db, _token=None)
+        self.assertFalse(subscription_status["active"])
+        self.assertEqual(subscription_status["status"], "canceled")
+
+        # Buying again after cancellation adds a new tranche; it does not replace
+        # the remaining balance from the previous paid periods.
+        repurchase = self._order("monthly_10")
+        self.assertNotEqual(repurchase["invoice_payload"], order["invoice_payload"])
+        third_expiration = second_expiration + 30 * 24 * 60 * 60
+        self._confirm(repurchase, "test-charge-monthly-repurchase", recurring=True, first=True, expiration=third_expiration)
+        self.assertEqual(main._lite_paid_remaining(self.db, user), 30)
+
+        # Monthly credits do not roll over: each tranche expires with its own paid period.
+        with patch.object(main, "_utcnow", return_value=datetime.fromtimestamp(first_expiration + 1, tz=UTC)):
+            self.assertEqual(main._lite_paid_remaining(self.db, user), 20)
+        with patch.object(main, "_utcnow", return_value=datetime.fromtimestamp(second_expiration + 1, tz=UTC)):
+            self.assertEqual(main._lite_paid_remaining(self.db, user), 10)
 
 
 if __name__ == "__main__":
