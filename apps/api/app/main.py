@@ -23,11 +23,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from io import BytesIO, StringIO
 from openpyxl import Workbook
 from sqlalchemy import create_engine, func, or_, select, text, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from .db import AppSetting, AuditEvent, Base, Call, CallTopic, CallTopicClassification, IngestionEvent, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TopicActionResult, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables, migrate_topic_tables
+from .db import AppSetting, AuditEvent, Base, Call, CallTopic, CallTopicClassification, IngestionEvent, LiteCreditLot, LiteJob, LitePaymentOrder, LiteQuotaAllocation, LiteStarsPayment, LiteUser, ProviderConfig, QACoachingAction, QAFeedback, QAReview, QAReviewAssignment, ScorecardConfig, SttProviderConfig, TelephonyIntegration, TopicActionResult, TranscriptSegment, User, migrate_access_control_tables, migrate_calls_table, migrate_production_readiness_tables, migrate_qa_coaching_actions_table, migrate_pilot_feedback_tables, migrate_qa_reviews_table, migrate_stt_provider_configs_table, migrate_telephony_ingestion_tables, migrate_topic_tables
+from .lite_audio_cleanup import delete_lite_audio_file
 from .stt_languages import SUPPORTED_STT_LANGUAGES, SUPPORTED_STT_LANGUAGE_CODES, normalize_language_code, normalize_stt_language
 
 app = FastAPI(title="CallQuanta API", version="0.25.0")
@@ -76,6 +78,17 @@ MAX_UPLOAD_BYTES_PER_FILE = int(
 )
 MAX_BULK_UPLOAD_BYTES = int(os.environ.get("MAX_BULK_UPLOAD_BYTES", str(DEFAULT_MAX_BULK_UPLOAD_BYTES)) or "0")
 DEMO_CALL_LIMIT = int(os.environ.get("DEMO_CALL_LIMIT", "50") or "0")
+LITE_SERVICE_TOKEN = os.environ.get("LITE_SERVICE_TOKEN", "").strip()
+LITE_FREE_ANALYSES = int(os.environ.get("LITE_FREE_ANALYSES", "3") or "0")
+LITE_MAX_UPLOAD_BYTES = int(os.environ.get("LITE_MAX_UPLOAD_BYTES", str(18 * 1024 * 1024)) or "0")
+LITE_MAX_DURATION_SECONDS = int(os.environ.get("LITE_MAX_DURATION_SECONDS", "1200") or "0")
+LITE_RETENTION_DAYS = int(os.environ.get("LITE_RETENTION_DAYS", "30") or "30")
+LITE_STARS_SUBSCRIPTION_PERIOD_SECONDS = 30 * 24 * 60 * 60
+LITE_STARS_PRODUCTS = {
+    "analysis_1": {"title": "1 анализ", "description": "Один анализ звонка до 20 минут и 18 МБ.", "stars": 50, "analyses": 1, "subscription": False},
+    "analysis_5": {"title": "5 анализов", "description": "Пакет из пяти анализов звонков до 20 минут и 18 МБ каждый.", "stars": 200, "analyses": 5, "subscription": False},
+    "monthly_10": {"title": "10 анализов в месяц", "description": "10 анализов на 30 дней. Автопродление за 350 ⭐; отмена в любой момент.", "stars": 350, "analyses": 10, "subscription": True},
+}
 
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() in {"1", "true", "yes", "on"}
@@ -152,10 +165,10 @@ STT_PROVIDER_PRESETS = [
 PROVIDER_PRESETS = [
     {"id": "ollama", "label": "Ollama Local", "provider_type": "openai_compatible", "default_base_url": "http://ollama:11434/v1", "default_model": "qwen2.5:1.5b", "api_key_required": False},
     {"id": "openai", "label": "OpenAI", "provider_type": "openai_compatible", "default_base_url": "https://api.openai.com/v1", "default_model": "gpt-5.4-nano", "api_key_required": True},
-    {"id": "groq", "label": "Groq", "provider_type": "openai_compatible", "default_base_url": "https://api.groq.com/openai/v1", "default_model": "qwen/qwen3-32b", "api_key_required": True},
+    {"id": "groq", "label": "Groq", "provider_type": "openai_compatible", "default_base_url": "https://api.groq.com/openai/v1", "default_model": "qwen/qwen3.8-27b", "api_key_required": True},
     {"id": "openrouter", "label": "OpenRouter", "provider_type": "openai_compatible", "default_base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-oss-120b", "api_key_required": True},
     {"id": "cloudflare", "label": "Cloudflare Workers AI", "provider_type": "openai_compatible", "default_base_url": "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", "default_model": "@cf/meta/llama-3.1-8b-instruct", "api_key_required": True, "note": "Replace {ACCOUNT_ID} before using."},
-    {"id": "gemini", "label": "Google Gemini", "provider_type": "openai_compatible", "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "default_model": "gemini-3.5-flash", "api_key_required": True},
+    {"id": "gemini", "label": "Google Gemini", "provider_type": "openai_compatible", "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "default_model": "gemini-3.8-flash", "api_key_required": True},
     {"id": "anthropic", "label": "Anthropic Claude", "provider_type": "openai_compatible", "default_base_url": "https://api.anthropic.com/v1", "default_model": "claude-sonnet-4-5", "api_key_required": True, "note": "Compatibility may not support every OpenAI parameter."},
     {"id": "together", "label": "Together AI", "provider_type": "openai_compatible", "default_base_url": "https://api.together.xyz/v1", "default_model": "Qwen/Qwen3-32B", "api_key_required": True},
     {"id": "custom", "label": "Custom OpenAI-compatible", "provider_type": "openai_compatible", "default_base_url": "", "default_model": "", "api_key_required": False},
@@ -234,6 +247,35 @@ class ScorecardPayload(BaseModel):
     name: str
     report_language: str = "english"
     criteria: list[ScorecardCriterion]
+
+
+class LiteStarsOrderRequest(BaseModel):
+    telegram_user_id: int
+    product_code: str
+
+
+class LiteStarsPreCheckoutRequest(BaseModel):
+    invoice_payload: str
+    telegram_user_id: int
+    currency: str
+    total_amount: int
+
+
+class LiteStarsPaymentRequest(BaseModel):
+    invoice_payload: str
+    telegram_user_id: int
+    currency: str
+    total_amount: int
+    telegram_payment_charge_id: str
+    is_recurring: bool = False
+    is_first_recurring: bool = False
+    subscription_expiration_date: int | None = None
+
+
+class LiteSubscriptionEventRequest(BaseModel):
+    invoice_payload: str
+    telegram_user_id: int
+    state: str
 
 
 
@@ -442,7 +484,7 @@ class QAFeedbackPayload(BaseModel):
 
 
 AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/auth/login", "/auth/logout"}
-AUTH_EXEMPT_PREFIXES = ("/integrations/telephony/webhook/",)
+AUTH_EXEMPT_PREFIXES = ("/integrations/telephony/webhook/", "/internal/lite/")
 
 
 def _utcnow() -> datetime:
@@ -643,6 +685,14 @@ def _generate_temporary_password() -> str:
 
 def _auth_is_exempt(path: str) -> bool:
     return path in AUTH_EXEMPT_PATHS or any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES)
+
+
+def require_lite_service_token(x_callquanta_service_token: str | None = Header(None)) -> None:
+    """Authenticate the internal Telegram Lite adapter without exposing session cookies."""
+    if not LITE_SERVICE_TOKEN or not x_callquanta_service_token or not hmac.compare_digest(
+        x_callquanta_service_token.strip(), LITE_SERVICE_TOKEN
+    ):
+        raise HTTPException(status_code=401, detail="Invalid Lite service token")
 
 
 @app.middleware("http")
@@ -913,7 +963,7 @@ def on_startup() -> None:
     migrate_pilot_feedback_tables(engine)
     migrate_calls_table(engine)
     migrate_stt_provider_configs_table(engine)
-    migrate_telephony_ingestion_tables, migrate_topic_tables(engine)
+    migrate_telephony_ingestion_tables(engine)
     migrate_production_readiness_tables(engine)
     migrate_access_control_tables(engine)
     migrate_topic_tables(engine)
@@ -1203,6 +1253,131 @@ async def _create_uploaded_call(file: UploadFile, db: Session, metadata: CallMet
     return call
 
 
+def _lite_remaining(user: LiteUser) -> int:
+    return max(0, int(user.analyses_limit or 0) - int(user.analyses_used or 0))
+
+
+def _lite_paid_remaining(db: Session, user: LiteUser) -> int:
+    total = db.execute(
+        select(func.coalesce(func.sum(LiteCreditLot.remaining_count), 0)).where(
+            LiteCreditLot.lite_user_id == user.id,
+            LiteCreditLot.remaining_count > 0,
+            or_(LiteCreditLot.expires_at.is_(None), LiteCreditLot.expires_at > _utcnow()),
+        )
+    ).scalar_one()
+    return max(0, int(total or 0))
+
+
+def _lite_datetime_is_future(value: datetime | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return normalized > _utcnow()
+
+
+def _lite_user_for_update(db: Session, telegram_user_id: int) -> LiteUser:
+    user = db.execute(
+        select(LiteUser).where(LiteUser.telegram_user_id == telegram_user_id).with_for_update()
+    ).scalar_one_or_none()
+    if user:
+        return user
+    user = LiteUser(
+        telegram_user_id=telegram_user_id,
+        plan="free",
+        analyses_limit=max(0, LITE_FREE_ANALYSES),
+        analyses_used=0,
+    )
+    db.add(user)
+    db.flush()
+    return user
+
+
+def _lite_order_response(order: LitePaymentOrder) -> dict:
+    product = LITE_STARS_PRODUCTS[order.product_code]
+    return {
+        "invoice_payload": order.invoice_payload,
+        "product_code": order.product_code,
+        "title": product["title"],
+        "description": product["description"],
+        "stars_amount": order.stars_amount,
+        "analyses_count": order.analyses_count,
+        "is_subscription": bool(order.is_subscription),
+        "subscription_period": LITE_STARS_SUBSCRIPTION_PERIOD_SECONDS if order.is_subscription else None,
+    }
+
+
+def _refund_lite_quota(db: Session, job: LiteJob, user: LiteUser) -> bool:
+    allocation = db.execute(
+        select(LiteQuotaAllocation).where(LiteQuotaAllocation.lite_job_id == job.id).with_for_update()
+    ).scalar_one_or_none()
+    if not allocation or allocation.refunded_at is not None:
+        return False
+    if allocation.source == "free":
+        user.analyses_used = max(0, int(user.analyses_used or 0) - 1)
+    elif allocation.source == "paid" and allocation.credit_lot_id:
+        lot = db.execute(
+            select(LiteCreditLot).where(LiteCreditLot.id == allocation.credit_lot_id).with_for_update()
+        ).scalar_one_or_none()
+        if lot:
+            lot.remaining_count = int(lot.remaining_count or 0) + 1
+    allocation.refunded_at = _utcnow()
+    return True
+
+
+def _lite_external_call_id(telegram_user_id: int, idempotency_key: str) -> str:
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
+    return f"lite:{telegram_user_id}:{digest}"
+
+
+async def _store_lite_upload_file(file: UploadFile, safe_name: str) -> tuple[str, Path, int]:
+    """Store only the transient pipeline copy; retention cleanup removes it later."""
+    stored_name = f"lite_{uuid4().hex}_{safe_name}"
+    stored_path = UPLOAD_DIR / stored_name
+    size = 0
+    try:
+        with stored_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if LITE_MAX_UPLOAD_BYTES and size > LITE_MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Lite audio is limited to 18 MB")
+                handle.write(chunk)
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded audio is empty")
+    return stored_name, stored_path, size
+
+
+def _serialize_lite_job(job: LiteJob, user: LiteUser, db: Session, call: Call | None = None, review: QAReview | None = None) -> dict:
+    result = None
+    if review and review.status == "success":
+        result = {
+            "score": review.score,
+            "summary": review.summary,
+            "criteria": review.criteria_breakdown or [],
+            "findings": review.findings or [],
+        }
+    return {
+        "job_id": job.id,
+        "call_id": job.call_id,
+        "status": call.status if call else job.status,
+        "filename": job.filename,
+        "error": job.error_message or (call.last_error_message if call else None),
+        "remaining": _lite_remaining(user),
+        "free_remaining": _lite_remaining(user),
+        "paid_remaining": _lite_paid_remaining(db, user),
+        "result": result,
+        "audio_deleted": bool(call.audio_deleted) if call else None,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "expires_at": job.expires_at.isoformat() if job.expires_at else None,
+    }
+
+
 def _ensure_not_last_active_admin(db: Session, user: User) -> None:
     if user.role != "admin" or not user.is_active:
         return
@@ -1370,6 +1545,465 @@ async def upload_call(
     _validate_known_upload_sizes([file])
     call = await _create_uploaded_call(file, db, metadata)
     return {"id": call.id, "filename": call.filename, "status": call.status}
+
+
+@app.post("/internal/lite/stars/orders")
+def create_lite_stars_order(
+    payload: LiteStarsOrderRequest,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    if payload.telegram_user_id <= 0:
+        raise HTTPException(status_code=400, detail="telegram_user_id must be positive")
+    product = LITE_STARS_PRODUCTS.get(payload.product_code)
+    if not product:
+        raise HTTPException(status_code=404, detail="Unknown Lite Stars product")
+    user = _lite_user_for_update(db, payload.telegram_user_id)
+    now = _utcnow()
+    if product["subscription"]:
+        active = db.execute(
+            select(LitePaymentOrder).where(
+                LitePaymentOrder.telegram_user_id == payload.telegram_user_id,
+                LitePaymentOrder.is_subscription.is_(True),
+                LitePaymentOrder.subscription_state == "active",
+                LitePaymentOrder.subscription_expires_at > now,
+            ).order_by(LitePaymentOrder.id.desc()).with_for_update()
+        ).scalars().first()
+        if active:
+            raise HTTPException(status_code=409, detail="A Lite subscription is already active")
+        pending = db.execute(
+            select(LitePaymentOrder).where(
+                LitePaymentOrder.telegram_user_id == payload.telegram_user_id,
+                LitePaymentOrder.product_code == payload.product_code,
+                LitePaymentOrder.status == "pending",
+                LitePaymentOrder.expires_at > now,
+            ).order_by(LitePaymentOrder.id.desc()).with_for_update()
+        ).scalars().first()
+        if pending:
+            db.commit()
+            return _lite_order_response(pending)
+    order = LitePaymentOrder(
+        invoice_payload=secrets.token_urlsafe(32),
+        telegram_user_id=payload.telegram_user_id,
+        product_code=payload.product_code,
+        stars_amount=product["stars"],
+        analyses_count=product["analyses"],
+        is_subscription=bool(product["subscription"]),
+        status="pending",
+        expires_at=now + timedelta(minutes=30),
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return _lite_order_response(order)
+
+
+@app.post("/internal/lite/stars/pre-checkout")
+def validate_lite_stars_pre_checkout(
+    payload: LiteStarsPreCheckoutRequest,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    order = db.execute(
+        select(LitePaymentOrder).where(LitePaymentOrder.invoice_payload == payload.invoice_payload)
+    ).scalar_one_or_none()
+    if not order or order.telegram_user_id != payload.telegram_user_id:
+        return {"ok": False, "error_message": "Покупка не найдена. Откройте /plans и создайте новый счёт."}
+    if payload.currency != "XTR" or payload.total_amount != order.stars_amount:
+        return {"ok": False, "error_message": "Сумма счёта не совпадает. Откройте /plans и создайте новый счёт."}
+    if order.is_subscription:
+        if order.subscription_state == "canceled":
+            return {"ok": False, "error_message": "Подписка отменена. Откройте /plans для новой покупки."}
+        if order.status == "pending" and not _lite_datetime_is_future(order.expires_at):
+            return {"ok": False, "error_message": "Срок счёта истёк. Откройте /plans и создайте новый счёт."}
+        if order.status not in {"pending", "paid"}:
+            return {"ok": False, "error_message": "Покупка недоступна. Откройте /plans и попробуйте снова."}
+    elif order.status != "pending" or not _lite_datetime_is_future(order.expires_at):
+        return {"ok": False, "error_message": "Срок счёта истёк или он уже оплачен. Откройте /plans и создайте новый счёт."}
+    return {"ok": True}
+
+
+@app.post("/internal/lite/stars/payments/confirm")
+def confirm_lite_stars_payment(
+    payload: LiteStarsPaymentRequest,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    if not payload.telegram_payment_charge_id.strip():
+        raise HTTPException(status_code=400, detail="telegram_payment_charge_id is required")
+    existing_payment = db.execute(
+        select(LiteStarsPayment).where(
+            LiteStarsPayment.telegram_payment_charge_id == payload.telegram_payment_charge_id
+        )
+    ).scalar_one_or_none()
+    if existing_payment:
+        order = db.get(LitePaymentOrder, existing_payment.order_id)
+        user = db.execute(
+            select(LiteUser).where(LiteUser.telegram_user_id == payload.telegram_user_id)
+        ).scalar_one_or_none()
+        if not order or order.invoice_payload != payload.invoice_payload or existing_payment.telegram_user_id != payload.telegram_user_id:
+            raise HTTPException(status_code=409, detail="Payment charge is already associated with a different purchase")
+        return {"ok": True, "duplicate": True, "paid_remaining": _lite_paid_remaining(db, user) if user else 0}
+
+    order = db.execute(
+        select(LitePaymentOrder).where(LitePaymentOrder.invoice_payload == payload.invoice_payload).with_for_update()
+    ).scalar_one_or_none()
+    if not order or order.telegram_user_id != payload.telegram_user_id:
+        raise HTTPException(status_code=404, detail="Lite Stars purchase not found")
+    if payload.currency != "XTR" or payload.total_amount != order.stars_amount:
+        raise HTTPException(status_code=400, detail="Telegram Stars payment does not match the purchase")
+    if order.is_subscription:
+        if not payload.is_recurring or not payload.subscription_expiration_date:
+            raise HTTPException(status_code=400, detail="Subscription payment is missing its renewal period")
+    elif payload.is_recurring or order.status != "pending":
+        raise HTTPException(status_code=409, detail="This one-time invoice is no longer payable")
+
+    user = _lite_user_for_update(db, payload.telegram_user_id)
+    subscription_expires_at = (
+        datetime.fromtimestamp(payload.subscription_expiration_date, tz=UTC)
+        if payload.subscription_expiration_date
+        else None
+    )
+    payment = LiteStarsPayment(
+        telegram_payment_charge_id=payload.telegram_payment_charge_id,
+        order_id=order.id,
+        telegram_user_id=payload.telegram_user_id,
+        currency=payload.currency,
+        stars_amount=payload.total_amount,
+        is_recurring=payload.is_recurring,
+        is_first_recurring=payload.is_first_recurring,
+        subscription_expires_at=subscription_expires_at,
+    )
+    db.add(payment)
+    db.flush()
+    lot = LiteCreditLot(
+        lite_user_id=user.id,
+        payment_id=payment.id,
+        product_code=order.product_code,
+        purchased_count=order.analyses_count,
+        remaining_count=order.analyses_count,
+        expires_at=subscription_expires_at,
+    )
+    db.add(lot)
+    order.status = "paid"
+    order.latest_charge_id = payload.telegram_payment_charge_id
+    if order.is_subscription:
+        order.subscription_expires_at = subscription_expires_at
+        if order.subscription_state != "canceled":
+            order.subscription_state = "active"
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing_payment = db.execute(
+            select(LiteStarsPayment).where(
+                LiteStarsPayment.telegram_payment_charge_id == payload.telegram_payment_charge_id
+            )
+        ).scalar_one_or_none()
+        if not existing_payment:
+            raise
+        return {"ok": True, "duplicate": True, "paid_remaining": 0}
+    return {
+        "ok": True,
+        "duplicate": False,
+        "product_code": order.product_code,
+        "analyses_granted": order.analyses_count,
+        "free_remaining": _lite_remaining(user),
+        "paid_remaining": _lite_paid_remaining(db, user),
+        "subscription_expires_at": subscription_expires_at.isoformat() if subscription_expires_at else None,
+    }
+
+
+@app.get("/internal/lite/subscription/{telegram_user_id}")
+def get_lite_subscription(
+    telegram_user_id: int,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    order = db.execute(
+        select(LitePaymentOrder).where(
+            LitePaymentOrder.telegram_user_id == telegram_user_id,
+            LitePaymentOrder.is_subscription.is_(True),
+        ).order_by(LitePaymentOrder.id.desc())
+    ).scalars().first()
+    if not order:
+        return {"active": False, "status": "none"}
+    active = bool(order.subscription_state == "active" and _lite_datetime_is_future(order.subscription_expires_at))
+    return {
+        "active": active,
+        "status": order.subscription_state or order.status,
+        "expires_at": order.subscription_expires_at.isoformat() if order.subscription_expires_at else None,
+        "latest_charge_id": order.latest_charge_id,
+        "invoice_payload": order.invoice_payload,
+    }
+
+
+@app.post("/internal/lite/subscription/event")
+def update_lite_subscription_event(
+    payload: LiteSubscriptionEventRequest,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    if payload.state not in {"active", "canceled", "failed"}:
+        raise HTTPException(status_code=400, detail="Invalid Telegram subscription state")
+    order = db.execute(
+        select(LitePaymentOrder).where(LitePaymentOrder.invoice_payload == payload.invoice_payload).with_for_update()
+    ).scalar_one_or_none()
+    if not order or not order.is_subscription or order.telegram_user_id != payload.telegram_user_id:
+        raise HTTPException(status_code=404, detail="Lite subscription not found")
+    order.subscription_state = payload.state
+    db.commit()
+    return {"ok": True, "state": order.subscription_state}
+
+
+@app.post("/internal/lite/subscription/cancelled")
+def mark_lite_subscription_cancelled(
+    payload: LiteSubscriptionEventRequest,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    if payload.state != "canceled":
+        raise HTTPException(status_code=400, detail="Cancellation state must be canceled")
+    order = db.execute(
+        select(LitePaymentOrder).where(LitePaymentOrder.invoice_payload == payload.invoice_payload).with_for_update()
+    ).scalar_one_or_none()
+    if not order or not order.is_subscription or order.telegram_user_id != payload.telegram_user_id:
+        raise HTTPException(status_code=404, detail="Lite subscription not found")
+    order.subscription_state = "canceled"
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/internal/lite/jobs")
+async def create_lite_job(
+    file: UploadFile = File(...),
+    telegram_user_id: int = Form(...),
+    idempotency_key: str = Form(...),
+    duration_seconds: int | None = Form(None),
+    language: str | None = Form(None),
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    if telegram_user_id <= 0:
+        raise HTTPException(status_code=400, detail="telegram_user_id must be positive")
+    idempotency_key = idempotency_key.strip()
+    if not idempotency_key or len(idempotency_key) > 255:
+        raise HTTPException(status_code=400, detail="idempotency_key is required and must be <= 255 characters")
+    if duration_seconds is not None and (duration_seconds < 0 or (LITE_MAX_DURATION_SECONDS and duration_seconds > LITE_MAX_DURATION_SECONDS)):
+        raise HTTPException(status_code=413, detail="Lite audio is limited to 20 minutes")
+    normalized_language = normalize_stt_language(language)
+    if normalized_language is not None and normalized_language not in SUPPORTED_STT_LANGUAGE_CODES:
+        raise HTTPException(status_code=400, detail="Unsupported audio language")
+
+    _cleanup_expired_lite_jobs(db)
+    existing = db.execute(select(LiteJob).where(LiteJob.idempotency_key == idempotency_key)).scalar_one_or_none()
+    if existing:
+        if existing.telegram_user_id != telegram_user_id:
+            raise HTTPException(status_code=409, detail="Idempotency key belongs to another Telegram user")
+        user = db.get(LiteUser, existing.lite_user_id)
+        call = db.get(Call, existing.call_id) if existing.call_id else None
+        review = db.execute(
+            select(QAReview).where(QAReview.call_id == existing.call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc()).limit(1)
+        ).scalar_one_or_none() if existing.call_id else None
+        if not user:
+            raise HTTPException(status_code=500, detail="Lite user record is missing")
+        return _serialize_lite_job(existing, user, db, call, review)
+
+    user = _lite_user_for_update(db, telegram_user_id)
+    credit_lot = None
+    quota_source = "free"
+    if _lite_remaining(user) <= 0:
+        quota_source = "paid"
+        credit_lot = db.execute(
+            select(LiteCreditLot).where(
+                LiteCreditLot.lite_user_id == user.id,
+                LiteCreditLot.remaining_count > 0,
+                or_(LiteCreditLot.expires_at.is_(None), LiteCreditLot.expires_at > _utcnow()),
+            ).order_by(LiteCreditLot.expires_at.asc().nulls_last(), LiteCreditLot.id.asc()).with_for_update()
+        ).scalars().first()
+        if not credit_lot:
+            raise HTTPException(status_code=429, detail="Lite free and paid analyses are exhausted")
+
+    display_name, safe_name = _validate_upload_file(file)
+    known_size = _upload_size(file)
+    if LITE_MAX_UPLOAD_BYTES and known_size is not None and known_size > LITE_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Lite audio is limited to 18 MB")
+
+    stored_path: Path | None = None
+    try:
+        stored_name, stored_path, size = await _store_lite_upload_file(file, safe_name)
+        call = Call(
+            filename=display_name,
+            status="uploaded",
+            stored_filename=stored_name,
+            stored_path=str(stored_path),
+            file_size_bytes=size,
+            content_type=file.content_type,
+            language=normalized_language,
+            source="telegram_lite",
+            source_provider="telegram",
+            external_call_id=_lite_external_call_id(telegram_user_id, idempotency_key),
+            duration_seconds=duration_seconds,
+            auto_analyze_after_transcription=True,
+        )
+        db.add(call)
+        if quota_source == "free":
+            user.analyses_used = int(user.analyses_used or 0) + 1
+        else:
+            credit_lot.remaining_count = int(credit_lot.remaining_count or 0) - 1
+        db.flush()
+        job = LiteJob(
+            lite_user_id=user.id,
+            telegram_user_id=telegram_user_id,
+            idempotency_key=idempotency_key,
+            call_id=call.id,
+            filename=display_name,
+            status="transcription_pending",
+            expires_at=_utcnow() + timedelta(days=LITE_RETENTION_DAYS),
+        )
+        db.add(job)
+        db.flush()
+        db.add(LiteQuotaAllocation(
+            lite_job_id=job.id,
+            source=quota_source,
+            credit_lot_id=credit_lot.id if credit_lot else None,
+        ))
+        db.commit()
+        db.refresh(job)
+        db.refresh(call)
+    except Exception:
+        db.rollback()
+        if stored_path:
+            stored_path.unlink(missing_ok=True)
+        raise
+
+    queued, warning = _enqueue_job(TRANSCRIPTION_QUEUE, {"call_id": call.id})
+    if not queued:
+        call.status = "transcription_failed"
+        call.last_error_type = "queue_unavailable"
+        call.last_error_message = warning
+        job.status = "failed"
+        job.error_message = warning
+        _refund_lite_quota(db, job, user)
+        stored_path.unlink(missing_ok=True)
+        call.stored_path = None
+        call.stored_filename = None
+        call.audio_deleted = True
+        call.audio_deleted_at = _utcnow()
+        db.commit()
+        raise HTTPException(status_code=503, detail=warning)
+
+    return _serialize_lite_job(job, user, db, call)
+
+
+@app.post("/internal/lite/calls/{call_id}/audio-cleanup")
+def cleanup_lite_call_audio(
+    call_id: int,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    call = db.get(Call, call_id)
+    if not call or call.source != "telegram_lite":
+        raise HTTPException(status_code=404, detail="Lite call not found")
+    if call.audio_deleted and not call.stored_path:
+        return {"audio_deleted": True}
+    try:
+        delete_lite_audio_file(call.stored_path, UPLOAD_DIR)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Unable to delete Lite source audio") from exc
+    call.stored_path = None
+    call.stored_filename = None
+    call.audio_deleted = True
+    call.audio_deleted_at = _utcnow()
+    db.commit()
+    return {"audio_deleted": True}
+
+
+@app.get("/internal/lite/jobs/{job_id}")
+def get_lite_job(
+    job_id: int,
+    telegram_user_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    job = db.get(LiteJob, job_id)
+    if not job or job.telegram_user_id != telegram_user_id:
+        raise HTTPException(status_code=404, detail="Lite job not found")
+    user = db.get(LiteUser, job.lite_user_id)
+    call = db.get(Call, job.call_id) if job.call_id else None
+    if not user:
+        raise HTTPException(status_code=500, detail="Lite user record is missing")
+    review = db.execute(
+        select(QAReview).where(QAReview.call_id == job.call_id).order_by(QAReview.created_at.desc(), QAReview.id.desc()).limit(1)
+    ).scalar_one_or_none() if job.call_id else None
+    if call and call.status in {"analysis_failed", "transcription_failed", "failed"}:
+        job.status = call.status
+        job.error_message = call.last_error_message
+        _refund_lite_quota(db, job, user)
+    elif call:
+        job.status = call.status
+    if review and review.status == "success":
+        job.status = "analyzed"
+    db.commit()
+    return _serialize_lite_job(job, user, db, call, review)
+
+
+def _delete_lite_call_data(db: Session, call: Call) -> None:
+    call_id = call.id
+    for model in (QAReviewAssignment, QAFeedback, QACoachingAction, QAReview, TranscriptSegment, IngestionEvent, CallTopicClassification, TopicActionResult):
+        db.execute(delete(model).where(model.call_id == call_id))
+    if call.stored_path:
+        Path(call.stored_path).unlink(missing_ok=True)
+    db.delete(call)
+
+
+def _cleanup_expired_lite_jobs(db: Session) -> int:
+    jobs = db.execute(
+        select(LiteJob).where(LiteJob.expires_at.is_not(None), LiteJob.expires_at <= _utcnow())
+    ).scalars().all()
+    deleted = 0
+    for job in jobs:
+        call = db.get(Call, job.call_id) if job.call_id else None
+        job.call_id = None
+        db.flush()
+        if call:
+            _delete_lite_call_data(db, call)
+        db.delete(job)
+        deleted += 1
+    if deleted:
+        db.commit()
+    return deleted
+
+
+@app.post("/internal/lite/cleanup")
+def cleanup_lite_data(
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    return {"deleted_jobs": _cleanup_expired_lite_jobs(db)}
+
+
+@app.delete("/internal/lite/users/{telegram_user_id}")
+def delete_lite_user_data(
+    telegram_user_id: int,
+    db: Session = Depends(get_db),
+    _token: None = Depends(require_lite_service_token),
+) -> dict:
+    user = db.execute(select(LiteUser).where(LiteUser.telegram_user_id == telegram_user_id)).scalar_one_or_none()
+    if not user:
+        return {"deleted_jobs": 0, "quota_preserved": True}
+    jobs = db.execute(select(LiteJob).where(LiteJob.lite_user_id == user.id)).scalars().all()
+    deleted = 0
+    for job in jobs:
+        call = db.get(Call, job.call_id) if job.call_id else None
+        job.call_id = None
+        db.flush()
+        if call:
+            _delete_lite_call_data(db, call)
+        db.delete(job)
+        deleted += 1
+    db.commit()
+    return {"deleted_jobs": deleted, "quota_preserved": True}
 
 
 @app.get("/settings/upload-limits")

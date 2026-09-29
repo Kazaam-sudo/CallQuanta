@@ -243,6 +243,86 @@ class AppSetting(Base):
     value: Mapped[dict] = mapped_column(JSON)
 
 
+class LiteUser(Base):
+    __tablename__ = "lite_users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    plan: Mapped[str] = mapped_column(String(32), default="free")
+    analyses_limit: Mapped[int] = mapped_column(Integer, default=3)
+    analyses_used: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LiteJob(Base):
+    __tablename__ = "lite_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lite_user_id: Mapped[int] = mapped_column(ForeignKey("lite_users.id"), index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    call_id: Mapped[int | None] = mapped_column(ForeignKey("calls.id"), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(64), default="received")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    expires_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LitePaymentOrder(Base):
+    __tablename__ = "lite_stars_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_payload: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    product_code: Mapped[str] = mapped_column(String(32))
+    stars_amount: Mapped[int] = mapped_column(Integer)
+    analyses_count: Mapped[int] = mapped_column(Integer)
+    is_subscription: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    subscription_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subscription_expires_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latest_charge_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LiteStarsPayment(Base):
+    __tablename__ = "lite_stars_payments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_payment_charge_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("lite_stars_orders.id"), index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    currency: Mapped[str] = mapped_column(String(8))
+    stars_amount: Mapped[int] = mapped_column(Integer)
+    is_recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_first_recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    subscription_expires_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LiteCreditLot(Base):
+    __tablename__ = "lite_credit_lots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lite_user_id: Mapped[int] = mapped_column(ForeignKey("lite_users.id"), index=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("lite_stars_payments.id"), unique=True, index=True)
+    product_code: Mapped[str] = mapped_column(String(32))
+    purchased_count: Mapped[int] = mapped_column(Integer)
+    remaining_count: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LiteQuotaAllocation(Base):
+    __tablename__ = "lite_quota_allocations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lite_job_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(16))
+    credit_lot_id: Mapped[int | None] = mapped_column(ForeignKey("lite_credit_lots.id"), nullable=True, index=True)
+    refunded_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CallTopic(Base):
     __tablename__ = "call_topics"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

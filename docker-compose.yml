@@ -134,6 +134,27 @@ services:
     environment:
       WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-30}
 
+  lite-bot:
+    profiles: ["lite-bot"]
+    build: ./apps/lite-bot
+    env_file: .env
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: on-failure
+    environment:
+      TELEGRAM_BOT_ENABLED: ${TELEGRAM_BOT_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      LITE_SERVICE_TOKEN: ${LITE_SERVICE_TOKEN:-}
+      LITE_API_BASE_URL: ${LITE_API_BASE_URL:-http://api:8000}
+      LITE_FREE_ANALYSES: ${LITE_FREE_ANALYSES:-3}
+      LITE_MAX_UPLOAD_BYTES: ${LITE_MAX_UPLOAD_BYTES:-18874368}
+      LITE_MAX_DURATION_SECONDS: ${LITE_MAX_DURATION_SECONDS:-1200}
+      LITE_RETENTION_DAYS: ${LITE_RETENTION_DAYS:-30}
+      LITE_POLL_TIMEOUT_SECONDS: ${LITE_POLL_TIMEOUT_SECONDS:-25}
+      LITE_DEFAULT_LANGUAGE: ${LITE_DEFAULT_LANGUAGE:-ru}
+      LITE_LIMIT_REACHED_TEXT: ${LITE_LIMIT_REACHED_TEXT:-}
+
 volumes:
   postgres_data:
   redis_data:

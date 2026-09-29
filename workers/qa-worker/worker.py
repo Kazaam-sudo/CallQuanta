@@ -14,6 +14,12 @@ from sqlalchemy import create_engine, select, delete, func
 from sqlalchemy.orm import sessionmaker
 
 from db import AppSetting, Call, CallTopic, CallTopicClassification, ProviderConfig, QAReview, ScorecardConfig, TopicActionResult, TranscriptSegment
+from provider_guard import (
+    ExternalLLMDailyLimitReached,
+    is_external_base_url,
+    reserve_daily_slot,
+    validate_external_provider,
+)
 from transcript_validation import validate_transcript_for_qa
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://callquanta:callquanta@postgres:5432/callquanta")
@@ -25,6 +31,18 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai_compatible")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_EXTERNAL_ENABLED = os.environ.get("LLM_EXTERNAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+LLM_EXTERNAL_ALLOWED_HOSTS = {
+    host.strip().lower().rstrip(".")
+    for host in os.environ.get(
+        "LLM_EXTERNAL_ALLOWED_HOSTS",
+        "generativelanguage.googleapis.com,api.groq.com",
+    ).split(",")
+    if host.strip()
+}
+LLM_DAILY_CALL_LIMIT = int(os.environ.get("LLM_DAILY_CALL_LIMIT", "30") or "0")
+LLM_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "1400") or "0")
+LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "low").strip()
 SCORECARD_PATH = Path(os.environ.get("SCORECARD_PATH", "/app/packages/scorecards/default_sales_qa.yaml"))
 DEMO_CALL_LIMIT = int(os.environ.get("DEMO_CALL_LIMIT", "50") or "0")
 
@@ -112,7 +130,8 @@ def display_language(value: str | None) -> str | None:
     raw = str(value).strip()
     if not raw:
         return None
-    return LANGUAGE_LABELS.get(raw.lower(), raw)
+    normalized = raw.lower().replace("_", "-")
+    return LANGUAGE_LABELS.get(normalized) or LANGUAGE_LABELS.get(normalized.split("-", 1)[0]) or raw
 
 
 def load_workspace_settings(db) -> dict[str, Any]:
@@ -127,6 +146,14 @@ def load_workspace_settings(db) -> dict[str, Any]:
 
 
 def resolve_report_language(scorecard: dict[str, Any], workspace: dict[str, Any], call: Call) -> str:
+    if getattr(call, "source", None) == "telegram_lite":
+        selected_language = getattr(call, "language", None)
+        if not selected_language or str(selected_language).strip().lower() in {"auto", "auto-detect"}:
+            selected_language = getattr(call, "detected_language", None)
+        if selected_language:
+            return display_language(str(selected_language)) or str(selected_language).strip()
+        return display_language(workspace.get("interface_language")) or "English"
+
     scorecard_language = str(scorecard.get("report_language") or "workspace").strip()
     if scorecard_language and scorecard_language != "workspace":
         return display_language(scorecard_language) or "English"
@@ -260,9 +287,29 @@ def resolve_active_provider(db) -> dict[str, Any]:
         }
     return default_config
 
-def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[str, Any], report_language: str) -> dict[str, Any]:
+def llm_review(
+    transcript_text: str,
+    scorecard: dict[str, Any],
+    provider: dict[str, Any],
+    report_language: str,
+) -> dict[str, Any]:
     if provider["provider"] != "openai_compatible":
         raise ValueError(f"unsupported provider type: {provider['provider']}")
+
+    base_url = str(provider.get("base_url", "")).rstrip("/")
+    validate_external_provider(
+        base_url,
+        enabled=LLM_EXTERNAL_ENABLED,
+        allowed_hosts=LLM_EXTERNAL_ALLOWED_HOSTS,
+    )
+    if is_external_base_url(base_url) and not reserve_daily_slot(
+        redis_client,
+        limit=LLM_DAILY_CALL_LIMIT,
+        namespace="callquanta:qa",
+    ):
+        raise ExternalLLMDailyLimitReached(
+            "external LLM daily request limit reached; try again tomorrow"
+        )
 
     headers = {"Content-Type": "application/json"}
     api_key = provider.get("api_key") or ""
@@ -299,9 +346,13 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
                     "You are a QA analyzer for sales/support call transcripts. "
                     "Return JSON only (no markdown, no extra text). "
                     "Required schema: {\"summary\": string, \"criteria_scores\": array, \"findings\": array}. "
-                    "Each criteria_scores item must include index (1-based), score, comment, evidence, severity (info|warning|critical). "
+                    "Keep the whole response compact: target at most 1,100 output tokens. "
+                    "Summary: at most 180 characters. Score every criterion exactly once. "
+                    "Each criterion comment: at most 64 characters; evidence: at most 84 characters, with one timestamp when available. "
+                    "Return at most 2 non-redundant findings, each with evidence at most 84 characters. "
+                    "Each criteria_scores item must include index (1-based), title (translate the criterion title into the requested report language), score, comment, evidence, severity (info|warning|critical). "
                     "Each finding object must include severity (info|warning|critical) and evidence (string). "
-                    "Do not include criterion ids, titles, or max points in criteria_scores. "
+                    "Do not include criterion ids or max points in criteria_scores. "
                     "Evidence must reference concrete behavior from the transcript, including speaker and/or timestamps when possible. "
                     f"{language_instruction}"
                 ),
@@ -312,12 +363,20 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
                     "Scorecard criteria (use 1-based index values exactly as listed):\n"
                     f"{scorecard_list}\n\n"
                     "Return compact JSON that matches this exact example shape:\n"
-                    '{"summary":"Short summary","criteria_scores":[{"index":1,"score":3,"comment":"Brief comment","evidence":"[12.40s-18.10s] Agent did X","severity":"warning"}],"findings":[{"severity":"info","evidence":"Short finding"}]}\n\n'
+                    '{"summary":"Short summary","criteria_scores":[{"index":1,"title":"Localized criterion title","score":3,"comment":"Brief comment","evidence":"[12.40s-18.10s] Agent did X","severity":"warning"}],"findings":[{"severity":"info","evidence":"Short finding"}]}\n\n'
                     f"Transcript:\n{transcript_text}"
                 ),
             },
         ],
     }
+    if LLM_MAX_OUTPUT_TOKENS > 0:
+        payload["max_tokens"] = LLM_MAX_OUTPUT_TOKENS
+    model_name = str(provider.get("model") or "").strip().lower()
+    if is_external_base_url(base_url) and model_name.startswith("qwen3.7"):
+        # Qwen3.7 JSON-object responses require thinking to be disabled.
+        payload["enable_thinking"] = False
+    elif LLM_REASONING_EFFORT and is_external_base_url(base_url):
+        payload["reasoning_effort"] = LLM_REASONING_EFFORT
 
     try:
         response = requests.post(
@@ -335,28 +394,49 @@ def llm_review(transcript_text: str, scorecard: dict[str, Any], provider: dict[s
         raise RuntimeError("LLM request timeout") from exc
 
     if not response.ok:
-        body = (response.text or "").replace("\n", " ")[:400]
         print(
             "LLM provider request failed "
-            f"provider={provider.get('name', 'unknown')} "
-            f"preset={provider.get('preset', 'custom')} "
-            f"base_url={provider.get('base_url', '')} "
-            f"model={provider.get('model', '')} "
-            f"status={response.status_code} "
-            f"body={body}"
+            f"model={provider.get('model', 'unknown')} "
+            f"status={response.status_code}"
         )
-        raise RuntimeError(
-            f"LLM provider request failed with status {response.status_code} for {provider.get('name', 'unknown')}"
-        )
+        raise RuntimeError(f"LLM provider request failed with HTTP {response.status_code}")
 
     data = response.json()
-    content = data["choices"][0]["message"]["content"]
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError("LLM provider response had no usable choice")
+    choice = choices[0]
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise RuntimeError("LLM provider response had no text content")
+    finish_reason = choice.get("finish_reason")
+    if finish_reason not in {"stop", "length", "content_filter", "tool_calls"}:
+        finish_reason = "unknown"
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+
+    def usage_count(name: str) -> int | str:
+        value = usage.get(name)
+        return value if isinstance(value, int) and value >= 0 else "unknown"
+
+    print(
+        "LLM response metadata "
+        f"model={provider.get('model', 'unknown')} finish_reason={finish_reason} "
+        f"prompt_tokens={usage_count('prompt_tokens')} "
+        f"completion_tokens={usage_count('completion_tokens')} "
+        f"response_chars={len(content)}"
+    )
+    if finish_reason == "length":
+        raise RuntimeError("LLM response reached the max_tokens limit")
     try:
         return parse_json_object_from_text(content)
     except ValueError as exc:
-        print(f"failed to parse LLM JSON response: {exc}")
-        print(f"raw LLM response: {content}")
-        raise
+        print(
+            "LLM response JSON parse failed "
+            f"model={provider.get('model', 'unknown')} "
+            f"finish_reason={finish_reason} response_chars={len(content)}"
+        )
+        raise RuntimeError("LLM response was not valid JSON") from exc
 
 
 def validate_review(review: dict[str, Any]) -> dict[str, Any]:
@@ -406,6 +486,7 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
         normalized_criteria_scores.append(
             {
                 "index": criterion_score.get("index"),
+                "title": str(criterion_score.get("title", "")).strip(),
                 "score": criterion_score.get("score", 0),
                 "comment": str(criterion_score.get("comment", "")).strip(),
                 "evidence": str(criterion_score.get("evidence", "")).strip(),
@@ -468,7 +549,7 @@ def normalize_review(review: dict[str, Any], scorecard: dict[str, Any]) -> dict[
         score = max(0.0, min(score, max_points))
         criteria_by_id[criterion_id] = {
             "id": criterion_id,
-            "title": str(scorecard_item["title"]).strip(),
+            "title": str(criterion_score.get("title") or scorecard_item["title"]).strip(),
             "score": score,
             "max_points": max_points,
             "comment": criterion_score.get("comment") or "No clear model comment provided.",
@@ -667,6 +748,7 @@ def process_qa_job(call_id: int) -> None:
             print(f"call {call_id} QA blocked: invalid transcript flags={transcript_validity['flags']}")
             return
 
+        external_provider_call = False
         try:
             call.status = "analyzing"
             call.last_error_type = None
@@ -682,6 +764,7 @@ def process_qa_job(call_id: int) -> None:
             else:
                 try:
                     provider = resolve_active_provider(db)
+                    external_provider_call = is_external_base_url(str(provider.get("base_url", "")))
                     print(
                         f"analyzing call_id={call_id} provider={provider.get('name', 'unknown')} "
                         f"preset={provider.get('preset', 'custom')} model={provider.get('model', '')}"
@@ -690,7 +773,9 @@ def process_qa_job(call_id: int) -> None:
                     validated = validate_review(raw_review)
                     review = normalize_review(validated, scorecard)
                 except (json.JSONDecodeError, ValueError) as exc:
-                    review = fallback_review(scorecard, str(exc))
+                    error_category = "invalid_json" if isinstance(exc, json.JSONDecodeError) else "invalid_review_schema"
+                    print(f"LLM review rejected category={error_category}")
+                    review = fallback_review(scorecard, error_category)
                     review["findings"].append(
                         {
                             "severity": "warning",
@@ -739,7 +824,7 @@ def process_qa_job(call_id: int) -> None:
             call = db.get(Call, call_id)
             if call:
                 call.status = "analysis_failed"
-                call.last_error_type = "analysis"
+                call.last_error_type = "external_llm" if external_provider_call else "analysis"
                 call.last_error_message = f"QA analysis failed: {clean_error}"
                 call.last_processed_at = datetime.now(UTC)
             db.commit()
